@@ -1,0 +1,24 @@
+{
+  "daemon": {
+    "socket_path": "/tmp/auto2fa_daemon.sock",
+    "log_file": "/tmp/auto2fa_daemon.log",
+    "pid_file": "/tmp/auto2fa_daemon.pid",
+    "check_interval": 30,
+    "max_retries": 3,
+    "retry_delay": 5
+  },
+  "ssh": {
+    "config_path": "/Users/shgao/.ssh/config",
+    "passwords_path": "/Users/shgao/.ssh/passwords.json",
+    "control_dir": "/Users/shgao/.ssh/auto2fa_control",
+    "control_persist_seconds": 21600,
+    "server_alive_interval": 15,
+    "server_alive_count_max": 6
+  },
+  "monitoring": {
+    "enabled": true,
+    "log_level": "INFO",
+    "max_log_size_mb": 10,
+    "backup_logs": true
+  }
+}

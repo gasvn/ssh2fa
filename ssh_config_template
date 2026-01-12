@@ -1,0 +1,43 @@
+# Auto2FA Optimized SSH Configuration Template
+# Copy this to your ~/.ssh/config and customize for your hosts
+
+# Global settings for all hosts
+Host *
+    # Security settings
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    
+    # Connection settings
+    ServerAliveInterval 15
+    ServerAliveCountMax 6
+    TCPKeepAlive yes
+    ConnectTimeout 10
+    
+    # Control master settings for Auto2FA
+    ControlMaster auto
+    ControlPersist 10m
+    ControlPath ~/.ssh/auto2fa_control/%h_%p.sock
+    
+    # Compression and multiplexing
+    Compression yes
+    ControlMaster auto
+    
+    # Keep connections alive
+    ServerAliveInterval 15
+    ServerAliveCountMax 6
+
+# Example host configuration
+# Replace with your actual host details
+Host myserver
+    HostName your-server.example.com
+    User your-username
+    Port 22
+    
+    # Auto2FA will manage the control socket
+    # The ControlPath above will be used automatically
+
+# Add more hosts as needed
+# Host anotherserver
+#     HostName another-server.example.com
+#     User another-username
+#     Port 22

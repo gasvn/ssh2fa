@@ -1,0 +1,18 @@
+{
+  "_comment": "Example configuration for Auto2FA robust system",
+  "settings": {
+    "log_level": "INFO",
+    "max_retries": 5,
+    "keepalive_interval": 30,
+    "max_idle_time": 300,
+    "network_check_timeout": 5,
+    "backoff_multiplier": 1.5,
+    "max_backoff_delay": 30
+  },
+  "hosts": {
+    "example_host": {
+      "password": "your_password_here",
+      "otpauthUrl": "otpauth://totp/Example:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+    }
+  }
+}
