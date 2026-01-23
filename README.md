@@ -10,63 +10,121 @@ Auto2FA is a robust SSH connection manager that handles 2FA (TOTP) automation an
 - **Smart Reliability**: Actively checks connection health and automatically reconnects if the socket dies (sleep/wake protection).
 - **Desktop Notifications**: Native alerts for connection status.
 
+## Installation
 
-## Dependencies (macOS)
+```bash
+git clone <repo>
+cd auto2fa
+pip install -e .
+```
+
+### Dependencies (macOS)
 
 For the **Auto-Mount** feature to work, you need `sshfs` and the `fuse-t` library (modern replacement for macFUSE).
 
-### Easy Install (Recommended)
-We provide a helper script to automate the installation and fix common linking issues:
-
+**Easy Install (Recommended):**
 ```bash
 chmod +x install_deps.sh
 ./install_deps.sh
 ```
 
-### Manual Install
-If you prefer to install manually:
+**Manual Install:**
 ```bash
 brew tap macos-fuse-t/homebrew-cask
 brew install fuse-t
 brew install fuse-t-sshfs
 ```
 
-## Installation
+## Configuration
 
+### Step 1: Create `.env` file
+
+Create a `.env` file in the project root directory:
 ```bash
-git clone <repo>
-cd auto2fa_dev
-pip install -e .
+SSH_CONFIG_PATH=/path/to/your/.ssh
+```
+Example: `SSH_CONFIG_PATH=/Users/yourname/.ssh`
+
+### Step 2: Configure SSH Config
+
+Edit `~/.ssh/config` to define your hosts:
+```
+Host my-server
+  HostName login05.rc.fas.harvard.edu
+  User yourusername
+  Port 22
+```
+You can change the name of your login node.
+
+### Step 3: Configure passwords.json
+
+Create `$SSH_CONFIG_PATH/passwords.json`:
+
+```json
+{
+    "my-server": {
+        "password": "YourPassword123!",
+        "otpauthUrl": "otpauth://totp/{USER}@login.rc.fas.harvard.edu?secret=YOURSECRETKEY"
+    }
+}
 ```
 
-### Configuration
-1.  **SSH Config** (`~/.ssh/config`): Ensure your hosts are defined.
-2.  **Passwords** (`~/.ssh/passwords.json`):
-    ```json
-    {
-        "my-server": {
-            "password": "mySecurePassword123",
-            "otpauthUrl": "otpauth://totp/..."
-        }
+**⚠️ Important Notes:**
+
+1. **Host name must match exactly**: The key in `passwords.json` (e.g., `"my-server"`) **must match** the `Host` name in your SSH config file. Otherwise, the connection will fail.
+
+2. **Password format**: Use your actual login password as a plain string.
+
+3. **otpauthUrl format**: Must be a valid TOTP URL with the following structure:
+   ```
+   otpauth://totp/LABEL?secret=YOURSECRETKEY
+   ```
+   The `secret` parameter is the Base32-encoded TOTP secret key.
+
+### Step 4: Generate TOTP Secret Key (Harvard RC)
+
+For Harvard Research Computing users:
+
+1. Visit [https://two-factor.rc.fas.harvard.edu/](https://two-factor.rc.fas.harvard.edu/)
+2. Login with your credentials
+3. Find the secret key below the QR code
+4. Construct your `otpauthUrl`:
+   ```
+   otpauth://totp/yourusername@login.rc.fas.harvard.edu?secret=YOURSECRETKEY
+   ```
+5. You do not need to revoke the previous key or rescan the QR code
+
+**Example configuration:**
+```json
+{
+    "rcfas_login": {
+        "password": "MySecurePassword!",
+        "otpauthUrl": "otpauth://totp/myuser@login.rc.fas.harvard.edu?secret=ABCD1234EFGH5678"
     }
-    ```
+}
+```
 
 ## Usage
 
-Run the full interactive dashboard:
+Run the interactive dashboard:
 ```bash
 auto2fa
 ```
-*   **Space**: Toggle connection.
-*   **Q**: Quit.
+
+**Controls:**
+- **↑/↓**: Navigate between hosts
+- **Space**: Toggle connection on/off
+- **Q**: Quit
 
 ### Connecting
-Once connected (Green Status), simply open a terminal and run:
+
+Once a host shows **Green (Connected)** status, open any terminal and run:
 ```bash
 ssh my-server
 ```
-You will be logged in instantly.
+You will be logged in instantly without password or 2FA prompt.
 
 ## Troubleshooting
 
-- **Logs**: Detailed logs are written to `/tmp/auto2fa_dashboard.log`.
+- **Logs**: Check `/tmp/auto2fa_dashboard.log` for detailed error messages.
+- **Host name mismatch**: Verify that the key in `passwords.json` exactly matches the `Host` in SSH config.

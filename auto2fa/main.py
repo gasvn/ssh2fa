@@ -8,6 +8,9 @@ import pyotp
 import urllib.parse
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 import pexpect
 import time
 import logging
@@ -41,8 +44,10 @@ from .backend import SSHHostManager, extract_secret_from_url
 
 def load_hosts():
     try:
-        config_path = "/Users/shgao/.ssh/passwords.json"
-        with open(config_path, 'r') as f:
+        config_path = os.environ.get("SSH_CONFIG_PATH")
+        assert config_path, "SSH_CONFIG_PATH environment variable is not set"
+        
+        with open(f"{config_path}/passwords.json", 'r') as f:
             data = json.load(f)
         return data
     except Exception as e:
