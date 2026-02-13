@@ -99,7 +99,8 @@ For Harvard Research Computing users:
 {
     "rcfas_login": {
         "password": "MySecurePassword!",
-        "otpauthUrl": "otpauth://totp/myuser@login.rc.fas.harvard.edu?secret=ABCD1234EFGH5678"
+        "otpauthUrl": "otpauth://totp/myuser@login.rc.fas.harvard.edu?secret=ABCD1234EFGH5678",
+        "autoConnect": true
     }
 }
 ```
@@ -114,6 +115,8 @@ auto2fa
 **Controls:**
 - **↑/↓**: Navigate between hosts
 - **Space**: Toggle connection on/off
+- **M**: Mount/Unmount remote filesystem (SSHFS)
+- **R**: Manually rotate connection pool
 - **Q**: Quit
 
 ### Connecting
@@ -123,6 +126,25 @@ Once a host shows **Green (Connected)** status, open any terminal and run:
 ssh my-server
 ```
 You will be logged in instantly without password or 2FA prompt.
+
+### File Mounting (SSHFS)
+
+Auto2FA allows you to mount the remote filesystem locally for easy file editing.
+
+1. Select a connected host.
+2. Press **M**.
+3. The remote files will be mounted at `~/Mounts/<host_name>`.
+4. Press **M** again to unmount.
+
+*Requires `sshfs` and `fuse-t` (installed via `install_deps.sh`).*
+
+### Connection Pooling
+
+Auto2FA maintains a pool of 2 active connections per host to ensure zero-downtime performance.
+
+- **Auto-Rotation**: If the active connection hangs or dies, the system automatically switches to the standby connection.
+- **Manual Rotation (R)**: You can force a rotation if you feel the current shell is sluggish.
+- **Sleep Recovery**: The pool automatically rebuilds itself after system sleep/wake cycles.
 
 ## Troubleshooting
 
