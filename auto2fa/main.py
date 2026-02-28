@@ -85,13 +85,19 @@ def main():
             secret = extract_secret_from_url(creds["otpauthUrl"])
             mgr = SSHHostManager(host, creds["password"], secret)
             mgr.daemon = True
-            mgr.active = False 
+            # Auto-Connect Logic
+            start_active = creds.get("autoConnect", creds.get("auto_connect", False))
+            mgr.active = start_active 
             mgr.start()
             managers.append(mgr)
 
     if not managers:
         print("No hosts found in passwords.json")
         sys.exit(1)
+        
+    logger.info(f"Main Loop Starting. Managers: {len(managers)}")
+    for i, mgr in enumerate(managers):
+        logger.info(f"Manager {i}: {mgr.host}")
 
     console = Console()
     selected_idx = 0
@@ -106,7 +112,8 @@ def main():
                 table = Table(box=box.ROUNDED, expand=True)
                 table.add_column("Select", width=3, justify="center")
                 table.add_column("Host", ratio=1)
-                table.add_column("Status", width=12)
+                table.add_column("Status", width=20)
+                table.add_column("Pool", width=10, justify="center")
                 table.add_column("FS", width=4, justify="center")
                 table.add_column("Last Message", ratio=2)
                 
@@ -132,10 +139,27 @@ def main():
                     if "Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg:
                         fs_icon = "📂" 
 
+                    # Show Pooling Info (Active Pool Index)
+                    pool_info = ""
+                    try:
+                        if hasattr(mgr, 'active_index') and hasattr(mgr, 'pool'):
+                            # Find which pools are alive
+                            alive_count = 0
+                            current_pool = mgr.pool.copy() # Shallow copy for safety
+                            for idx, child in current_pool.items():
+                                try:
+                                    if child.isalive():
+                                        alive_count += 1
+                                except: pass
+                            pool_info = f"{mgr.active_index}/{alive_count}"
+                    except Exception:
+                        pool_info = "?"
+                            
                     table.add_row(
                         cursor,
                         mgr.host,
                         status_text,
+                        pool_info,
                         fs_icon,
                         mgr.last_msg,
                         style=row_style
@@ -144,7 +168,7 @@ def main():
                 panel = Panel(
                     table,
                     title="[bold blue]Auto2FA Dashboard[/bold blue]",
-                    subtitle="[Up/Down] Navigate  [Space] Toggle  [Q] Quit  |  Mounts: ~/Mounts/<host>"
+                    subtitle="[Up/Down] Navigate  [Space] Toggle  [M] Mount  [R] Rotate  [Q] Quit"
                 )
                 live.update(panel)
                 
@@ -174,8 +198,22 @@ def main():
                             selected_idx = max(0, selected_idx - 1)
                         elif key == '\x1b[B': # Down
                             selected_idx = min(len(managers) - 1, selected_idx + 1)
+                            selected_idx = min(len(managers) - 1, selected_idx + 1)
                         elif key == ' ': # Space
                             managers[selected_idx].toggle()
+                        elif key == 'm' or key == 'M': # Mount
+                            threading.Thread(target=managers[selected_idx].mount_host, daemon=True).start()
+                        elif key == 'r' or key == 'R': # Rotate
+                            # Manual Rotation (Force Next)
+                            mgr = managers[selected_idx]
+                            if mgr.active:
+                                new_idx = (mgr.active_index + 1) % 2 # POOL_SIZE hardcoded here or accessed?
+                                # Better: call a rotate method if we exposed one?
+                                # We can access mgr.pool_control_paths keys
+                                if hasattr(mgr, 'update_symlink'):
+                                     mgr.update_symlink(new_idx)
+                                     mgr.last_msg = f"Manual Rotate -> {new_idx}"
+
                             
                     except Exception:
                         pass

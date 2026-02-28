@@ -140,7 +140,7 @@ Auto2FA allows you to mount the remote filesystem locally for easy file editing.
 
 ### Connection Pooling
 
-Auto2FA maintains a pool of 2 active connections per host to ensure zero-downtime performance.
+Auto2FA maintains a pool of 2 active connections per host to ensure zero-downtime performance. The dashboard includes a **Pool** column displaying the active connection index and the total number of alive connections in the pool (e.g., `0/2`).
 
 - **Auto-Rotation**: If the active connection hangs or dies, the system automatically switches to the standby connection.
 - **Manual Rotation (R)**: You can force a rotation if you feel the current shell is sluggish.

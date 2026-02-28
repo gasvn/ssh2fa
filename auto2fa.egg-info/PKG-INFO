@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: auto2fa
 Version: 0.2.0
 Summary: A robust, multi-server SSH manager with 2FA automation and a TUI dashboard.
@@ -7,3 +7,7 @@ Requires-Python: >=3.6
 Requires-Dist: rich
 Requires-Dist: pyotp
 Requires-Dist: pexpect
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
