@@ -433,6 +433,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         port = self._free_port()
         tm.add("x", port)
         tm.set_node("x", "holygpu01", "shgao")
+        tm.tunnels["x"].consecutive_squeue_misses = 5
 
         child = MagicMock()
         child.isalive.return_value = True
@@ -452,6 +453,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         self.assertEqual(tm.tunnels["x"].status, "alive")
         self.assertEqual(tm.tunnels["x"].active_jump, "k8")
         self.assertIn("via k8", tm.tunnels["x"].last_msg)
+        self.assertEqual(tm.tunnels["x"].consecutive_squeue_misses, 0)
 
     def test_start_probe_timeout_marks_failed(self):
         from tunnels import TunnelManager
@@ -481,6 +483,16 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm.start("x")
         self.assertEqual(tm.tunnels["x"].status, "alive")
         self.assertEqual(tm.tunnels["x"].active_jump, old_active)
+
+    def test_start_is_noop_when_starting(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.tunnels["x"].status = "starting"
+        # If start didn't no-op, it would try to pick a jump and proceed
+        tm.start("x")
+        self.assertEqual(tm.tunnels["x"].status, "starting")
 
 
 if __name__ == "__main__":

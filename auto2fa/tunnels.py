@@ -304,7 +304,6 @@ class TunnelManager:
             s.settimeout(0.5)
             try:
                 s.connect(("127.0.0.1", port))
-                s.close()
                 return True
             except OSError:
                 pass
