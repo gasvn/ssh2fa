@@ -368,5 +368,120 @@ class TestTunnelManagerSimpleOps(unittest.TestCase):
         self.assertEqual(tm.pick_active_jump(ts), "k8")
 
 
+class TestTunnelManagerStart(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _mgr(self, ready=True):
+        m = MagicMock()
+        m.is_master_ready.return_value = ready
+        return m
+
+    def test_start_no_node_marks_idle_with_message(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        # last_node is None
+        tm.start("x")
+        self.assertEqual(tm.tunnels["x"].status, "idle")
+        self.assertIn("no node", tm.tunnels["x"].last_msg.lower())
+
+    def test_start_no_jump_marks_idle_with_waiting(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=False)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.set_node("x", "holygpu01", "shgao")
+        tm.start("x")
+        self.assertEqual(tm.tunnels["x"].status, "idle")
+        self.assertIn("waiting for jump", tm.tunnels["x"].last_msg.lower())
+
+    def test_start_port_busy_marks_port_busy(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        tm.set_node("x", "holygpu01", "shgao")
+        # Hold the port between add() and start()
+        s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen(1)
+        try:
+            tm.start("x")
+            self.assertEqual(tm.tunnels["x"].status, "port_busy")
+        finally:
+            s.close()
+
+    def test_start_happy_path_spawns_and_probes(self):
+        from tunnels import TunnelManager
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        tm.set_node("x", "holygpu01", "shgao")
+
+        child = MagicMock()
+        child.isalive.return_value = True
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child) as p_spawn, \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=True):
+            tm.start("x")
+            args, kwargs = p_spawn.call_args
+            self.assertEqual(args[0], "ssh")
+            spawn_argv = args[1]
+            self.assertIn("-N", spawn_argv)
+            self.assertIn("-J", spawn_argv)
+            self.assertIn("k8", spawn_argv)
+            self.assertIn("-L", spawn_argv)
+            self.assertTrue(any(f"{port}:localhost:{port}" == a for a in spawn_argv))
+            self.assertIn("shgao@holygpu01", spawn_argv)
+
+        self.assertEqual(tm.tunnels["x"].status, "alive")
+        self.assertEqual(tm.tunnels["x"].active_jump, "k8")
+        self.assertIn("via k8", tm.tunnels["x"].last_msg)
+
+    def test_start_probe_timeout_marks_failed(self):
+        from tunnels import TunnelManager
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        tm.set_node("x", "holygpu01", "shgao")
+
+        child = MagicMock()
+        child.isalive.return_value = True
+        child.before = "Permission denied (publickey)"
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=False):
+            tm.start("x")
+        self.assertEqual(tm.tunnels["x"].status, "failed")
+        child.terminate.assert_called()
+
+    def test_start_is_noop_when_alive(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.tunnels["x"].status = "alive"
+        old_active = tm.tunnels["x"].active_jump
+        tm.start("x")
+        self.assertEqual(tm.tunnels["x"].status, "alive")
+        self.assertEqual(tm.tunnels["x"].active_jump, old_active)
+
+
 if __name__ == "__main__":
     unittest.main()

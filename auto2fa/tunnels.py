@@ -13,8 +13,11 @@ import logging
 import os
 import socket as _socket
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+import pexpect
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +237,100 @@ class TunnelManager:
             if mgr.is_master_ready():
                 return name
         return None
+
+    PROBE_TIMEOUT_SEC = 10.0
+    PROBE_INTERVAL_SEC = 0.2
+
+    def start(self, name: str) -> None:
+        """Start (or restart) a tunnel. Idempotent: no-op if already alive or starting."""
+        ts = self.tunnels[name]
+
+        if ts.status in ("alive", "starting"):
+            return
+
+        if ts.last_node is None:
+            ts.status = "idle"
+            ts.last_msg = "no node — press Enter to pick"
+            return
+
+        jump = self.pick_active_jump(ts)
+        if jump is None:
+            ts.status = "idle"
+            ts.last_msg = "waiting for jump"
+            return
+
+        if not self._port_available(ts.local_port):
+            ts.status = "port_busy"
+            ts.last_msg = f"port {ts.local_port} in use"
+            return
+
+        ts.status = "starting"
+        ts.active_jump = jump
+        ts.last_msg = f"starting via {jump}"
+
+        argv = [
+            "-N",
+            "-J", jump,
+            "-L", f"{ts.local_port}:localhost:{ts.remote_port}",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=15",
+            f"{ts.last_user}@{ts.last_node}",
+        ]
+        child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
+        ts.child = child
+
+        if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
+            ts.status = "alive"
+            ts.last_msg = f"via {jump}"
+            ts.consecutive_squeue_misses = 0
+        else:
+            try:
+                child.terminate(force=True)
+            except Exception:
+                pass
+            reason = self._extract_failure_reason(child)
+            ts.status = "failed"
+            ts.last_msg = reason
+            ts.child = None
+            ts.active_jump = None
+
+    def _probe_port_ready(self, port: int, timeout: float) -> bool:
+        """Poll 127.0.0.1:port until connect() succeeds or timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return True
+            except OSError:
+                pass
+            finally:
+                s.close()
+            time.sleep(self.PROBE_INTERVAL_SEC)
+        return False
+
+    @staticmethod
+    def _extract_failure_reason(child) -> str:
+        """Best-effort short hint from pexpect.child.before / after."""
+        text = ""
+        for attr in ("before", "after"):
+            v = getattr(child, attr, None)
+            if isinstance(v, str):
+                text += v + " "
+        text = text.lower()
+        if "permission denied" in text:
+            return "auth failed"
+        if "host key" in text:
+            return "host key verification failed"
+        if "no route" in text or "open failed" in text:
+            return "node unreachable"
+        if "bind:" in text or "forward failed" in text:
+            return "remote bind failed"
+        return "ssh failed"
 
     @staticmethod
     def _port_available(port: int) -> bool:
