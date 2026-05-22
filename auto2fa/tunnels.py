@@ -354,6 +354,70 @@ class TunnelManager:
         else:
             self.start(name)
 
+    DISCOVERY_INTERVAL_SEC = 30.0
+    STALE_MISS_THRESHOLD = 2
+
+    def tick(self) -> None:
+        """One pass over all tunnels. Cheap for idle states; throttled discovery
+        for alive states. Called from the dashboard render loop."""
+        now = time.time()
+        # Auto-start (one-shot, after a short grace period to let masters come up)
+        if not self.auto_started and self.startup_ts and now - self.startup_ts >= 3.0:
+            self.auto_started = True
+            for name, ts in self.tunnels.items():
+                if ts.auto_start and ts.last_node is not None:
+                    self.start(name)
+
+        for name, ts in list(self.tunnels.items()):
+            if ts.status in ("idle", "stale", "port_busy", "failed", "starting"):
+                continue
+            # status == "alive"
+
+            # Case 1: child died
+            child = ts.child
+            if child is None or not child.isalive():
+                logger.warning("[tunnel:%s] child died, respawning", name)
+                self.start(name)
+                continue
+
+            # Case 2: jump master no longer ready → failover
+            mgr = self.host_managers.get(ts.active_jump)
+            if mgr is None or not mgr.is_master_ready():
+                logger.info("[tunnel:%s] jump %s down, failing over", name, ts.active_jump)
+                old_jump = ts.active_jump
+                self.stop(name)
+                self.start(name)
+                if ts.active_jump and ts.active_jump != old_jump:
+                    ts.last_msg = f"failover {old_jump}→{ts.active_jump}"
+                continue
+
+            # Case 3: throttled squeue check
+            if now - ts.last_probe_ts < self.DISCOVERY_INTERVAL_SEC:
+                continue
+            ts.last_probe_ts = now
+            try:
+                jobs = NodeDiscovery.discover(mgr)
+            except DiscoveryError as e:
+                logger.warning("[tunnel:%s] discovery error: %s", name, e)
+                ts.last_msg = f"squeue err: {str(e)[:30]}"
+                continue
+            node_alive = any(j.node == ts.last_node for j in jobs)
+            if node_alive:
+                ts.consecutive_squeue_misses = 0
+            else:
+                ts.consecutive_squeue_misses += 1
+                if ts.consecutive_squeue_misses >= self.STALE_MISS_THRESHOLD:
+                    logger.info("[tunnel:%s] node %s gone, marking stale", name, ts.last_node)
+                    try:
+                        if child.isalive():
+                            child.terminate(force=True)
+                    except Exception:
+                        pass
+                    ts.child = None
+                    ts.active_jump = None
+                    ts.status = "stale"
+                    ts.last_msg = f"node {ts.last_node} no longer in squeue"
+
     @staticmethod
     def _port_available(port: int) -> bool:
         """True iff we can bind 127.0.0.1:port right now."""

@@ -558,5 +558,135 @@ class TestTunnelManagerStopToggle(unittest.TestCase):
             p_start.assert_not_called()
 
 
+class TestTunnelManagerTick(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _mgr(self, ready=True):
+        m = MagicMock()
+        m.is_master_ready.return_value = ready
+        return m
+
+    def test_tick_skips_idle_and_failed(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.tunnels["x"].status = "idle"
+        with unittest.mock.patch.object(tm, "start") as p_start:
+            tm.tick()
+            p_start.assert_not_called()
+
+    def test_tick_alive_with_dead_child_respawns(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        dead = MagicMock(); dead.isalive.return_value = False
+        ts.child = dead
+        with unittest.mock.patch.object(tm, "start") as p_start:
+            tm.tick()
+            p_start.assert_called_once_with("x")
+
+    def test_tick_failover_when_jump_master_gone(self):
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=False), "k1": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"            # was using k8, now down
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        alive = MagicMock(); alive.isalive.return_value = True
+        ts.child = alive
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop:
+            tm.tick()
+            # Should have killed the old child and triggered restart
+            p_stop.assert_called_once_with("x")
+            p_start.assert_called_once_with("x")
+
+    def test_tick_two_squeue_misses_marks_stale(self):
+        from tunnels import TunnelManager, Job
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        alive = MagicMock(); alive.isalive.return_value = True
+        ts.child = alive
+        # Force discovery check by setting last_probe_ts to long ago
+        ts.last_probe_ts = 0.0
+
+        with unittest.mock.patch.object(t.NodeDiscovery, "discover",
+                                        return_value=[Job("1","p","n","RUNNING","1","other_node")]):
+            tm.tick()   # miss 1
+            self.assertEqual(ts.status, "alive")
+            self.assertEqual(ts.consecutive_squeue_misses, 1)
+            # Force another check
+            ts.last_probe_ts = 0.0
+            tm.tick()   # miss 2 → stale
+            self.assertEqual(ts.status, "stale")
+            alive.terminate.assert_called()
+
+    def test_tick_discovery_error_does_not_bump_misses(self):
+        from tunnels import TunnelManager, DiscoveryError
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"; ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        alive = MagicMock(); alive.isalive.return_value = True
+        ts.child = alive
+        ts.last_probe_ts = 0.0
+        ts.consecutive_squeue_misses = 0
+
+        with unittest.mock.patch.object(t.NodeDiscovery, "discover",
+                                        side_effect=DiscoveryError("boom")):
+            tm.tick()
+            self.assertEqual(ts.consecutive_squeue_misses, 0)
+            self.assertEqual(ts.status, "alive")
+
+    def test_tick_squeue_hit_resets_miss_counter(self):
+        from tunnels import TunnelManager, Job
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"; ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        alive = MagicMock(); alive.isalive.return_value = True
+        ts.child = alive
+        ts.last_probe_ts = 0.0
+        ts.consecutive_squeue_misses = 1
+
+        with unittest.mock.patch.object(t.NodeDiscovery, "discover",
+                                        return_value=[Job("1","p","n","RUNNING","1","node1")]):
+            tm.tick()
+            self.assertEqual(ts.consecutive_squeue_misses, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
