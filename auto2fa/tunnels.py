@@ -9,6 +9,7 @@ See docs/superpowers/specs/2026-05-22-tunnels-design.md for design.
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -75,3 +76,27 @@ class NodeDiscovery:
             jobs.append(Job(jobid=jobid, partition=partition, name=name,
                             state=state, time=time_str, node=node))
         return jobs
+
+    @staticmethod
+    def discover(host_manager) -> List[Job]:
+        """Run squeue on the jump host via its existing SSH master.
+
+        Raises DiscoveryError on non-zero exit. The control socket must already
+        be live; this never opens a new SSH connection.
+        """
+        path = host_manager.pool_control_paths[host_manager.active_index]
+        cmd = [
+            "ssh",
+            "-o", f"ControlPath={path}",
+            host_manager.host,
+            f"squeue -h -o '{NodeDiscovery.SQUEUE_FORMAT}' -u $USER",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except subprocess.TimeoutExpired as e:
+            raise DiscoveryError(f"squeue timed out on {host_manager.host}") from e
+        if result.returncode != 0:
+            raise DiscoveryError(
+                f"squeue failed on {host_manager.host}: {result.stderr.strip()[:200]}"
+            )
+        return NodeDiscovery.parse(result.stdout)

@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
+import unittest.mock
 import os
 import sys
 
@@ -87,6 +88,48 @@ class TestNodeDiscoveryParse(unittest.TestCase):
         )
         jobs = NodeDiscovery.parse(raw)
         self.assertEqual([j.jobid for j in jobs], ["1", "2"])
+
+
+class TestNodeDiscoveryDiscover(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+
+    def _fake_mgr(self, host="k8", ready=True, active_index=0):
+        m = MagicMock()
+        m.host = host
+        m.is_master_ready.return_value = ready
+        m.active_index = active_index
+        m.pool_control_paths = {0: f"/tmp/cm-{host}-0", 1: f"/tmp/cm-{host}-1"}
+        return m
+
+    def test_discover_invokes_squeue_via_master(self):
+        from tunnels import NodeDiscovery
+        import tunnels as t
+        completed = MagicMock(returncode=0,
+                              stdout="14246008|kempner_h|h100x1|RUNNING|23:58:16|holygpu8a11103\n",
+                              stderr="")
+        with unittest.mock.patch.object(t.subprocess, "run", return_value=completed) as p_run:
+            jobs = NodeDiscovery.discover(self._fake_mgr())
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].node, "holygpu8a11103")
+            # Inspect the command
+            args, kwargs = p_run.call_args
+            cmd = args[0]
+            self.assertEqual(cmd[0], "ssh")
+            self.assertIn("-o", cmd)
+            self.assertTrue(any("ControlPath=/tmp/cm-k8-0" in a for a in cmd))
+            self.assertEqual(cmd[-2], "k8")
+            self.assertIn("squeue", cmd[-1])
+
+    def test_discover_raises_on_nonzero_exit(self):
+        from tunnels import NodeDiscovery, DiscoveryError
+        import tunnels as t
+        completed = MagicMock(returncode=1, stdout="", stderr="squeue: command not found")
+        with unittest.mock.patch.object(t.subprocess, "run", return_value=completed):
+            with self.assertRaises(DiscoveryError) as ctx:
+                NodeDiscovery.discover(self._fake_mgr())
+            self.assertIn("squeue", str(ctx.exception))
 
 
 if __name__ == "__main__":
