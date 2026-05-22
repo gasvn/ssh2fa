@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import MagicMock
 import sys
@@ -7,12 +8,14 @@ mock_subprocess = MagicMock()
 sys.modules['pexpect'] = mock_pexpect
 sys.modules['subprocess'] = mock_subprocess
 
-sys.path.append("/Users/shgao/logs/auto2fa_dev/auto2fa")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "auto2fa"))
 from backend import SSHHostManager
 
 
 class TestIsMasterReady(unittest.TestCase):
     def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
         self.mgr = SSHHostManager("test_host", "pw", "secret")
 
     def test_false_when_inactive(self):
