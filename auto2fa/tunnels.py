@@ -47,3 +47,31 @@ class TunnelState:
     last_msg: str = "Ready"
     last_probe_ts: float = 0.0
     consecutive_squeue_misses: int = 0
+
+
+class NodeDiscovery:
+    """Stateless helpers for discovering running SLURM jobs via an SSH master."""
+
+    SQUEUE_FORMAT = "%i|%P|%j|%T|%M|%R"
+
+    @staticmethod
+    def parse(stdout: str) -> List[Job]:
+        """Parse `squeue -h -o '%i|%P|%j|%T|%M|%R'` output.
+
+        Filters to STATE == RUNNING. Silently skips malformed rows.
+        """
+        jobs: List[Job] = []
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) != 6:
+                logger.debug("Skipping malformed squeue row: %r", line)
+                continue
+            jobid, partition, name, state, time_str, node = parts
+            if state != "RUNNING":
+                continue
+            jobs.append(Job(jobid=jobid, partition=partition, name=name,
+                            state=state, time=time_str, node=node))
+        return jobs
