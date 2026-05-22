@@ -76,6 +76,46 @@ class RawMode:
         if self.old_settings:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
 
+
+def _modal_input(live, console, prompt_lines, fields, terminal_raw_mode):
+    """Render a modal and collect text input for each field.
+
+    fields: list of (label, default_value) tuples.
+    Returns: dict {label: value} or None if user pressed Esc.
+    """
+    from rich.text import Text
+    values = {}
+    for label, default in fields:
+        # Re-render modal with current values + current prompt
+        body_lines = list(prompt_lines)
+        for l, v in values.items():
+            body_lines.append(f"  {l}: {v}")
+        body_lines.append(f"  {label}: _")
+        body_lines.append("")
+        body_lines.append("[dim][Enter] Submit  [Esc] Cancel[/dim]")
+        panel = Panel("\n".join(body_lines), title="[bold blue]Auto2FA[/bold blue]",
+                      border_style="cyan", padding=(1, 4))
+        live.update(panel)
+
+        # Temporarily exit raw mode so input() works
+        terminal_raw_mode.__exit__(None, None, None)
+        try:
+            sys.stdout.write("\033[?25h")  # show cursor
+            sys.stdout.flush()
+            try:
+                val = input(f"{label} [{default}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if val == "":
+                val = default
+            values[label] = val
+        finally:
+            sys.stdout.write("\033[?25l")  # hide cursor
+            sys.stdout.flush()
+            terminal_raw_mode.__enter__()
+    return values
+
+
 def main():
     config = load_hosts()
     managers = []
@@ -118,7 +158,8 @@ def main():
     # We need to clear screen first or rich might get confused with raw mode artifacts
     console.clear()
 
-    with RawMode():
+    raw = RawMode()
+    with raw:
         with Live(console=console, refresh_per_second=10, screen=True, auto_refresh=True) as live:
             while True:
                 # 0. Drive tunnel lifecycle
@@ -260,7 +301,30 @@ def main():
                                         mgr.update_symlink(new_idx)
                                         mgr.last_msg = f"Manual Rotate -> {new_idx}"
 
-                            
+                        elif key == 't' or key == 'T':
+                            vals = _modal_input(
+                                live, console,
+                                prompt_lines=["[bold]New Tunnel[/bold]", ""],
+                                fields=[("Name", ""), ("Local port", "8888")],
+                                terminal_raw_mode=raw,
+                            )
+                            if vals:
+                                try:
+                                    tunnel_mgr.add(
+                                        name=vals["Name"],
+                                        local_port=int(vals["Local port"]),
+                                    )
+                                    # Move focus to the new tunnel
+                                    focused_section = "tunnels"
+                                    selected_tunnel_idx = list(tunnel_mgr.tunnels.keys()).index(vals["Name"])
+                                except (ValueError, KeyError) as e:
+                                    logger.warning(f"add tunnel failed: {e}")
+                                    error_msg = str(e)
+                                    error_panel = Panel(f"[red]Could not create tunnel: {error_msg}[/red]",
+                                                        title="[bold blue]Auto2FA[/bold blue]")
+                                    live.update(error_panel)
+                                    time.sleep(1.5)
+
                     except Exception:
                         pass
                     
