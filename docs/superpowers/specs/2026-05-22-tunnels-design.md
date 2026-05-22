@@ -254,9 +254,10 @@ Status indicators:
 ### 7.1 Start
 
 1. If already `alive` or `starting`, return.
-2. `active_jump = pick_active_jump(state)`. If None → `status = idle`, `last_msg = "waiting for jump"`, return.
-3. Port re-check: `socket.bind(("127.0.0.1", local_port))`. If fails → `status = port_busy`, `last_msg = "port N in use"`, return.
-4. `status = starting`. Spawn:
+2. If `last_node` is `None` → `status = idle`, `last_msg = "no node — press Enter to pick"`, return. (Triggered when user hits `Space` on a freshly-created tunnel.)
+3. `active_jump = pick_active_jump(state)`. If None → `status = idle`, `last_msg = "waiting for jump"`, return.
+4. Port re-check: `socket.bind(("127.0.0.1", local_port))`. If fails → `status = port_busy`, `last_msg = "port N in use"`, return.
+5. `status = starting`. Spawn:
    ```python
    pexpect.spawn(
        "ssh",
@@ -274,7 +275,8 @@ Status indicators:
    ```
    `-N` = no remote command; pure forward.
    `ExitOnForwardFailure=yes` ensures the child exits fast if the bind fails on the remote side.
-5. Probe loop (≤10s): every 200ms, attempt `socket.connect(("127.0.0.1", local_port))`. On success → `status = alive`, `last_msg = "via {jump}"`. On timeout → kill child, `status = failed`, parse `child.before` for a short reason.
+   `last_user` defaults to the jump host's SSH config user (`ssh -G <jump> | grep ^user`) when first picked — for Harvard RC and similar clusters the compute-node user is always the same as the login user. Stored explicitly so an advanced user could edit `tunnels.json` if it ever differs.
+6. Probe loop (≤10s): every 200ms, attempt `socket.connect(("127.0.0.1", local_port))`. On success → `status = alive`, `last_msg = "via {jump}"`. On timeout → kill child, `status = failed`, parse `child.before` for a short reason.
 
 ### 7.2 Tick (every render frame, ~100ms; expensive checks self-throttle)
 
@@ -297,7 +299,7 @@ For each tunnel:
 
 1. `load()` — read `tunnels.json`. Apply all configs to `tunnels` dict in `idle` state.
 2. `cleanup_orphans()` — pgrep + kill any leftover `ssh -J … -L <our_ports>:…` from prior runs.
-3. On the first tick (~3s after launch, to give masters time to come up), for each tunnel with `auto_start: true` and `last_node` set: call `start()`. The normal flow handles "node gone" → marks stale; no special case.
+3. Record `startup_ts = time.time()`. In each `tick()`, while `time.time() - startup_ts < 3`, skip auto-start (lets masters come up). On the first tick after the 3s grace period, iterate every tunnel with `auto_start: true` and `last_node` set, and call `start()`. The flag is then cleared so auto-start is attempted only once per dashboard run; if the jump isn't ready yet at t=3s the tunnel sits in `idle` and the user can `Space` to retry. The normal flow handles "node gone" → marks stale; no special case.
 
 ## 8. Error Handling
 
