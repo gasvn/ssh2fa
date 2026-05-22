@@ -203,6 +203,38 @@ class TunnelManager:
         self.save()
         return ts
 
+    def remove(self, name: str) -> None:
+        """Remove a tunnel. Caller is responsible for stopping it first."""
+        if name not in self.tunnels:
+            return
+        del self.tunnels[name]
+        self.save()
+
+    def set_node(self, name: str, node: str, user: str) -> None:
+        """Update the saved compute-node target for a tunnel."""
+        ts = self.tunnels[name]
+        ts.last_node = node
+        ts.last_user = user
+        # Picking a fresh node clears stale-misses; if it was stale, it can be retried
+        ts.consecutive_squeue_misses = 0
+        self.save()
+
+    def pick_active_jump(self, ts: TunnelState) -> Optional[str]:
+        """Return the name of the first connected jump candidate, or None.
+
+        Defaults to every host in host_managers when ts.jump_candidates is None.
+        Unknown candidate names are silently skipped.
+        """
+        candidates = ts.jump_candidates if ts.jump_candidates is not None \
+                     else list(self.host_managers.keys())
+        for name in candidates:
+            mgr = self.host_managers.get(name)
+            if mgr is None:
+                continue
+            if mgr.is_master_ready():
+                return name
+        return None
+
     @staticmethod
     def _port_available(port: int) -> bool:
         """True iff we can bind 127.0.0.1:port right now."""

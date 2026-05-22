@@ -283,5 +283,90 @@ class TestTunnelManagerAdd(unittest.TestCase):
             tm.add(name="y", local_port=self._free_port(), remote_port=70000)
 
 
+class TestTunnelManagerSimpleOps(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _mk_mgr(self, ready=True):
+        m = MagicMock()
+        m.is_master_ready.return_value = ready
+        return m
+
+    def test_remove(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", self._free_port())
+        tm.remove("a")
+        self.assertNotIn("a", tm.tunnels)
+        with open(self.cfg) as f:
+            data = json.load(f)
+        self.assertEqual(data["tunnels"], {})
+
+    def test_remove_unknown_is_noop(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.remove("nope")   # should not raise
+
+    def test_set_node_updates_and_persists(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", self._free_port())
+        tm.set_node("a", "holygpu01", "shgao")
+        self.assertEqual(tm.tunnels["a"].last_node, "holygpu01")
+        self.assertEqual(tm.tunnels["a"].last_user, "shgao")
+        with open(self.cfg) as f:
+            data = json.load(f)
+        self.assertEqual(data["tunnels"]["a"]["last_node"], "holygpu01")
+
+    def test_pick_active_jump_with_explicit_candidates(self):
+        from tunnels import TunnelManager, TunnelState
+        hm = {"k1": self._mk_mgr(ready=False), "k8": self._mk_mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        ts = TunnelState(name="x", local_port=1, remote_port=1,
+                         jump_candidates=["k1", "k8"],
+                         last_node=None, last_user=None, auto_start=False)
+        self.assertEqual(tm.pick_active_jump(ts), "k8")
+
+    def test_pick_active_jump_returns_none_when_all_down(self):
+        from tunnels import TunnelManager, TunnelState
+        hm = {"k1": self._mk_mgr(ready=False), "k8": self._mk_mgr(ready=False)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        ts = TunnelState(name="x", local_port=1, remote_port=1,
+                         jump_candidates=["k1", "k8"],
+                         last_node=None, last_user=None, auto_start=False)
+        self.assertIsNone(tm.pick_active_jump(ts))
+
+    def test_pick_active_jump_defaults_to_all_hosts(self):
+        from tunnels import TunnelManager, TunnelState
+        hm = {"a": self._mk_mgr(ready=False), "b": self._mk_mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        ts = TunnelState(name="x", local_port=1, remote_port=1,
+                         jump_candidates=None,
+                         last_node=None, last_user=None, auto_start=False)
+        self.assertEqual(tm.pick_active_jump(ts), "b")
+
+    def test_pick_active_jump_skips_unknown_candidate(self):
+        from tunnels import TunnelManager, TunnelState
+        hm = {"k8": self._mk_mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        ts = TunnelState(name="x", local_port=1, remote_port=1,
+                         jump_candidates=["nonexistent", "k8"],
+                         last_node=None, last_user=None, auto_start=False)
+        self.assertEqual(tm.pick_active_jump(ts), "k8")
+
+
 if __name__ == "__main__":
     unittest.main()
