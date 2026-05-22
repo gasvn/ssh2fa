@@ -116,6 +116,102 @@ def _modal_input(live, console, prompt_lines, fields, terminal_raw_mode):
     return values
 
 
+def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
+    """Show running jobs from squeue and let the user pick a node.
+
+    Returns (node, user) or None if cancelled.
+    """
+    from .tunnels import NodeDiscovery, DiscoveryError
+    ts = tunnel_mgr.tunnels[name]
+    jump_name = tunnel_mgr.pick_active_jump(ts)
+    if jump_name is None:
+        live.update(Panel("[red]No connected jump host available.[/red]",
+                          title="[bold blue]Pick node[/bold blue]"))
+        time.sleep(1.5)
+        return None
+    mgr = tunnel_mgr.host_managers[jump_name]
+
+    def fetch():
+        try:
+            return NodeDiscovery.discover(mgr), None
+        except DiscoveryError as e:
+            return [], str(e)
+
+    jobs, err = fetch()
+    sel = 0
+
+    while True:
+        body = Table(box=box.SIMPLE, expand=True,
+                     title=f"Pick node for '{name}' via [bold]{jump_name}[/bold]",
+                     title_justify="left")
+        body.add_column("#", width=3, justify="right")
+        body.add_column("JobID", width=10)
+        body.add_column("Partition", width=10)
+        body.add_column("Name", width=12)
+        body.add_column("Time", width=14)
+        body.add_column("Node", ratio=1)
+        if err:
+            body.add_row("", "[red]squeue failed[/red]", err[:40], "", "", "")
+        elif not jobs:
+            body.add_row("", "[dim]No running jobs.[/dim]", "", "", "", "")
+        else:
+            for i, j in enumerate(jobs):
+                cursor = "▶" if i == sel else " "
+                style = "bold white" if i == sel else "white"
+                body.add_row(f"{cursor}{i+1}", j.jobid, j.partition, j.name, j.time, j.node, style=style)
+
+        footer = "[dim][↑↓] Move  [Enter] Use  [R] Refresh  [C] Custom  [Esc] Cancel[/dim]"
+        live.update(Panel.fit(Layout(body, name="body"), title="[bold blue]Pick node[/bold blue]",
+                              border_style="cyan", subtitle=footer))
+
+        # Read one key (still in raw mode)
+        k = sys.stdin.read(1)
+        if k == '\x1b':
+            seq = ""
+            import fcntl
+            fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            try:
+                seq = sys.stdin.read(2)
+            except Exception:
+                pass
+            finally:
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
+            if seq == '':
+                return None  # bare Esc
+            elif seq == '[A':
+                sel = max(0, sel - 1)
+            elif seq == '[B':
+                sel = min(max(0, len(jobs) - 1), sel + 1)
+        elif k == '\r' or k == '\n':
+            if jobs:
+                user = _ssh_config_user(jump_name) or ts.last_user or os.environ.get("USER", "")
+                return jobs[sel].node, user
+        elif k == 'r' or k == 'R':
+            jobs, err = fetch()
+            sel = 0
+        elif k == 'c' or k == 'C':
+            vals = _modal_input(
+                live, console,
+                prompt_lines=[f"[bold]Custom node for '{name}'[/bold]", ""],
+                fields=[("Node", ""), ("User", os.environ.get("USER", ""))],
+                terminal_raw_mode=terminal_raw_mode,
+            )
+            if vals:
+                return vals["Node"], vals["User"]
+
+def _ssh_config_user(host: str) -> str:
+    """Return the User from `ssh -G <host>`, or '' if unknown."""
+    try:
+        res = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=2)
+        for line in res.stdout.splitlines():
+            if line.lower().startswith("user "):
+                return line.split(" ", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
 def main():
     config = load_hosts()
     managers = []
@@ -324,6 +420,17 @@ def main():
                                                         title="[bold blue]Auto2FA[/bold blue]")
                                     live.update(error_panel)
                                     time.sleep(1.5)
+
+                        elif key == '\r' or key == '\n':   # Enter
+                            if focused_section == "tunnels":
+                                names = list(tunnel_mgr.tunnels.keys())
+                                if names:
+                                    n = names[selected_tunnel_idx]
+                                    picked = _node_picker(live, console, tunnel_mgr, n, raw)
+                                    if picked:
+                                        node, user = picked
+                                        tunnel_mgr.set_node(n, node, user)
+                                        tunnel_mgr.start(n)
 
                     except Exception:
                         pass
