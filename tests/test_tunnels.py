@@ -1,5 +1,6 @@
 import json
 import shutil
+import socket
 import tempfile
 import unittest
 from unittest.mock import MagicMock
@@ -204,6 +205,74 @@ class TestTunnelManagerPersistence(unittest.TestCase):
         self.assertEqual(tm.tunnels, {})
         # File untouched
         self.assertEqual(open(self.cfg).read(), "{not valid json")
+
+
+class TestTunnelManagerAdd(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def test_add_persists_to_disk(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        port = self._free_port()
+        tm.add(name="jupyter", local_port=port)
+        self.assertIn("jupyter", tm.tunnels)
+        self.assertEqual(tm.tunnels["jupyter"].local_port, port)
+        self.assertEqual(tm.tunnels["jupyter"].remote_port, port)  # defaults to local
+        with open(self.cfg) as f:
+            data = json.load(f)
+        self.assertIn("jupyter", data["tunnels"])
+
+    def test_add_remote_port_override(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        port = self._free_port()
+        tm.add(name="x", local_port=port, remote_port=7000)
+        self.assertEqual(tm.tunnels["x"].remote_port, 7000)
+
+    def test_add_rejects_duplicate_name(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add(name="x", local_port=self._free_port())
+        with self.assertRaises(ValueError) as ctx:
+            tm.add(name="x", local_port=self._free_port())
+        self.assertIn("already exists", str(ctx.exception).lower())
+
+    def test_add_rejects_port_out_of_range(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        with self.assertRaises(ValueError):
+            tm.add(name="x", local_port=22)        # privileged
+        with self.assertRaises(ValueError):
+            tm.add(name="x", local_port=70000)     # > 65535
+
+    def test_add_rejects_port_in_use(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        # Hold a port open
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        held_port = s.getsockname()[1]
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                tm.add(name="x", local_port=held_port)
+            self.assertIn("in use", str(ctx.exception).lower())
+        finally:
+            s.close()
 
 
 if __name__ == "__main__":

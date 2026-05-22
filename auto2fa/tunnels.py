@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket as _socket
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -169,3 +170,46 @@ class TunnelManager:
             except OSError:
                 pass
             raise
+
+    def add(self, name: str, local_port: int,
+            remote_port: Optional[int] = None,
+            jump_candidates: Optional[List[str]] = None) -> TunnelState:
+        """Validate, register, and persist a new tunnel. Returns the state.
+
+        Raises ValueError on:
+          - duplicate name
+          - port out of range (must be 1024..65535)
+          - port currently in use on 127.0.0.1
+        """
+        if name in self.tunnels:
+            raise ValueError(f"Tunnel '{name}' already exists")
+        if not (1024 <= int(local_port) <= 65535):
+            raise ValueError(f"Port must be 1024..65535, got {local_port}")
+        if not self._port_available(int(local_port)):
+            raise ValueError(f"Port {local_port} in use, try another")
+
+        ts = TunnelState(
+            name=name,
+            local_port=int(local_port),
+            remote_port=int(remote_port) if remote_port else int(local_port),
+            jump_candidates=jump_candidates,
+            last_node=None,
+            last_user=None,
+            auto_start=False,
+        )
+        self.tunnels[name] = ts
+        self.save()
+        return ts
+
+    @staticmethod
+    def _port_available(port: int) -> bool:
+        """True iff we can bind 127.0.0.1:port right now."""
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
