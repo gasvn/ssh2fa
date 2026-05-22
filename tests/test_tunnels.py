@@ -495,5 +495,68 @@ class TestTunnelManagerStart(unittest.TestCase):
         self.assertEqual(tm.tunnels["x"].status, "starting")
 
 
+class TestTunnelManagerStopToggle(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def test_stop_terminates_child_and_sets_idle(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        child = MagicMock()
+        child.isalive.return_value = True
+        ts.child = child
+
+        tm.stop("x")
+        child.terminate.assert_called()
+        self.assertEqual(ts.status, "idle")
+        self.assertIsNone(ts.child)
+        self.assertIsNone(ts.active_jump)
+
+    def test_stop_when_no_child_is_safe(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.stop("x")   # no child, no crash
+        self.assertEqual(tm.tunnels["x"].status, "idle")
+
+    def test_toggle_idle_calls_start(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop:
+            tm.toggle("x")
+            p_start.assert_called_once_with("x")
+            p_stop.assert_not_called()
+
+    def test_toggle_alive_calls_stop(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        tm.tunnels["x"].status = "alive"
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop:
+            tm.toggle("x")
+            p_stop.assert_called_once_with("x")
+            p_start.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -331,6 +331,29 @@ class TunnelManager:
             return "remote bind failed"
         return "ssh failed"
 
+    def stop(self, name: str) -> None:
+        """Terminate the tunnel's child process and mark idle. Safe if already stopped."""
+        ts = self.tunnels[name]
+        child = ts.child
+        if child is not None:
+            try:
+                if child.isalive():
+                    child.terminate(force=True)
+            except Exception:
+                pass
+        ts.child = None
+        ts.active_jump = None
+        ts.status = "idle"
+        ts.last_msg = "stopped"
+
+    def toggle(self, name: str) -> None:
+        """If alive/starting, stop. Otherwise, start."""
+        ts = self.tunnels[name]
+        if ts.status in ("alive", "starting"):
+            self.stop(name)
+        else:
+            self.start(name)
+
     @staticmethod
     def _port_available(port: int) -> bool:
         """True iff we can bind 127.0.0.1:port right now."""
