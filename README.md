@@ -146,6 +146,58 @@ Auto2FA maintains a pool of 2 active connections per host to ensure zero-downtim
 - **Manual Rotation (R)**: You can force a rotation if you feel the current shell is sluggish.
 - **Sleep Recovery**: The pool automatically rebuilds itself after system sleep/wake cycles.
 
+### Two-Layer Port Forwards (Tunnels)
+
+Auto2FA can manage named SSH tunnels that hop through a connected login host
+and forward a local port to a SLURM compute node — equivalent to running:
+
+    ssh -J <jump> -L <local>:localhost:<remote> <user>@<compute-node>
+
+but with automatic discovery of running jobs, persistence, and recovery when
+nodes disappear.
+
+**Controls (when focus is on the TUNNELS section):**
+
+- **Tab**: Switch focus between HOSTS and TUNNELS
+- **T**: Create a new tunnel (prompts for name + local port)
+- **Enter**: Pick a compute node from `squeue`
+- **Space**: Start/stop the selected tunnel
+- **D**: Delete the selected tunnel
+
+**Configuration:** `$SSH_CONFIG_PATH/tunnels.json`
+
+```json
+{
+  "tunnels": {
+    "jupyter": {
+      "local_port": 8888,
+      "remote_port": 8888,
+      "jump_candidates": null,
+      "last_node": "holygpu8a11103.rc.fas.harvard.edu",
+      "last_user": "shgao",
+      "auto_start": true
+    }
+  }
+}
+```
+
+- `jump_candidates: null` ⇒ any host in `passwords.json` may be used as jump.
+- `auto_start: true` ⇒ try to start on dashboard launch (after a 3s grace).
+- `last_node` is updated automatically whenever you pick a node from the picker.
+
+**Behavior:**
+
+- If the active jump host disconnects, the tunnel silently fails over to the
+  next connected candidate. Same compute-node target.
+- If the compute node disappears from `squeue` (job ended), the tunnel turns
+  red/stale. Press **Enter** to pick a new node.
+- The local port is validated for availability before the tunnel starts; the
+  modal blocks creation if a port is already in use.
+
+Use it from any terminal once the tunnel shows `alive`:
+
+    curl http://localhost:8888    # reaches the compute node's service
+
 ## Troubleshooting
 
 - **Logs**: Check `/tmp/auto2fa_dashboard.log` for detailed error messages.
