@@ -132,5 +132,79 @@ class TestNodeDiscoveryDiscover(unittest.TestCase):
             self.assertIn("squeue", str(ctx.exception))
 
 
+import json
+import tempfile
+import shutil
+
+
+class TestTunnelManagerPersistence(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_load_missing_file_is_empty(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.load()
+        self.assertEqual(tm.tunnels, {})
+
+    def test_save_then_load_round_trip(self):
+        from tunnels import TunnelManager, TunnelState
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.tunnels["jupyter"] = TunnelState(
+            name="jupyter", local_port=8888, remote_port=8888,
+            jump_candidates=["k1", "k8"], last_node="holygpu01",
+            last_user="shgao", auto_start=True,
+        )
+        tm.save()
+
+        tm2 = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm2.load()
+        loaded = tm2.tunnels["jupyter"]
+        self.assertEqual(loaded.local_port, 8888)
+        self.assertEqual(loaded.jump_candidates, ["k1", "k8"])
+        self.assertEqual(loaded.last_node, "holygpu01")
+        self.assertEqual(loaded.last_user, "shgao")
+        self.assertTrue(loaded.auto_start)
+        # Runtime fields are reset
+        self.assertEqual(loaded.status, "idle")
+        self.assertIsNone(loaded.active_jump)
+
+    def test_save_is_atomic(self):
+        """If os.replace fails mid-write, the original file must be intact."""
+        from tunnels import TunnelManager, TunnelState
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.tunnels["a"] = TunnelState(
+            name="a", local_port=1000, remote_port=1000,
+            jump_candidates=None, last_node=None, last_user=None, auto_start=False,
+        )
+        tm.save()
+        original = open(self.cfg).read()
+
+        with unittest.mock.patch("os.replace", side_effect=OSError("disk full")):
+            tm.tunnels["a"].local_port = 9999
+            with self.assertRaises(OSError):
+                tm.save()
+        # Original untouched
+        self.assertEqual(open(self.cfg).read(), original)
+        # And no leftover tmp
+        self.assertFalse(os.path.exists(self.cfg + ".tmp"))
+
+    def test_load_malformed_does_not_destroy_file(self):
+        from tunnels import TunnelManager
+        with open(self.cfg, "w") as f:
+            f.write("{not valid json")
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.load()  # Should not raise; should log error
+        self.assertEqual(tm.tunnels, {})
+        # File untouched
+        self.assertEqual(open(self.cfg).read(), "{not valid json")
+
+
 if __name__ == "__main__":
     unittest.main()

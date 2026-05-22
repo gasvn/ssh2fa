@@ -8,10 +8,12 @@ See docs/superpowers/specs/2026-05-22-tunnels-design.md for design.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -100,3 +102,65 @@ class NodeDiscovery:
                 f"squeue failed on {host_manager.host}: {result.stderr.strip()[:200]}"
             )
         return NodeDiscovery.parse(result.stdout)
+
+
+class TunnelManager:
+    """Owns all tunnel state and lifecycle. Holds read-only refs to the
+    existing SSHHostManager instances (provided as a dict)."""
+
+    PERSISTED_FIELDS = ("local_port", "remote_port", "jump_candidates",
+                        "last_node", "last_user", "auto_start")
+
+    def __init__(self, host_managers: Dict[str, object], config_path: str):
+        self.host_managers = host_managers
+        self.config_path = config_path
+        self.tunnels: Dict[str, TunnelState] = {}
+        self.startup_ts: float = 0.0
+        self.auto_started: bool = False
+
+    def load(self) -> None:
+        """Load tunnels.json into self.tunnels. Missing file is empty.
+        Malformed file is logged and treated as empty (file is NOT overwritten)."""
+        if not os.path.exists(self.config_path):
+            self.tunnels = {}
+            return
+        try:
+            with open(self.config_path, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to load tunnels.json (file kept intact): %s", e)
+            self.tunnels = {}
+            return
+
+        loaded: Dict[str, TunnelState] = {}
+        for name, cfg in (data.get("tunnels") or {}).items():
+            loaded[name] = TunnelState(
+                name=name,
+                local_port=int(cfg["local_port"]),
+                remote_port=int(cfg.get("remote_port", cfg["local_port"])),
+                jump_candidates=cfg.get("jump_candidates"),
+                last_node=cfg.get("last_node"),
+                last_user=cfg.get("last_user"),
+                auto_start=bool(cfg.get("auto_start", False)),
+            )
+        self.tunnels = loaded
+
+    def save(self) -> None:
+        """Atomic write: serialise to tmp file then os.replace."""
+        payload = {"tunnels": {}}
+        for name, ts in self.tunnels.items():
+            payload["tunnels"][name] = {f: getattr(ts, f) for f in self.PERSISTED_FIELDS}
+
+        tmp = self.config_path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(payload, f, indent=2)
+            os.replace(tmp, self.config_path)
+        except Exception:
+            # Make sure we don't leave a half-written tmp behind
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
