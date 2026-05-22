@@ -244,6 +244,7 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
         self.jobs: list = []
         self.error_msg: str = ""
         self.jump_name: str | None = None
+        self._loading: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -251,47 +252,67 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
             yield DataTable(id="jobs", cursor_type="row")
             yield Label("", id="err", classes="err")
             yield Label(
-                "[↑↓] move   [Enter] use   [R] refresh   [C] custom   [Esc] cancel",
+                "↑↓ move   Enter use   R refresh   C custom   Esc cancel",
                 classes="hint",
             )
 
     def on_mount(self) -> None:
         table = self.query_one("#jobs", DataTable)
         table.add_columns("JobID", "Partition", "Name", "Time", "Node")
-        self._refresh()
         table.focus()
-
-    def _refresh(self) -> None:
+        # Pick the jump immediately (fast: just reads in-memory state)
         ts = self.tunnel_mgr.tunnels[self.tunnel_name]
         self.jump_name = self.tunnel_mgr.pick_active_jump(ts)
         title = self.query_one("#title", Label)
+        if self.jump_name is None:
+            title.update(f"[b]Pick node for '{self.tunnel_name}'[/b]")
+            self.query_one("#err", Label).update(
+                "No connected jump host. Press Esc and start a host first."
+            )
+            return
+        title.update(f"[b]Pick node for '{self.tunnel_name}' via {self.jump_name}[/b]")
+        self._kick_off_refresh()
+
+    def _kick_off_refresh(self) -> None:
+        """Launch a background squeue. Keep the UI responsive."""
+        if self._loading or self.jump_name is None:
+            return
+        self._loading = True
+        self.query_one("#err", Label).update("[dim]Loading jobs from squeue…[/dim]")
+        self.query_one("#jobs", DataTable).clear()
+        mgr = self.tunnel_mgr.host_managers[self.jump_name]
+
+        def worker():
+            try:
+                jobs = NodeDiscovery.discover(mgr)
+                self.app.call_from_thread(self._on_jobs_loaded, jobs, None)
+            except DiscoveryError as e:
+                self.app.call_from_thread(self._on_jobs_loaded, [], str(e))
+            except Exception as e:
+                self.app.call_from_thread(self._on_jobs_loaded, [], f"unexpected: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_jobs_loaded(self, jobs, error_msg) -> None:
+        self._loading = False
+        self.jobs = jobs
+        self.error_msg = error_msg or ""
         err = self.query_one("#err", Label)
         table = self.query_one("#jobs", DataTable)
         table.clear()
-        if self.jump_name is None:
-            self.jobs = []
-            err.update("No connected jump host. Press Esc and start a host first.")
-            title.update(f"[b]Pick node for '{self.tunnel_name}'[/b]")
+        if error_msg:
+            err.update(f"[red]squeue failed:[/] {error_msg[:80]}   Press C for custom node.")
             return
-        title.update(f"[b]Pick node for '{self.tunnel_name}' via {self.jump_name}[/b]")
-        mgr = self.tunnel_mgr.host_managers[self.jump_name]
-        try:
-            self.jobs = NodeDiscovery.discover(mgr)
-            self.error_msg = ""
-            err.update("")
-        except DiscoveryError as e:
-            self.jobs = []
-            self.error_msg = str(e)
-            err.update(f"squeue failed: {self.error_msg[:80]}")
-            return
-        if not self.jobs:
+        if not jobs:
             err.update("No running jobs. Press C to enter a node manually.")
             return
-        for j in self.jobs:
+        err.update("")
+        for j in jobs:
             table.add_row(j.jobid, j.partition, j.name, j.time, j.node)
+        table.focus()
 
     def action_refresh(self) -> None:
-        self._refresh()
+        self._kick_off_refresh()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -422,6 +443,9 @@ class Auto2FAApp(App):
         self._tunnel_names: list[str] = []
         self._tick_stop = threading.Event()
         self._tick_thread: threading.Thread | None = None
+        # Cache last-rendered "fingerprint" to skip redundant table rebuilds.
+        self._last_host_fp: tuple = ()
+        self._last_tunnel_fp: tuple = ()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -470,22 +494,30 @@ class Auto2FAApp(App):
         self._refresh_tunnels()
 
     def _refresh_hosts(self) -> None:
-        table = self.query_one("#hosts_table", HostTable)
-        # Preserve cursor position
-        prev_row = table.cursor_row
-        table.clear()
-        self._host_row_keys = []
+        # Compute a fingerprint of the rendered state. Skip the rebuild if nothing changed.
+        rows = []
         for mgr in self.managers:
-            status_text = self._render_host_status(mgr)
             try:
-                # Snapshot the dict — backend thread may mutate it concurrently.
                 pool_snapshot = list(mgr.pool.values())
                 alive = sum(1 for c in pool_snapshot if c.isalive())
                 pool = f"{mgr.active_index}/{alive}"
             except Exception:
                 pool = "?"
             fs = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
-            key = table.add_row(mgr.host, status_text, pool, fs, mgr.last_msg)
+            # Use raw status string in the fingerprint (markup-aware compare unnecessary)
+            rows.append((mgr.host, mgr.status, pool, fs, mgr.last_msg))
+        fp = tuple(rows)
+        if fp == self._last_host_fp:
+            return
+        self._last_host_fp = fp
+
+        table = self.query_one("#hosts_table", HostTable)
+        prev_row = table.cursor_row
+        table.clear()
+        self._host_row_keys = []
+        for mgr, (_, _, pool, fs, last_msg) in zip(self.managers, rows):
+            status_text = self._render_host_status(mgr)
+            key = table.add_row(mgr.host, status_text, pool, fs, last_msg)
             self._host_row_keys.append(key)
         if 0 <= prev_row < len(self.managers):
             table.move_cursor(row=prev_row)
@@ -514,18 +546,34 @@ class Auto2FAApp(App):
         return t
 
     def _refresh_tunnels(self) -> None:
+        names = list(self.tunnel_mgr.tunnels.keys())
+        rows = []
+        for name in names:
+            ts = self.tunnel_mgr.tunnels[name]
+            rows.append((
+                name, ts.local_port, ts.remote_port,
+                ts.last_node, ts.active_jump, ts.status, ts.last_msg,
+            ))
+        fp = tuple(rows)
+        if fp == self._last_tunnel_fp and self._tunnel_names == names:
+            return
+        self._last_tunnel_fp = fp
+        self._tunnel_names = names
+
         table = self.query_one("#tunnels_table", TunnelTable)
         prev_row = table.cursor_row
         table.clear()
-        self._tunnel_names = list(self.tunnel_mgr.tunnels.keys())
-        if not self._tunnel_names:
-            table.add_row(Text("(no tunnels — press T to create one)", style="grey50"), "", "", "", "")
+        if not names:
+            table.add_row(
+                Text("(no tunnels — press T to create one)", style="grey50"),
+                "", "", "", "",
+            )
             return
-        for name in self._tunnel_names:
-            ts = self.tunnel_mgr.tunnels[name]
-            ports = f":{ts.local_port}→:{ts.remote_port}"
-            node = ts.last_node or Text("(no node yet)", style="grey50")
-            via = ts.active_jump or "—"
+        for name, row in zip(names, rows):
+            _, lp, rp, last_node, active_jump, status, last_msg = row
+            ports = f":{lp}→:{rp}"
+            node = last_node or Text("(no node yet)", style="grey50")
+            via = active_jump or "—"
             glyph, color = {
                 "alive": ("●", "green"),
                 "starting": ("◐", "yellow"),
@@ -533,12 +581,12 @@ class Auto2FAApp(App):
                 "idle": ("○", "grey50"),
                 "port_busy": ("●", "red"),
                 "failed": ("●", "red"),
-            }.get(ts.status, ("?", "white"))
+            }.get(status, ("?", "white"))
             status_cell = Text()
-            status_cell.append(f"{glyph} {ts.status}", style=color)
-            status_cell.append(f"   {ts.last_msg}", style="grey50")
+            status_cell.append(f"{glyph} {status}", style=color)
+            status_cell.append(f"   {last_msg}", style="grey50")
             table.add_row(name, ports, node, via, status_cell)
-        if 0 <= prev_row < len(self._tunnel_names):
+        if 0 <= prev_row < len(names):
             table.move_cursor(row=prev_row)
 
     # ---- Helpers ----
