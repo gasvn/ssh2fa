@@ -83,7 +83,6 @@ def _modal_input(live, console, prompt_lines, fields, terminal_raw_mode):
     fields: list of (label, default_value) tuples.
     Returns: dict {label: value} or None if user pressed Esc.
     """
-    from rich.text import Text
     values = {}
     for label, default in fields:
         # Re-render modal with current values + current prompt
@@ -161,7 +160,7 @@ def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
                 body.add_row(f"{cursor}{i+1}", j.jobid, j.partition, j.name, j.time, j.node, style=style)
 
         footer = "[dim][↑↓] Move  [Enter] Use  [R] Refresh  [C] Custom  [Esc] Cancel[/dim]"
-        live.update(Panel.fit(Layout(body, name="body"), title="[bold blue]Pick node[/bold blue]",
+        live.update(Panel.fit(body, title="[bold blue]Pick node[/bold blue]",
                               border_style="cyan", subtitle=footer))
 
         # Read one key (still in raw mode)
@@ -197,8 +196,8 @@ def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
                 fields=[("Node", ""), ("User", os.environ.get("USER", ""))],
                 terminal_raw_mode=terminal_raw_mode,
             )
-            if vals:
-                return vals["Node"], vals["User"]
+            if vals and vals["Node"].strip():
+                return vals["Node"].strip(), vals["User"].strip() or os.environ.get("USER", "")
 
 def _ssh_config_user(host: str) -> str:
     """Return the User from `ssh -G <host>`, or '' if unknown."""
@@ -406,13 +405,15 @@ def main():
                             )
                             if vals:
                                 try:
+                                    name = vals["Name"].strip()
+                                    if not name:
+                                        raise ValueError("Name cannot be empty")
                                     tunnel_mgr.add(
-                                        name=vals["Name"],
+                                        name=name,
                                         local_port=int(vals["Local port"]),
                                     )
-                                    # Move focus to the new tunnel
                                     focused_section = "tunnels"
-                                    selected_tunnel_idx = list(tunnel_mgr.tunnels.keys()).index(vals["Name"])
+                                    selected_tunnel_idx = list(tunnel_mgr.tunnels.keys()).index(name)
                                 except (ValueError, KeyError) as e:
                                     logger.warning(f"add tunnel failed: {e}")
                                     error_msg = str(e)
