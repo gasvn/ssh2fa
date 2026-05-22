@@ -739,5 +739,30 @@ class TestOrphansAndShutdown(unittest.TestCase):
         p_kill.assert_not_called()
 
 
+class TestExpandFirstNode(unittest.TestCase):
+    def test_single_node(self):
+        from tunnels import expand_first_node
+        self.assertEqual(expand_first_node("holygpu01"), ("holygpu01", False))
+
+    def test_range(self):
+        from tunnels import expand_first_node
+        self.assertEqual(expand_first_node("holygpu[01-03]"), ("holygpu01", True))
+
+    def test_comma_list(self):
+        from tunnels import expand_first_node
+        self.assertEqual(expand_first_node("holygpu[01,03,05]"), ("holygpu01", True))
+
+    def test_with_suffix(self):
+        from tunnels import expand_first_node
+        # e.g., "holygpu[01-03].rc.fas.harvard.edu"
+        first, is_range = expand_first_node("holygpu[01-03].rc.fas.harvard.edu")
+        self.assertEqual(first, "holygpu01.rc.fas.harvard.edu")
+        self.assertTrue(is_range)
+
+    def test_malformed_returns_raw(self):
+        from tunnels import expand_first_node
+        self.assertEqual(expand_first_node("(Resources)"), ("(Resources)", False))
+
+
 if __name__ == "__main__":
     unittest.main()

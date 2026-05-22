@@ -185,7 +185,13 @@ def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
         elif k == '\r' or k == '\n':
             if jobs:
                 user = _ssh_config_user(jump_name) or ts.last_user or os.environ.get("USER", "")
-                return jobs[sel].node, user
+                from .tunnels import expand_first_node
+                node, is_range = expand_first_node(jobs[sel].node)
+                if is_range:
+                    # Annotate in last_msg via set_node; we encode the hint by appending
+                    # to last_msg after start. Easiest: pass back a tuple-with-flag.
+                    return (node, user, True)
+                return (node, user, False)
         elif k == 'r' or k == 'R':
             jobs, err = fetch()
             sel = 0
@@ -197,7 +203,9 @@ def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
                 terminal_raw_mode=terminal_raw_mode,
             )
             if vals and vals["Node"].strip():
-                return vals["Node"].strip(), vals["User"].strip() or os.environ.get("USER", "")
+                return (vals["Node"].strip(),
+                        vals["User"].strip() or os.environ.get("USER", ""),
+                        False)
 
 def _ssh_config_user(host: str) -> str:
     """Return the User from `ssh -G <host>`, or '' if unknown."""
@@ -429,9 +437,10 @@ def main():
                                     n = names[selected_tunnel_idx]
                                     picked = _node_picker(live, console, tunnel_mgr, n, raw)
                                     if picked:
-                                        node, user = picked
+                                        node, user, is_range = picked
                                         tunnel_mgr.set_node(n, node, user)
-                                        tunnel_mgr.start(n)
+                                        if is_range:
+                                            tunnel_mgr.tunnels[n].last_msg += " (picked first of range)"
 
                         elif key == 'd' or key == 'D':
                             if focused_section == "tunnels":

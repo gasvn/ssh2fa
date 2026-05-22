@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import re
+
 import pexpect
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,25 @@ class Job:
     state: str
     time: str
     node: str
+
+
+def expand_first_node(nodelist: str) -> tuple[str, bool]:
+    """Given a SLURM NODELIST string like 'holygpu[01-03]' or 'holygpu01',
+    return (first_node, is_range).
+
+    - 'holygpu01' → ('holygpu01', False)
+    - 'holygpu[01-03]' → ('holygpu01', True)
+    - 'holygpu[01,03,05]' → ('holygpu01', True)
+    - Anything malformed → (nodelist, False) as a safe fallback.
+    """
+    m = re.match(r"^([a-zA-Z0-9_.-]+)\[([^\]]+)\](.*)$", nodelist)
+    if not m:
+        return nodelist, False
+    prefix, inside, suffix = m.group(1), m.group(2), m.group(3)
+    # Take the first element (split on comma), then split on dash for ranges
+    first_chunk = inside.split(",")[0].strip()
+    first_num = first_chunk.split("-")[0].strip()
+    return f"{prefix}{first_num}{suffix}", True
 
 
 @dataclass
@@ -214,13 +235,18 @@ class TunnelManager:
         self.save()
 
     def set_node(self, name: str, node: str, user: str) -> None:
-        """Update the saved compute-node target for a tunnel."""
+        """Update the saved compute-node target for a tunnel.
+
+        If the tunnel is idle/stale/failed, automatically (re)starts it.
+        """
         ts = self.tunnels[name]
         ts.last_node = node
         ts.last_user = user
         # Picking a fresh node clears stale-misses; if it was stale, it can be retried
         ts.consecutive_squeue_misses = 0
         self.save()
+        if ts.status in ("idle", "stale", "failed", "port_busy"):
+            self.start(name)
 
     def pick_active_jump(self, ts: TunnelState) -> Optional[str]:
         """Return the name of the first connected jump candidate, or None.
@@ -281,6 +307,9 @@ class TunnelManager:
         child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
         ts.child = child
 
+        # Blocking probe (≤10s). This freezes the TUI briefly. Acceptable because
+        # the user just pressed Enter and expects feedback; moving this off-thread
+        # would complicate state machine for marginal UX gain.
         if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
             ts.status = "alive"
             ts.last_msg = f"via {jump}"
