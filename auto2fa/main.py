@@ -111,8 +111,10 @@ def main():
         logger.info(f"Manager {i}: {mgr.host}")
 
     console = Console()
-    selected_idx = 0
-    
+    selected_host_idx = 0
+    selected_tunnel_idx = 0
+    focused_section = "hosts"   # "hosts" | "tunnels"
+
     # We need to clear screen first or rich might get confused with raw mode artifacts
     console.clear()
 
@@ -125,67 +127,81 @@ def main():
                 except Exception as e:
                     logger.error(f"tunnel_mgr.tick failed: {e}")
 
-                # 1. Render Table
-                table = Table(box=box.ROUNDED, expand=True)
-                table.add_column("Select", width=3, justify="center")
-                table.add_column("Host", ratio=1)
-                table.add_column("Status", width=20)
-                table.add_column("Pool", width=10, justify="center")
-                table.add_column("FS", width=4, justify="center")
-                table.add_column("Last Message", ratio=2)
-                
+                # 1a. Hosts Table
+                hosts_table = Table(box=box.ROUNDED, expand=True, title="HOSTS",
+                                    title_justify="left", title_style="bold cyan")
+                hosts_table.add_column("Select", width=3, justify="center")
+                hosts_table.add_column("Host", ratio=1)
+                hosts_table.add_column("Status", width=20)
+                hosts_table.add_column("Pool", width=10, justify="center")
+                hosts_table.add_column("FS", width=4, justify="center")
+                hosts_table.add_column("Last Message", ratio=2)
+
                 for idx, mgr in enumerate(managers):
-                    cursor = ">" if idx == selected_idx else " "
-                    row_style = "bold white" if idx == selected_idx else "white"
+                    cursor = ">" if (focused_section == "hosts" and idx == selected_host_idx) else " "
+                    row_style = "bold white" if (focused_section == "hosts" and idx == selected_host_idx) else "white"
                     status_style = "dim"
-                    
                     if "Connected" in mgr.status:
                         status_style = "green"
                     elif "Connecting" in mgr.status:
                         status_style = "blue"
                     elif "Failed" in mgr.status or "Error" in mgr.status:
                         status_style = "red"
-                    
-                    # Apply style to status text if it doesn't already have markup
                     status_text = mgr.status
                     if "[" not in status_text:
                         status_text = f"[{status_style}]{status_text}[/{status_style}]"
-
-                    # FS Icon
-                    fs_icon = ""
-                    if "Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg:
-                        fs_icon = "📂" 
-
-                    # Show Pooling Info (Active Pool Index)
+                    fs_icon = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
                     pool_info = ""
                     try:
-                        if hasattr(mgr, 'active_index') and hasattr(mgr, 'pool'):
-                            # Find which pools are alive
-                            alive_count = 0
-                            current_pool = mgr.pool.copy() # Shallow copy for safety
-                            for idx, child in current_pool.items():
-                                try:
-                                    if child.isalive():
-                                        alive_count += 1
-                                except: pass
-                            pool_info = f"{mgr.active_index}/{alive_count}"
+                        alive_count = sum(1 for c in mgr.pool.values() if c.isalive())
+                        pool_info = f"{mgr.active_index}/{alive_count}"
                     except Exception:
                         pool_info = "?"
-                            
-                    table.add_row(
-                        cursor,
-                        mgr.host,
-                        status_text,
-                        pool_info,
-                        fs_icon,
-                        mgr.last_msg,
-                        style=row_style
-                    )
-                
+                    hosts_table.add_row(cursor, mgr.host, status_text, pool_info, fs_icon, mgr.last_msg,
+                                        style=row_style)
+
+                # 1b. Tunnels Table
+                tunnels_table = Table(box=box.ROUNDED, expand=True, title="TUNNELS",
+                                      title_justify="left", title_style="bold cyan")
+                tunnels_table.add_column("Select", width=3, justify="center")
+                tunnels_table.add_column("Name", ratio=1)
+                tunnels_table.add_column("Local→Remote", width=18)
+                tunnels_table.add_column("Node", ratio=2)
+                tunnels_table.add_column("Via", width=8)
+                tunnels_table.add_column("Status", width=22)
+
+                tunnel_names = list(tunnel_mgr.tunnels.keys())
+                if not tunnel_names:
+                    tunnels_table.add_row("", "[dim]No tunnels.  Press T to create one.[/dim]", "", "", "", "")
+                else:
+                    for idx, name in enumerate(tunnel_names):
+                        ts = tunnel_mgr.tunnels[name]
+                        cursor = ">" if (focused_section == "tunnels" and idx == selected_tunnel_idx) else " "
+                        row_style = "bold white" if (focused_section == "tunnels" and idx == selected_tunnel_idx) else "white"
+                        ports = f":{ts.local_port}→:{ts.remote_port}"
+                        node = ts.last_node or "[dim](no node yet)[/dim]"
+                        via = ts.active_jump or "—"
+                        glyph_color = {
+                            "alive": ("●", "green"),
+                            "starting": ("◐", "yellow"),
+                            "stale": ("○", "red"),
+                            "idle": ("○", "dim"),
+                            "port_busy": ("●", "red"),
+                            "failed": ("●", "red"),
+                        }.get(ts.status, ("?", "white"))
+                        glyph, color = glyph_color
+                        status_cell = f"[{color}]{glyph} {ts.status}[/{color}]  [dim]{ts.last_msg}[/dim]"
+                        tunnels_table.add_row(cursor, name, ports, node, via, status_cell, style=row_style)
+
+                layout = Layout()
+                layout.split_column(
+                    Layout(hosts_table, name="hosts"),
+                    Layout(tunnels_table, name="tunnels"),
+                )
                 panel = Panel(
-                    table,
+                    layout,
                     title="[bold blue]Auto2FA Dashboard[/bold blue]",
-                    subtitle="[Up/Down] Navigate  [Space] Toggle  [M] Mount  [R] Rotate  [Q] Quit"
+                    subtitle="[Tab] Switch  [↑↓] Nav  [Space] Toggle  [T] New tunnel  [⏎] Pick node  [D] Delete  [R] Rotate  [Q] Quit"
                 )
                 live.update(panel)
                 
@@ -209,27 +225,40 @@ def main():
                             finally:
                                 fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
                         
-                        if key == 'q' or key == 'Q' or key == '\x03': # q or Ctrl+C
+                        if key == 'q' or key == 'Q' or key == '\x03':
                             break
-                        elif key == '\x1b[A': # Up
-                            selected_idx = max(0, selected_idx - 1)
-                        elif key == '\x1b[B': # Down
-                            selected_idx = min(len(managers) - 1, selected_idx + 1)
-                            selected_idx = min(len(managers) - 1, selected_idx + 1)
-                        elif key == ' ': # Space
-                            managers[selected_idx].toggle()
-                        elif key == 'm' or key == 'M': # Mount
-                            threading.Thread(target=managers[selected_idx].mount_host, daemon=True).start()
-                        elif key == 'r' or key == 'R': # Rotate
-                            # Manual Rotation (Force Next)
-                            mgr = managers[selected_idx]
-                            if mgr.active:
-                                new_idx = (mgr.active_index + 1) % 2 # POOL_SIZE hardcoded here or accessed?
-                                # Better: call a rotate method if we exposed one?
-                                # We can access mgr.pool_control_paths keys
-                                if hasattr(mgr, 'update_symlink'):
-                                     mgr.update_symlink(new_idx)
-                                     mgr.last_msg = f"Manual Rotate -> {new_idx}"
+                        elif key == '\x1b[A':  # Up
+                            if focused_section == "hosts":
+                                selected_host_idx = max(0, selected_host_idx - 1)
+                            else:
+                                selected_tunnel_idx = max(0, selected_tunnel_idx - 1)
+                        elif key == '\x1b[B':  # Down
+                            if focused_section == "hosts":
+                                selected_host_idx = min(len(managers) - 1, selected_host_idx + 1)
+                            else:
+                                n = len(tunnel_mgr.tunnels)
+                                if n > 0:
+                                    selected_tunnel_idx = min(n - 1, selected_tunnel_idx + 1)
+                        elif key == '\t':  # Tab
+                            focused_section = "tunnels" if focused_section == "hosts" else "hosts"
+                        elif key == ' ':  # Space
+                            if focused_section == "hosts":
+                                managers[selected_host_idx].toggle()
+                            else:
+                                names = list(tunnel_mgr.tunnels.keys())
+                                if names:
+                                    tunnel_mgr.toggle(names[selected_tunnel_idx])
+                        elif key == 'm' or key == 'M':
+                            if focused_section == "hosts":
+                                threading.Thread(target=managers[selected_host_idx].mount_host, daemon=True).start()
+                        elif key == 'r' or key == 'R':
+                            if focused_section == "hosts":
+                                mgr = managers[selected_host_idx]
+                                if mgr.active:
+                                    new_idx = (mgr.active_index + 1) % 2
+                                    if hasattr(mgr, 'update_symlink'):
+                                        mgr.update_symlink(new_idx)
+                                        mgr.last_msg = f"Manual Rotate -> {new_idx}"
 
                             
                     except Exception:
