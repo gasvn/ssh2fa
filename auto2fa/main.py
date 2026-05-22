@@ -21,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from rich.text import Text
-from textual.widgets import DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 from textual.widgets.data_table import RowKey
 
 from .backend import SSHHostManager, extract_secret_from_url
@@ -74,9 +74,16 @@ class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
     NewTunnelScreen Label.field { padding-top: 1; color: $text-muted; }
     NewTunnelScreen Label.error { color: $error; padding-top: 1; }
     NewTunnelScreen Label.hint  { color: $text-muted; padding-top: 1; content-align: center middle; }
+    NewTunnelScreen Horizontal.buttons {
+        height: 3; align: center middle; padding-top: 1;
+    }
+    NewTunnelScreen Button { margin: 0 1; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "submit", "Submit"),
+    ]
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -86,7 +93,13 @@ class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
             yield Label("Local port", classes="field")
             yield Input(placeholder="8888", id="port")
             yield Label("", id="err", classes="error")
-            yield Label("[Tab] next field   [Enter] submit   [Esc] cancel", classes="hint")
+            with Horizontal(classes="buttons"):
+                yield Button("Submit", variant="primary", id="submit_btn")
+                yield Button("Cancel", id="cancel_btn")
+            yield Label(
+                "Tab: next field   Enter: submit   Ctrl+S: submit   Esc: cancel",
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         self.query_one("#name", Input).focus()
@@ -94,11 +107,25 @@ class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_submit(self) -> None:
+        self._submit()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "name":
+        # Enter on either field submits if both are filled; otherwise focus the next one.
+        name = self.query_one("#name", Input).value.strip()
+        port = self.query_one("#port", Input).value.strip()
+        if name and port:
+            self._submit()
+        elif event.input.id == "name":
             self.query_one("#port", Input).focus()
         else:
+            self.query_one("#name", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit_btn":
             self._submit()
+        elif event.button.id == "cancel_btn":
+            self.dismiss(None)
 
     def _submit(self) -> None:
         name = self.query_one("#name", Input).value.strip()
@@ -107,6 +134,10 @@ class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
         if not name:
             err.update("Name cannot be empty.")
             self.query_one("#name", Input).focus()
+            return
+        if not port_str:
+            err.update("Local port is required.")
+            self.query_one("#port", Input).focus()
             return
         try:
             port = int(port_str)
@@ -129,9 +160,16 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
     CustomNodeScreen Label.title { content-align: center middle; padding-bottom: 1; }
     CustomNodeScreen Label.field { padding-top: 1; color: $text-muted; }
     CustomNodeScreen Label.hint  { color: $text-muted; padding-top: 1; content-align: center middle; }
+    CustomNodeScreen Horizontal.buttons {
+        height: 3; align: center middle; padding-top: 1;
+    }
+    CustomNodeScreen Button { margin: 0 1; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "submit", "Submit"),
+    ]
 
     def __init__(self, default_user: str = ""):
         super().__init__()
@@ -144,7 +182,10 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
             yield Input(placeholder="holygpu8a11103.rc.fas.harvard.edu", id="node")
             yield Label("User", classes="field")
             yield Input(value=self.default_user, placeholder=os.environ.get("USER", ""), id="user")
-            yield Label("[Tab] next   [Enter] submit   [Esc] cancel", classes="hint")
+            with Horizontal(classes="buttons"):
+                yield Button("Submit", variant="primary", id="submit_btn")
+                yield Button("Cancel", id="cancel_btn")
+            yield Label("Tab: next   Enter: submit   Esc: cancel", classes="hint")
 
     def on_mount(self) -> None:
         self.query_one("#node", Input).focus()
@@ -152,14 +193,27 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_submit(self) -> None:
+        self._submit()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "node":
-            self.query_one("#user", Input).focus()
+        node = self.query_one("#node", Input).value.strip()
+        if node:
+            self._submit()
         else:
-            node = self.query_one("#node", Input).value.strip()
-            user = self.query_one("#user", Input).value.strip() or os.environ.get("USER", "")
-            if node:
-                self.dismiss((node, user))
+            self.query_one("#node", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit_btn":
+            self._submit()
+        elif event.button.id == "cancel_btn":
+            self.dismiss(None)
+
+    def _submit(self) -> None:
+        node = self.query_one("#node", Input).value.strip()
+        user = self.query_one("#user", Input).value.strip() or os.environ.get("USER", "")
+        if node:
+            self.dismiss((node, user))
 
 
 class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
