@@ -9,8 +9,8 @@ See docs/superpowers/specs/2026-05-22-tunnels-design.md for design.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Optional, List
+from dataclasses import dataclass
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class TunnelState:
     # Runtime-only fields
     status: str = "idle"                   # idle | starting | alive | stale | port_busy | failed
     active_jump: Optional[str] = None
-    child: object = None                   # pexpect.spawn instance
+    child: Optional[Any] = None            # pexpect.spawn instance
     last_msg: str = "Ready"
     last_probe_ts: float = 0.0
     consecutive_squeue_misses: int = 0

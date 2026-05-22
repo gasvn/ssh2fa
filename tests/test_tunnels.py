@@ -12,6 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "auto2fa"))
 
 
 class TestDataClasses(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+
     def test_tunnel_state_defaults(self):
         from tunnels import TunnelState
         ts = TunnelState(name="jupyter", local_port=8888, remote_port=8888,
