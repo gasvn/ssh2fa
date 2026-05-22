@@ -125,6 +125,11 @@ class SSHHostManager(threading.Thread):
             i: f"{self.target_control_path}-{i}" for i in range(POOL_SIZE)
         }
 
+    def is_master_ready(self) -> bool:
+        """Read-only: True iff this host is enabled AND its active master is Ready.
+        Used by TunnelManager to pick a jump host."""
+        return self.active and self.pool_status.get(self.active_index) == "Ready"
+
     def get_ssh_control_path(self, host):
         """Resolves the ControlPath that ssh expects to use for this host"""
         try:
