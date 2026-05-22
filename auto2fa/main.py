@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 from .backend import SSHHostManager, extract_secret_from_url
+from .tunnels import TunnelManager
 
 # --- Main Dashboard ---
 
@@ -94,7 +95,17 @@ def main():
     if not managers:
         print("No hosts found in passwords.json")
         sys.exit(1)
-        
+
+    # Initialize TunnelManager
+    host_map = {m.host: m for m in managers}
+    config_path = os.environ.get("SSH_CONFIG_PATH")
+    tunnels_cfg = os.path.join(config_path, "tunnels.json")
+    tunnel_mgr = TunnelManager(host_managers=host_map, config_path=tunnels_cfg)
+    tunnel_mgr.load()
+    tunnel_mgr.cleanup_orphans()
+    tunnel_mgr.startup_ts = time.time()
+    logger.info(f"TunnelManager loaded {len(tunnel_mgr.tunnels)} tunnels")
+
     logger.info(f"Main Loop Starting. Managers: {len(managers)}")
     for i, mgr in enumerate(managers):
         logger.info(f"Manager {i}: {mgr.host}")
@@ -108,6 +119,12 @@ def main():
     with RawMode():
         with Live(console=console, refresh_per_second=10, screen=True, auto_refresh=True) as live:
             while True:
+                # 0. Drive tunnel lifecycle
+                try:
+                    tunnel_mgr.tick()
+                except Exception as e:
+                    logger.error(f"tunnel_mgr.tick failed: {e}")
+
                 # 1. Render Table
                 table = Table(box=box.ROUNDED, expand=True)
                 table.add_column("Select", width=3, justify="center")
@@ -224,7 +241,12 @@ def main():
     for mgr in managers:
         mgr.running = False
         mgr.active = False
-    
+
+    try:
+        tunnel_mgr.shutdown()
+    except Exception as e:
+        logger.error(f"tunnel_mgr.shutdown failed: {e}")
+
     time.sleep(0.5)
     print("Clean exit.")
 
