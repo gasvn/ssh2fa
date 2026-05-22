@@ -303,6 +303,47 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(value)
 
 
+# ---------- Custom DataTables (own their keybindings) ----------
+
+class HostTable(DataTable):
+    """Host list. Keybindings only fire when this table is focused,
+    so they never conflict with Input widgets in modals."""
+
+    BINDINGS = [
+        Binding("space", "host_toggle", "Start/Stop"),
+        Binding("m", "host_mount", "Mount"),
+        Binding("r", "host_rotate", "Rotate"),
+    ]
+
+    def action_host_toggle(self) -> None:
+        self.app.action_toggle_host()
+
+    def action_host_mount(self) -> None:
+        self.app.action_mount_host()
+
+    def action_host_rotate(self) -> None:
+        self.app.action_rotate_host()
+
+
+class TunnelTable(DataTable):
+    """Tunnel list. T/D/space/Enter only active when this table is focused."""
+
+    BINDINGS = [
+        Binding("space", "tunnel_toggle", "Start/Stop"),
+        Binding("t", "tunnel_new", "New tunnel"),
+        Binding("d", "tunnel_delete", "Delete"),
+    ]
+
+    def action_tunnel_toggle(self) -> None:
+        self.app.action_toggle_tunnel()
+
+    def action_tunnel_new(self) -> None:
+        self.app.action_new_tunnel()
+
+    def action_tunnel_delete(self) -> None:
+        self.app.action_delete_tunnel()
+
+
 # ---------- Main app ----------
 
 class Auto2FAApp(App):
@@ -312,15 +353,11 @@ class Auto2FAApp(App):
     .section-title { background: $primary 30%; color: $text; padding: 0 1; }
     """
 
+    # Only truly global bindings. Per-table keys live on HostTable / TunnelTable
+    # so they don't interfere with Input widgets in modals.
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("tab", "switch_section", "Switch", priority=True),
-        Binding("space", "toggle", "Start/Stop"),
-        Binding("t", "new_tunnel", "New tunnel"),
-        Binding("enter", "pick_node", "Pick node", priority=True),
-        Binding("d", "delete_tunnel", "Delete"),
-        Binding("m", "mount", "Mount"),
-        Binding("r", "rotate", "Rotate"),
+        Binding("ctrl+n", "new_tunnel", "New tunnel"),  # global shortcut for T
     ]
 
     def __init__(self, managers, tunnel_mgr):
@@ -329,31 +366,48 @@ class Auto2FAApp(App):
         self.tunnel_mgr = tunnel_mgr
         self._host_row_keys: list[RowKey] = []
         self._tunnel_names: list[str] = []
+        self._tick_stop = threading.Event()
+        self._tick_thread: threading.Thread | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Label("HOSTS", classes="section-title")
-        yield DataTable(id="hosts_table", cursor_type="row")
-        yield Label("TUNNELS", classes="section-title")
-        yield DataTable(id="tunnels_table", cursor_type="row")
+        yield HostTable(id="hosts_table", cursor_type="row")
+        yield Label("TUNNELS  (Tab to focus)", classes="section-title")
+        yield TunnelTable(id="tunnels_table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "Auto2FA"
-        hosts = self.query_one("#hosts_table", DataTable)
+        hosts = self.query_one("#hosts_table", HostTable)
         hosts.add_columns("Host", "Status", "Pool", "FS", "Last Message")
-        tunnels = self.query_one("#tunnels_table", DataTable)
+        tunnels = self.query_one("#tunnels_table", TunnelTable)
         tunnels.add_columns("Name", "Local→Remote", "Node", "Via", "Status")
         hosts.focus()
         self._refresh_tables()
-        self.set_interval(0.5, self._refresh_tables)
-        self.set_interval(0.5, self._drive_tick)
+        # Render-only timer (cheap, runs on UI thread)
+        self.set_interval(0.5, self._safe_refresh_tables)
+        # tick() can block (start() probes for up to 10s) — run it on its own thread
+        self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
+        self._tick_thread.start()
 
-    def _drive_tick(self) -> None:
-        try:
-            self.tunnel_mgr.tick()
-        except Exception as e:
-            logger.error(f"tunnel_mgr.tick failed: {e}")
+    def on_unmount(self) -> None:
+        self._tick_stop.set()
+
+    def _tick_loop(self) -> None:
+        """Background driver — never blocks the Textual event loop."""
+        while not self._tick_stop.is_set():
+            try:
+                self.tunnel_mgr.tick()
+            except Exception as e:
+                logger.error(f"tunnel_mgr.tick failed: {e}")
+            self._tick_stop.wait(0.5)
+
+    def _safe_refresh_tables(self) -> None:
+        # Don't churn the tables while a modal is up — it can steal focus.
+        if len(self.screen_stack) > 1:
+            return
+        self._refresh_tables()
 
     # ---- Rendering ----
 
@@ -362,7 +416,7 @@ class Auto2FAApp(App):
         self._refresh_tunnels()
 
     def _refresh_hosts(self) -> None:
-        table = self.query_one("#hosts_table", DataTable)
+        table = self.query_one("#hosts_table", HostTable)
         # Preserve cursor position
         prev_row = table.cursor_row
         table.clear()
@@ -370,7 +424,9 @@ class Auto2FAApp(App):
         for mgr in self.managers:
             status_text = self._render_host_status(mgr)
             try:
-                alive = sum(1 for c in mgr.pool.values() if c.isalive())
+                # Snapshot the dict — backend thread may mutate it concurrently.
+                pool_snapshot = list(mgr.pool.values())
+                alive = sum(1 for c in pool_snapshot if c.isalive())
                 pool = f"{mgr.active_index}/{alive}"
             except Exception:
                 pool = "?"
@@ -404,7 +460,7 @@ class Auto2FAApp(App):
         return t
 
     def _refresh_tunnels(self) -> None:
-        table = self.query_one("#tunnels_table", DataTable)
+        table = self.query_one("#tunnels_table", TunnelTable)
         prev_row = table.cursor_row
         table.clear()
         self._tunnel_names = list(self.tunnel_mgr.tunnels.keys())
@@ -433,63 +489,45 @@ class Auto2FAApp(App):
 
     # ---- Helpers ----
 
-    def _focused_table_id(self) -> str | None:
-        f = self.focused
-        if isinstance(f, DataTable):
-            return f.id
-        return None
-
-    def _selected_host(self) -> SSHHostManager | None:
-        table = self.query_one("#hosts_table", DataTable)
+    def _selected_host(self):
+        table = self.query_one("#hosts_table", HostTable)
         row = table.cursor_row
         if 0 <= row < len(self.managers):
             return self.managers[row]
         return None
 
     def _selected_tunnel_name(self) -> str | None:
-        table = self.query_one("#tunnels_table", DataTable)
+        table = self.query_one("#tunnels_table", TunnelTable)
         row = table.cursor_row
         if 0 <= row < len(self._tunnel_names):
             return self._tunnel_names[row]
         return None
 
-    # ---- Actions ----
+    # ---- Actions (called by HostTable / TunnelTable bindings or events) ----
 
-    def action_switch_section(self) -> None:
-        fid = self._focused_table_id()
-        if fid == "hosts_table":
-            self.query_one("#tunnels_table", DataTable).focus()
-        else:
-            self.query_one("#hosts_table", DataTable).focus()
+    def action_toggle_host(self) -> None:
+        mgr = self._selected_host()
+        if mgr:
+            mgr.toggle()
 
-    def action_toggle(self) -> None:
-        fid = self._focused_table_id()
-        if fid == "hosts_table":
-            mgr = self._selected_host()
-            if mgr:
-                mgr.toggle()
-        elif fid == "tunnels_table":
-            name = self._selected_tunnel_name()
-            if name:
-                self.tunnel_mgr.toggle(name)
-                self._refresh_tunnels()
+    def action_toggle_tunnel(self) -> None:
+        name = self._selected_tunnel_name()
+        if name:
+            self.tunnel_mgr.toggle(name)
+            self._refresh_tunnels()
 
-    def action_mount(self) -> None:
-        fid = self._focused_table_id()
-        if fid == "hosts_table":
-            mgr = self._selected_host()
-            if mgr:
-                threading.Thread(target=mgr.mount_host, daemon=True).start()
+    def action_mount_host(self) -> None:
+        mgr = self._selected_host()
+        if mgr:
+            threading.Thread(target=mgr.mount_host, daemon=True).start()
 
-    def action_rotate(self) -> None:
-        fid = self._focused_table_id()
-        if fid == "hosts_table":
-            mgr = self._selected_host()
-            if mgr and mgr.active:
-                new_idx = (mgr.active_index + 1) % 2
-                if hasattr(mgr, "update_symlink"):
-                    mgr.update_symlink(new_idx)
-                    mgr.last_msg = f"Manual Rotate -> {new_idx}"
+    def action_rotate_host(self) -> None:
+        mgr = self._selected_host()
+        if mgr and mgr.active:
+            new_idx = (mgr.active_index + 1) % 2
+            if hasattr(mgr, "update_symlink"):
+                mgr.update_symlink(new_idx)
+                mgr.last_msg = f"Manual Rotate -> {new_idx}"
 
     def action_new_tunnel(self) -> None:
         def on_done(result: tuple[str, int] | None) -> None:
@@ -499,10 +537,9 @@ class Auto2FAApp(App):
             try:
                 self.tunnel_mgr.add(name=name, local_port=port)
                 self._refresh_tunnels()
-                self.query_one("#tunnels_table", DataTable).focus()
-                # Move cursor to the new tunnel
+                self.query_one("#tunnels_table", TunnelTable).focus()
                 if name in self._tunnel_names:
-                    self.query_one("#tunnels_table", DataTable).move_cursor(
+                    self.query_one("#tunnels_table", TunnelTable).move_cursor(
                         row=self._tunnel_names.index(name)
                     )
                 self.notify(f"Tunnel '{name}' created — press Enter to pick a node.")
@@ -511,9 +548,13 @@ class Auto2FAApp(App):
 
         self.push_screen(NewTunnelScreen(), on_done)
 
-    def action_pick_node(self) -> None:
-        if self._focused_table_id() != "tunnels_table":
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Enter on a tunnel row opens the node picker."""
+        if event.data_table.id != "tunnels_table":
             return
+        self.action_pick_node()
+
+    def action_pick_node(self) -> None:
         name = self._selected_tunnel_name()
         if not name:
             return
@@ -522,16 +563,19 @@ class Auto2FAApp(App):
             if not result:
                 return
             node, user, is_range = result
-            self.tunnel_mgr.set_node(name, node, user)
-            if is_range:
-                self.tunnel_mgr.tunnels[name].last_msg += " (picked first of range)"
-            self._refresh_tunnels()
+            # set_node may call start() which probes a port for up to 10s.
+            # Run it off the UI thread so we don't freeze.
+            def do_set():
+                self.tunnel_mgr.set_node(name, node, user)
+                if is_range:
+                    self.tunnel_mgr.tunnels[name].last_msg += " (picked first of range)"
+                # Refresh on the UI thread when done
+                self.call_from_thread(self._refresh_tunnels)
+            threading.Thread(target=do_set, daemon=True).start()
 
         self.push_screen(NodePickerScreen(self.tunnel_mgr, name), on_picked)
 
     def action_delete_tunnel(self) -> None:
-        if self._focused_table_id() != "tunnels_table":
-            return
         name = self._selected_tunnel_name()
         if not name:
             return
