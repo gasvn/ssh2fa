@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from rich.text import Text
 from textual.widgets import DataTable, Footer, Header, Input, Label, Static
 from textual.widgets.data_table import RowKey
 
@@ -367,17 +368,40 @@ class Auto2FAApp(App):
         table.clear()
         self._host_row_keys = []
         for mgr in self.managers:
-            status = self._strip_markup(mgr.status)
+            status_text = self._render_host_status(mgr)
             try:
                 alive = sum(1 for c in mgr.pool.values() if c.isalive())
                 pool = f"{mgr.active_index}/{alive}"
             except Exception:
                 pool = "?"
             fs = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
-            key = table.add_row(mgr.host, status, pool, fs, mgr.last_msg)
+            key = table.add_row(mgr.host, status_text, pool, fs, mgr.last_msg)
             self._host_row_keys.append(key)
         if 0 <= prev_row < len(self.managers):
             table.move_cursor(row=prev_row)
+
+    @staticmethod
+    def _render_host_status(mgr) -> Text:
+        """Build a colored Text cell for the Status column with a leading glyph."""
+        raw = mgr.status
+        # Strip any pre-existing rich markup so we can apply our own.
+        import re
+        plain = re.sub(r"\[/?[^\]]+\]", "", raw).strip() or ("Active" if mgr.active else "Stopped")
+        lc = plain.lower()
+        if "connected" in lc or "active" in lc and "init" not in lc and "fail" not in lc:
+            glyph, color = "●", "green"
+        elif "init" in lc or "connecting" in lc or "spawn" in lc or "starting" in lc:
+            glyph, color = "◐", "yellow"
+        elif "fail" in lc or "error" in lc or "crash" in lc:
+            glyph, color = "●", "red"
+        elif "stopped" in lc or "inactive" in lc:
+            glyph, color = "○", "grey50"
+        else:
+            glyph, color = "•", "white"
+        t = Text()
+        t.append(f"{glyph} ", style=color)
+        t.append(plain, style=color)
+        return t
 
     def _refresh_tunnels(self) -> None:
         table = self.query_one("#tunnels_table", DataTable)
@@ -385,33 +409,27 @@ class Auto2FAApp(App):
         table.clear()
         self._tunnel_names = list(self.tunnel_mgr.tunnels.keys())
         if not self._tunnel_names:
-            table.add_row("(no tunnels — press T)", "", "", "", "")
+            table.add_row(Text("(no tunnels — press T to create one)", style="grey50"), "", "", "", "")
             return
         for name in self._tunnel_names:
             ts = self.tunnel_mgr.tunnels[name]
             ports = f":{ts.local_port}→:{ts.remote_port}"
-            node = ts.last_node or "(no node yet)"
+            node = ts.last_node or Text("(no node yet)", style="grey50")
             via = ts.active_jump or "—"
             glyph, color = {
                 "alive": ("●", "green"),
                 "starting": ("◐", "yellow"),
                 "stale": ("○", "red"),
-                "idle": ("○", "white"),
+                "idle": ("○", "grey50"),
                 "port_busy": ("●", "red"),
                 "failed": ("●", "red"),
             }.get(ts.status, ("?", "white"))
-            status_str = f"[{color}]{glyph} {ts.status}[/]   [dim]{ts.last_msg}[/]"
-            table.add_row(name, ports, node, via, status_str)
+            status_cell = Text()
+            status_cell.append(f"{glyph} {ts.status}", style=color)
+            status_cell.append(f"   {ts.last_msg}", style="grey50")
+            table.add_row(name, ports, node, via, status_cell)
         if 0 <= prev_row < len(self._tunnel_names):
             table.move_cursor(row=prev_row)
-
-    @staticmethod
-    def _strip_markup(s: str) -> str:
-        # Status strings may contain rich-style markup like "[green]Connected[/green]"
-        if "[" in s and "]" in s:
-            import re
-            return re.sub(r"\[/?[^\]]+\]", "", s)
-        return s
 
     # ---- Helpers ----
 
