@@ -78,40 +78,56 @@ class RawMode:
 
 
 def _modal_input(live, console, prompt_lines, fields, terminal_raw_mode):
-    """Render a modal and collect text input for each field.
+    """Render a modal and collect text input for each field, in raw mode.
 
-    fields: list of (label, default_value) tuples.
+    fields: list of (label, default_value) tuples. Empty input → use default.
     Returns: dict {label: value} or None if user pressed Esc.
+
+    Reads characters one at a time from stdin (still in raw mode so the keys
+    work with Rich's Live alternate-screen). Renders the partial input live so
+    the user sees what they're typing.
     """
-    values = {}
-    for label, default in fields:
-        # Re-render modal with current values + current prompt
+    def render(values, label, default, buf):
         body_lines = list(prompt_lines)
         for l, v in values.items():
             body_lines.append(f"  {l}: {v}")
-        body_lines.append(f"  {label}: _")
+        shown = buf if buf else f"[dim]{default}[/dim]" if default else ""
+        body_lines.append(f"  {label}: {shown}█")
         body_lines.append("")
-        body_lines.append("[dim][Enter] Submit  [Esc] Cancel[/dim]")
-        panel = Panel("\n".join(body_lines), title="[bold blue]Auto2FA[/bold blue]",
-                      border_style="cyan", padding=(1, 4))
-        live.update(panel)
+        body_lines.append("[dim][Enter] Submit  [Backspace] Erase  [Esc] Cancel[/dim]")
+        return Panel("\n".join(body_lines), title="[bold blue]Auto2FA[/bold blue]",
+                     border_style="cyan", padding=(1, 4))
 
-        # Temporarily exit raw mode so input() works
-        terminal_raw_mode.__exit__(None, None, None)
-        try:
-            sys.stdout.write("\033[?25h")  # show cursor
-            sys.stdout.flush()
-            try:
-                val = input(f"{label} [{default}]: ").strip()
-            except (KeyboardInterrupt, EOFError):
+    values = {}
+    for label, default in fields:
+        buf = ""
+        live.update(render(values, label, default, buf))
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':  # Esc (no follow-up bytes)
+                # Drain any escape sequence so we don't leave bytes in the buffer
+                import fcntl
+                fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
+                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                try:
+                    sys.stdin.read(8)
+                except Exception:
+                    pass
+                finally:
+                    fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
                 return None
-            if val == "":
-                val = default
-            values[label] = val
-        finally:
-            sys.stdout.write("\033[?25l")  # hide cursor
-            sys.stdout.flush()
-            terminal_raw_mode.__enter__()
+            elif ch in ('\r', '\n'):
+                values[label] = buf if buf else default
+                break
+            elif ch in ('\x7f', '\x08'):  # Backspace / Ctrl-H
+                buf = buf[:-1]
+                live.update(render(values, label, default, buf))
+            elif ch == '\x03':  # Ctrl-C
+                return None
+            elif ch.isprintable():
+                buf += ch
+                live.update(render(values, label, default, buf))
+            # Anything else (control chars) is ignored
     return values
 
 
