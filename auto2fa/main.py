@@ -1,230 +1,53 @@
 #!/usr/bin/env python3
-"""
-Auto2FA Dashboard - Multi-Server SSH Manager
-"""
+"""Auto2FA Dashboard — Textual TUI."""
+from __future__ import annotations
 
 import json
-import pyotp
-import urllib.parse
+import logging
 import os
+import subprocess
 import sys
+import threading
+import time
+import urllib.parse
+
 from dotenv import load_dotenv
 
 load_dotenv()
-import pexpect
-import time
-import logging
-import subprocess
-import threading
-import signal
-import termios
-import tty
-from datetime import datetime
-from rich.live import Live
-from rich.table import Table
-from rich.console import Console
-from rich import box
-from rich.layout import Layout
-from rich.panel import Panel
 
-# Configure logging to file only, as stdout is used for TUI
+import pyotp
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Footer, Header, Input, Label, Static
+from textual.widgets.data_table import RowKey
+
+from .backend import SSHHostManager, extract_secret_from_url
+from .tunnels import DiscoveryError, NodeDiscovery, TunnelManager, expand_first_node
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/tmp/auto2fa_dashboard.log'),
-    ]
+    format="%(asctime)s - %(threadName)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("/tmp/auto2fa_dashboard.log")],
 )
 logger = logging.getLogger(__name__)
 
 
-from .backend import SSHHostManager, extract_secret_from_url
-from .tunnels import TunnelManager
-
-# --- Main Dashboard ---
+# ---------- Config loading ----------
 
 def load_hosts():
     try:
         config_path = os.environ.get("SSH_CONFIG_PATH")
         assert config_path, "SSH_CONFIG_PATH environment variable is not set"
-        
-        with open(f"{config_path}/passwords.json", 'r') as f:
-            data = json.load(f)
-        return data
+        with open(f"{config_path}/passwords.json", "r") as f:
+            return json.load(f)
     except Exception as e:
         print(f"Failed to load config: {e}")
         sys.exit(1)
 
 
-connection_lock = threading.Lock()
-
-class RawMode:
-    """Context manager for raw terminal mode"""
-    def __init__(self):
-        self.fd = sys.stdin.fileno()
-        self.old_settings = None
-
-    def __enter__(self):
-        try:
-            self.old_settings = termios.tcgetattr(self.fd)
-            tty.setcbreak(self.fd)
-        except Exception:
-            pass # Maybe not a TTY
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.old_settings:
-            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
-
-
-def _modal_input(live, console, prompt_lines, fields, terminal_raw_mode):
-    """Render a modal and collect text input for each field, in raw mode.
-
-    fields: list of (label, default_value) tuples. Empty input → use default.
-    Returns: dict {label: value} or None if user pressed Esc.
-
-    Reads characters one at a time from stdin (still in raw mode so the keys
-    work with Rich's Live alternate-screen). Renders the partial input live so
-    the user sees what they're typing.
-    """
-    def render(values, label, default, buf):
-        body_lines = list(prompt_lines)
-        for l, v in values.items():
-            body_lines.append(f"  {l}: {v}")
-        shown = buf if buf else f"[dim]{default}[/dim]" if default else ""
-        body_lines.append(f"  {label}: {shown}█")
-        body_lines.append("")
-        body_lines.append("[dim][Enter] Submit  [Backspace] Erase  [Esc] Cancel[/dim]")
-        return Panel("\n".join(body_lines), title="[bold blue]Auto2FA[/bold blue]",
-                     border_style="cyan", padding=(1, 4))
-
-    values = {}
-    for label, default in fields:
-        buf = ""
-        live.update(render(values, label, default, buf))
-        while True:
-            ch = sys.stdin.read(1)
-            if ch == '\x1b':  # Esc (no follow-up bytes)
-                # Drain any escape sequence so we don't leave bytes in the buffer
-                import fcntl
-                fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
-                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                try:
-                    sys.stdin.read(8)
-                except Exception:
-                    pass
-                finally:
-                    fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
-                return None
-            elif ch in ('\r', '\n'):
-                values[label] = buf if buf else default
-                break
-            elif ch in ('\x7f', '\x08'):  # Backspace / Ctrl-H
-                buf = buf[:-1]
-                live.update(render(values, label, default, buf))
-            elif ch == '\x03':  # Ctrl-C
-                return None
-            elif ch.isprintable():
-                buf += ch
-                live.update(render(values, label, default, buf))
-            # Anything else (control chars) is ignored
-    return values
-
-
-def _node_picker(live, console, tunnel_mgr, name, terminal_raw_mode):
-    """Show running jobs from squeue and let the user pick a node.
-
-    Returns (node, user) or None if cancelled.
-    """
-    from .tunnels import NodeDiscovery, DiscoveryError
-    ts = tunnel_mgr.tunnels[name]
-    jump_name = tunnel_mgr.pick_active_jump(ts)
-    if jump_name is None:
-        live.update(Panel("[red]No connected jump host available.[/red]",
-                          title="[bold blue]Pick node[/bold blue]"))
-        time.sleep(1.5)
-        return None
-    mgr = tunnel_mgr.host_managers[jump_name]
-
-    def fetch():
-        try:
-            return NodeDiscovery.discover(mgr), None
-        except DiscoveryError as e:
-            return [], str(e)
-
-    jobs, err = fetch()
-    sel = 0
-
-    while True:
-        body = Table(box=box.SIMPLE, expand=True,
-                     title=f"Pick node for '{name}' via [bold]{jump_name}[/bold]",
-                     title_justify="left")
-        body.add_column("#", width=3, justify="right")
-        body.add_column("JobID", width=10)
-        body.add_column("Partition", width=10)
-        body.add_column("Name", width=12)
-        body.add_column("Time", width=14)
-        body.add_column("Node", ratio=1)
-        if err:
-            body.add_row("", "[red]squeue failed[/red]", err[:40], "", "", "")
-        elif not jobs:
-            body.add_row("", "[dim]No running jobs.[/dim]", "", "", "", "")
-        else:
-            for i, j in enumerate(jobs):
-                cursor = "▶" if i == sel else " "
-                style = "bold white" if i == sel else "white"
-                body.add_row(f"{cursor}{i+1}", j.jobid, j.partition, j.name, j.time, j.node, style=style)
-
-        footer = "[dim][↑↓] Move  [Enter] Use  [R] Refresh  [C] Custom  [Esc] Cancel[/dim]"
-        live.update(Panel.fit(body, title="[bold blue]Pick node[/bold blue]",
-                              border_style="cyan", subtitle=footer))
-
-        # Read one key (still in raw mode)
-        k = sys.stdin.read(1)
-        if k == '\x1b':
-            seq = ""
-            import fcntl
-            fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
-            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            try:
-                seq = sys.stdin.read(2)
-            except Exception:
-                pass
-            finally:
-                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
-            if seq == '':
-                return None  # bare Esc
-            elif seq == '[A':
-                sel = max(0, sel - 1)
-            elif seq == '[B':
-                sel = min(max(0, len(jobs) - 1), sel + 1)
-        elif k == '\r' or k == '\n':
-            if jobs:
-                user = _ssh_config_user(jump_name) or ts.last_user or os.environ.get("USER", "")
-                from .tunnels import expand_first_node
-                node, is_range = expand_first_node(jobs[sel].node)
-                if is_range:
-                    # Annotate in last_msg via set_node; we encode the hint by appending
-                    # to last_msg after start. Easiest: pass back a tuple-with-flag.
-                    return (node, user, True)
-                return (node, user, False)
-        elif k == 'r' or k == 'R':
-            jobs, err = fetch()
-            sel = 0
-        elif k == 'c' or k == 'C':
-            vals = _modal_input(
-                live, console,
-                prompt_lines=[f"[bold]Custom node for '{name}'[/bold]", ""],
-                fields=[("Node", ""), ("User", os.environ.get("USER", ""))],
-                terminal_raw_mode=terminal_raw_mode,
-            )
-            if vals and vals["Node"].strip():
-                return (vals["Node"].strip(),
-                        vals["User"].strip() or os.environ.get("USER", ""),
-                        False)
-
-def _ssh_config_user(host: str) -> str:
-    """Return the User from `ssh -G <host>`, or '' if unknown."""
+def ssh_config_user(host: str) -> str:
     try:
         res = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=2)
         for line in res.stdout.splitlines():
@@ -235,19 +58,486 @@ def _ssh_config_user(host: str) -> str:
     return ""
 
 
+# ---------- Modals ----------
+
+class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
+    """Form: name + local port. Returns (name, port) or None on cancel."""
+
+    DEFAULT_CSS = """
+    NewTunnelScreen { align: center middle; }
+    NewTunnelScreen > Vertical {
+        width: 60; height: auto; padding: 1 2;
+        border: thick $accent; background: $panel;
+    }
+    NewTunnelScreen Label.title { content-align: center middle; padding-bottom: 1; }
+    NewTunnelScreen Label.field { padding-top: 1; color: $text-muted; }
+    NewTunnelScreen Label.error { color: $error; padding-top: 1; }
+    NewTunnelScreen Label.hint  { color: $text-muted; padding-top: 1; content-align: center middle; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("[b]New Tunnel[/b]", classes="title")
+            yield Label("Name", classes="field")
+            yield Input(placeholder="jupyter", id="name")
+            yield Label("Local port", classes="field")
+            yield Input(placeholder="8888", id="port")
+            yield Label("", id="err", classes="error")
+            yield Label("[Tab] next field   [Enter] submit   [Esc] cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#name", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "name":
+            self.query_one("#port", Input).focus()
+        else:
+            self._submit()
+
+    def _submit(self) -> None:
+        name = self.query_one("#name", Input).value.strip()
+        port_str = self.query_one("#port", Input).value.strip()
+        err = self.query_one("#err", Label)
+        if not name:
+            err.update("Name cannot be empty.")
+            self.query_one("#name", Input).focus()
+            return
+        try:
+            port = int(port_str)
+        except ValueError:
+            err.update("Local port must be an integer.")
+            self.query_one("#port", Input).focus()
+            return
+        self.dismiss((name, port))
+
+
+class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
+    """Form: custom node + user. Returns (node, user) or None."""
+
+    DEFAULT_CSS = """
+    CustomNodeScreen { align: center middle; }
+    CustomNodeScreen > Vertical {
+        width: 70; height: auto; padding: 1 2;
+        border: thick $accent; background: $panel;
+    }
+    CustomNodeScreen Label.title { content-align: center middle; padding-bottom: 1; }
+    CustomNodeScreen Label.field { padding-top: 1; color: $text-muted; }
+    CustomNodeScreen Label.hint  { color: $text-muted; padding-top: 1; content-align: center middle; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, default_user: str = ""):
+        super().__init__()
+        self.default_user = default_user
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("[b]Custom node[/b]", classes="title")
+            yield Label("Node", classes="field")
+            yield Input(placeholder="holygpu8a11103.rc.fas.harvard.edu", id="node")
+            yield Label("User", classes="field")
+            yield Input(value=self.default_user, placeholder=os.environ.get("USER", ""), id="user")
+            yield Label("[Tab] next   [Enter] submit   [Esc] cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#node", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "node":
+            self.query_one("#user", Input).focus()
+        else:
+            node = self.query_one("#node", Input).value.strip()
+            user = self.query_one("#user", Input).value.strip() or os.environ.get("USER", "")
+            if node:
+                self.dismiss((node, user))
+
+
+class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
+    """Pick a compute node from `squeue`. Returns (node, user, is_range) or None."""
+
+    DEFAULT_CSS = """
+    NodePickerScreen { align: center middle; }
+    NodePickerScreen > Vertical {
+        width: 100; height: 30; padding: 1 2;
+        border: thick $accent; background: $panel;
+    }
+    NodePickerScreen Label.title { content-align: center middle; padding-bottom: 1; }
+    NodePickerScreen Label.hint  { color: $text-muted; padding-top: 1; content-align: center middle; }
+    NodePickerScreen Label.err   { color: $error; padding-top: 1; content-align: center middle; }
+    NodePickerScreen DataTable   { height: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("c", "custom", "Custom"),
+    ]
+
+    def __init__(self, tunnel_mgr, tunnel_name: str):
+        super().__init__()
+        self.tunnel_mgr = tunnel_mgr
+        self.tunnel_name = tunnel_name
+        self.jobs: list = []
+        self.error_msg: str = ""
+        self.jump_name: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"[b]Pick node for '{self.tunnel_name}'[/b]", classes="title", id="title")
+            yield DataTable(id="jobs", cursor_type="row")
+            yield Label("", id="err", classes="err")
+            yield Label(
+                "[↑↓] move   [Enter] use   [R] refresh   [C] custom   [Esc] cancel",
+                classes="hint",
+            )
+
+    def on_mount(self) -> None:
+        table = self.query_one("#jobs", DataTable)
+        table.add_columns("JobID", "Partition", "Name", "Time", "Node")
+        self._refresh()
+        table.focus()
+
+    def _refresh(self) -> None:
+        ts = self.tunnel_mgr.tunnels[self.tunnel_name]
+        self.jump_name = self.tunnel_mgr.pick_active_jump(ts)
+        title = self.query_one("#title", Label)
+        err = self.query_one("#err", Label)
+        table = self.query_one("#jobs", DataTable)
+        table.clear()
+        if self.jump_name is None:
+            self.jobs = []
+            err.update("No connected jump host. Press Esc and start a host first.")
+            title.update(f"[b]Pick node for '{self.tunnel_name}'[/b]")
+            return
+        title.update(f"[b]Pick node for '{self.tunnel_name}' via {self.jump_name}[/b]")
+        mgr = self.tunnel_mgr.host_managers[self.jump_name]
+        try:
+            self.jobs = NodeDiscovery.discover(mgr)
+            self.error_msg = ""
+            err.update("")
+        except DiscoveryError as e:
+            self.jobs = []
+            self.error_msg = str(e)
+            err.update(f"squeue failed: {self.error_msg[:80]}")
+            return
+        if not self.jobs:
+            err.update("No running jobs. Press C to enter a node manually.")
+            return
+        for j in self.jobs:
+            table.add_row(j.jobid, j.partition, j.name, j.time, j.node)
+
+    def action_refresh(self) -> None:
+        self._refresh()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_custom(self) -> None:
+        default_user = (
+            ssh_config_user(self.jump_name or "")
+            or self.tunnel_mgr.tunnels[self.tunnel_name].last_user
+            or os.environ.get("USER", "")
+        )
+
+        def on_custom(result: tuple[str, str] | None) -> None:
+            if result:
+                node, user = result
+                self.dismiss((node, user, False))
+
+        self.app.push_screen(CustomNodeScreen(default_user), on_custom)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if not self.jobs or self.jump_name is None:
+            return
+        row = self.query_one("#jobs", DataTable).cursor_row
+        if not (0 <= row < len(self.jobs)):
+            return
+        job = self.jobs[row]
+        node, is_range = expand_first_node(job.node)
+        user = (
+            ssh_config_user(self.jump_name)
+            or self.tunnel_mgr.tunnels[self.tunnel_name].last_user
+            or os.environ.get("USER", "")
+        )
+        self.dismiss((node, user, is_range))
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Yes/No confirmation."""
+
+    DEFAULT_CSS = """
+    ConfirmScreen { align: center middle; }
+    ConfirmScreen > Vertical {
+        width: 60; height: auto; padding: 1 2;
+        border: thick $error; background: $panel;
+    }
+    ConfirmScreen Label.q { content-align: center middle; padding: 1 0; }
+    ConfirmScreen Label.hint { color: $text-muted; content-align: center middle; }
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm(True)", "Yes"),
+        Binding("n,escape", "confirm(False)", "No"),
+    ]
+
+    def __init__(self, message: str):
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self.message, classes="q")
+            yield Label("[Y]es   [N]o / [Esc]", classes="hint")
+
+    def action_confirm(self, value: bool) -> None:
+        self.dismiss(value)
+
+
+# ---------- Main app ----------
+
+class Auto2FAApp(App):
+    CSS = """
+    Screen { layout: vertical; }
+    #hosts_table, #tunnels_table { height: 1fr; }
+    .section-title { background: $primary 30%; color: $text; padding: 0 1; }
+    """
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("tab", "switch_section", "Switch", priority=True),
+        Binding("space", "toggle", "Start/Stop"),
+        Binding("t", "new_tunnel", "New tunnel"),
+        Binding("enter", "pick_node", "Pick node", priority=True),
+        Binding("d", "delete_tunnel", "Delete"),
+        Binding("m", "mount", "Mount"),
+        Binding("r", "rotate", "Rotate"),
+    ]
+
+    def __init__(self, managers, tunnel_mgr):
+        super().__init__()
+        self.managers = managers
+        self.tunnel_mgr = tunnel_mgr
+        self._host_row_keys: list[RowKey] = []
+        self._tunnel_names: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield Label("HOSTS", classes="section-title")
+        yield DataTable(id="hosts_table", cursor_type="row")
+        yield Label("TUNNELS", classes="section-title")
+        yield DataTable(id="tunnels_table", cursor_type="row")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "Auto2FA"
+        hosts = self.query_one("#hosts_table", DataTable)
+        hosts.add_columns("Host", "Status", "Pool", "FS", "Last Message")
+        tunnels = self.query_one("#tunnels_table", DataTable)
+        tunnels.add_columns("Name", "Local→Remote", "Node", "Via", "Status")
+        hosts.focus()
+        self._refresh_tables()
+        self.set_interval(0.5, self._refresh_tables)
+        self.set_interval(0.5, self._drive_tick)
+
+    def _drive_tick(self) -> None:
+        try:
+            self.tunnel_mgr.tick()
+        except Exception as e:
+            logger.error(f"tunnel_mgr.tick failed: {e}")
+
+    # ---- Rendering ----
+
+    def _refresh_tables(self) -> None:
+        self._refresh_hosts()
+        self._refresh_tunnels()
+
+    def _refresh_hosts(self) -> None:
+        table = self.query_one("#hosts_table", DataTable)
+        # Preserve cursor position
+        prev_row = table.cursor_row
+        table.clear()
+        self._host_row_keys = []
+        for mgr in self.managers:
+            status = self._strip_markup(mgr.status)
+            try:
+                alive = sum(1 for c in mgr.pool.values() if c.isalive())
+                pool = f"{mgr.active_index}/{alive}"
+            except Exception:
+                pool = "?"
+            fs = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
+            key = table.add_row(mgr.host, status, pool, fs, mgr.last_msg)
+            self._host_row_keys.append(key)
+        if 0 <= prev_row < len(self.managers):
+            table.move_cursor(row=prev_row)
+
+    def _refresh_tunnels(self) -> None:
+        table = self.query_one("#tunnels_table", DataTable)
+        prev_row = table.cursor_row
+        table.clear()
+        self._tunnel_names = list(self.tunnel_mgr.tunnels.keys())
+        if not self._tunnel_names:
+            table.add_row("(no tunnels — press T)", "", "", "", "")
+            return
+        for name in self._tunnel_names:
+            ts = self.tunnel_mgr.tunnels[name]
+            ports = f":{ts.local_port}→:{ts.remote_port}"
+            node = ts.last_node or "(no node yet)"
+            via = ts.active_jump or "—"
+            glyph, color = {
+                "alive": ("●", "green"),
+                "starting": ("◐", "yellow"),
+                "stale": ("○", "red"),
+                "idle": ("○", "white"),
+                "port_busy": ("●", "red"),
+                "failed": ("●", "red"),
+            }.get(ts.status, ("?", "white"))
+            status_str = f"[{color}]{glyph} {ts.status}[/]   [dim]{ts.last_msg}[/]"
+            table.add_row(name, ports, node, via, status_str)
+        if 0 <= prev_row < len(self._tunnel_names):
+            table.move_cursor(row=prev_row)
+
+    @staticmethod
+    def _strip_markup(s: str) -> str:
+        # Status strings may contain rich-style markup like "[green]Connected[/green]"
+        if "[" in s and "]" in s:
+            import re
+            return re.sub(r"\[/?[^\]]+\]", "", s)
+        return s
+
+    # ---- Helpers ----
+
+    def _focused_table_id(self) -> str | None:
+        f = self.focused
+        if isinstance(f, DataTable):
+            return f.id
+        return None
+
+    def _selected_host(self) -> SSHHostManager | None:
+        table = self.query_one("#hosts_table", DataTable)
+        row = table.cursor_row
+        if 0 <= row < len(self.managers):
+            return self.managers[row]
+        return None
+
+    def _selected_tunnel_name(self) -> str | None:
+        table = self.query_one("#tunnels_table", DataTable)
+        row = table.cursor_row
+        if 0 <= row < len(self._tunnel_names):
+            return self._tunnel_names[row]
+        return None
+
+    # ---- Actions ----
+
+    def action_switch_section(self) -> None:
+        fid = self._focused_table_id()
+        if fid == "hosts_table":
+            self.query_one("#tunnels_table", DataTable).focus()
+        else:
+            self.query_one("#hosts_table", DataTable).focus()
+
+    def action_toggle(self) -> None:
+        fid = self._focused_table_id()
+        if fid == "hosts_table":
+            mgr = self._selected_host()
+            if mgr:
+                mgr.toggle()
+        elif fid == "tunnels_table":
+            name = self._selected_tunnel_name()
+            if name:
+                self.tunnel_mgr.toggle(name)
+                self._refresh_tunnels()
+
+    def action_mount(self) -> None:
+        fid = self._focused_table_id()
+        if fid == "hosts_table":
+            mgr = self._selected_host()
+            if mgr:
+                threading.Thread(target=mgr.mount_host, daemon=True).start()
+
+    def action_rotate(self) -> None:
+        fid = self._focused_table_id()
+        if fid == "hosts_table":
+            mgr = self._selected_host()
+            if mgr and mgr.active:
+                new_idx = (mgr.active_index + 1) % 2
+                if hasattr(mgr, "update_symlink"):
+                    mgr.update_symlink(new_idx)
+                    mgr.last_msg = f"Manual Rotate -> {new_idx}"
+
+    def action_new_tunnel(self) -> None:
+        def on_done(result: tuple[str, int] | None) -> None:
+            if not result:
+                return
+            name, port = result
+            try:
+                self.tunnel_mgr.add(name=name, local_port=port)
+                self._refresh_tunnels()
+                self.query_one("#tunnels_table", DataTable).focus()
+                # Move cursor to the new tunnel
+                if name in self._tunnel_names:
+                    self.query_one("#tunnels_table", DataTable).move_cursor(
+                        row=self._tunnel_names.index(name)
+                    )
+                self.notify(f"Tunnel '{name}' created — press Enter to pick a node.")
+            except (ValueError, KeyError) as e:
+                self.notify(str(e), severity="error", timeout=5)
+
+        self.push_screen(NewTunnelScreen(), on_done)
+
+    def action_pick_node(self) -> None:
+        if self._focused_table_id() != "tunnels_table":
+            return
+        name = self._selected_tunnel_name()
+        if not name:
+            return
+
+        def on_picked(result: tuple[str, str, bool] | None) -> None:
+            if not result:
+                return
+            node, user, is_range = result
+            self.tunnel_mgr.set_node(name, node, user)
+            if is_range:
+                self.tunnel_mgr.tunnels[name].last_msg += " (picked first of range)"
+            self._refresh_tunnels()
+
+        self.push_screen(NodePickerScreen(self.tunnel_mgr, name), on_picked)
+
+    def action_delete_tunnel(self) -> None:
+        if self._focused_table_id() != "tunnels_table":
+            return
+        name = self._selected_tunnel_name()
+        if not name:
+            return
+
+        def on_confirm(yes: bool) -> None:
+            if yes:
+                self.tunnel_mgr.stop(name)
+                self.tunnel_mgr.remove(name)
+                self._refresh_tunnels()
+
+        self.push_screen(ConfirmScreen(f"Delete tunnel '{name}'?"), on_confirm)
+
+
+# ---------- Entry point ----------
+
 def main():
     config = load_hosts()
     managers = []
-    
-    # Initialize Managers
     for host, creds in config.items():
         if "otpauthUrl" in creds:
             secret = extract_secret_from_url(creds["otpauthUrl"])
             mgr = SSHHostManager(host, creds["password"], secret)
             mgr.daemon = True
-            # Auto-Connect Logic
-            start_active = creds.get("autoConnect", creds.get("auto_connect", False))
-            mgr.active = start_active 
+            mgr.active = creds.get("autoConnect", creds.get("auto_connect", False))
             mgr.start()
             managers.append(mgr)
 
@@ -255,7 +545,6 @@ def main():
         print("No hosts found in passwords.json")
         sys.exit(1)
 
-    # Initialize TunnelManager
     host_map = {m.host: m for m in managers}
     config_path = os.environ.get("SSH_CONFIG_PATH")
     tunnels_cfg = os.path.join(config_path, "tunnels.json")
@@ -265,235 +554,19 @@ def main():
     tunnel_mgr.startup_ts = time.time()
     logger.info(f"TunnelManager loaded {len(tunnel_mgr.tunnels)} tunnels")
 
-    logger.info(f"Main Loop Starting. Managers: {len(managers)}")
-    for i, mgr in enumerate(managers):
-        logger.info(f"Manager {i}: {mgr.host}")
-
-    console = Console()
-    selected_host_idx = 0
-    selected_tunnel_idx = 0
-    focused_section = "hosts"   # "hosts" | "tunnels"
-
-    # We need to clear screen first or rich might get confused with raw mode artifacts
-    console.clear()
-
-    raw = RawMode()
-    with raw:
-        with Live(console=console, refresh_per_second=10, screen=True, auto_refresh=True) as live:
-            while True:
-                # 0. Drive tunnel lifecycle
-                try:
-                    tunnel_mgr.tick()
-                except Exception as e:
-                    logger.error(f"tunnel_mgr.tick failed: {e}")
-
-                # 1a. Hosts Table
-                hosts_table = Table(box=box.ROUNDED, expand=True, title="HOSTS",
-                                    title_justify="left", title_style="bold cyan")
-                hosts_table.add_column("Select", width=3, justify="center")
-                hosts_table.add_column("Host", ratio=1)
-                hosts_table.add_column("Status", width=20)
-                hosts_table.add_column("Pool", width=10, justify="center")
-                hosts_table.add_column("FS", width=4, justify="center")
-                hosts_table.add_column("Last Message", ratio=2)
-
-                for idx, mgr in enumerate(managers):
-                    cursor = ">" if (focused_section == "hosts" and idx == selected_host_idx) else " "
-                    row_style = "bold white" if (focused_section == "hosts" and idx == selected_host_idx) else "white"
-                    status_style = "dim"
-                    if "Connected" in mgr.status:
-                        status_style = "green"
-                    elif "Connecting" in mgr.status:
-                        status_style = "blue"
-                    elif "Failed" in mgr.status or "Error" in mgr.status:
-                        status_style = "red"
-                    status_text = mgr.status
-                    if "[" not in status_text:
-                        status_text = f"[{status_style}]{status_text}[/{status_style}]"
-                    fs_icon = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
-                    pool_info = ""
-                    try:
-                        alive_count = sum(1 for c in mgr.pool.values() if c.isalive())
-                        pool_info = f"{mgr.active_index}/{alive_count}"
-                    except Exception:
-                        pool_info = "?"
-                    hosts_table.add_row(cursor, mgr.host, status_text, pool_info, fs_icon, mgr.last_msg,
-                                        style=row_style)
-
-                # 1b. Tunnels Table
-                tunnels_table = Table(box=box.ROUNDED, expand=True, title="TUNNELS",
-                                      title_justify="left", title_style="bold cyan")
-                tunnels_table.add_column("Select", width=3, justify="center")
-                tunnels_table.add_column("Name", ratio=1)
-                tunnels_table.add_column("Local→Remote", width=18)
-                tunnels_table.add_column("Node", ratio=2)
-                tunnels_table.add_column("Via", width=8)
-                tunnels_table.add_column("Status", width=22)
-
-                tunnel_names = list(tunnel_mgr.tunnels.keys())
-                if not tunnel_names:
-                    tunnels_table.add_row("", "[dim]No tunnels.  Press T to create one.[/dim]", "", "", "", "")
-                else:
-                    for idx, name in enumerate(tunnel_names):
-                        ts = tunnel_mgr.tunnels[name]
-                        cursor = ">" if (focused_section == "tunnels" and idx == selected_tunnel_idx) else " "
-                        row_style = "bold white" if (focused_section == "tunnels" and idx == selected_tunnel_idx) else "white"
-                        ports = f":{ts.local_port}→:{ts.remote_port}"
-                        node = ts.last_node or "[dim](no node yet)[/dim]"
-                        via = ts.active_jump or "—"
-                        glyph_color = {
-                            "alive": ("●", "green"),
-                            "starting": ("◐", "yellow"),
-                            "stale": ("○", "red"),
-                            "idle": ("○", "dim"),
-                            "port_busy": ("●", "red"),
-                            "failed": ("●", "red"),
-                        }.get(ts.status, ("?", "white"))
-                        glyph, color = glyph_color
-                        status_cell = f"[{color}]{glyph} {ts.status}[/{color}]  [dim]{ts.last_msg}[/dim]"
-                        tunnels_table.add_row(cursor, name, ports, node, via, status_cell, style=row_style)
-
-                layout = Layout()
-                layout.split_column(
-                    Layout(hosts_table, name="hosts"),
-                    Layout(tunnels_table, name="tunnels"),
-                )
-                panel = Panel(
-                    layout,
-                    title="[bold blue]Auto2FA Dashboard[/bold blue]",
-                    subtitle="[Tab] Switch  [↑↓] Nav  [Space] Toggle  [T] New tunnel  [⏎] Pick node  [D] Delete  [R] Rotate  [Q] Quit"
-                )
-                live.update(panel)
-                
-                # 2. Handle Input
-                # Since we are in persistent raw mode, we can read directly
-                import select
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    try:
-                        key = sys.stdin.read(1)
-                        if key == '\x1b':
-                            # Read potential arrow keys
-                            # Non-blocking read for remainder of sequence
-                            import fcntl
-                            fl = fcntl.fcntl(sys.stdin, fcntl.F_GETFL)
-                            fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                            try:
-                                seq = sys.stdin.read(2)
-                                key += seq
-                            except Exception:
-                                pass
-                            finally:
-                                fcntl.fcntl(sys.stdin, fcntl.F_SETFL, fl)
-                        
-                        if key == 'q' or key == 'Q' or key == '\x03':
-                            break
-                        elif key == '\x1b[A':  # Up
-                            if focused_section == "hosts":
-                                selected_host_idx = max(0, selected_host_idx - 1)
-                            else:
-                                selected_tunnel_idx = max(0, selected_tunnel_idx - 1)
-                        elif key == '\x1b[B':  # Down
-                            if focused_section == "hosts":
-                                selected_host_idx = min(len(managers) - 1, selected_host_idx + 1)
-                            else:
-                                n = len(tunnel_mgr.tunnels)
-                                if n > 0:
-                                    selected_tunnel_idx = min(n - 1, selected_tunnel_idx + 1)
-                        elif key == '\t':  # Tab
-                            focused_section = "tunnels" if focused_section == "hosts" else "hosts"
-                        elif key == ' ':  # Space
-                            if focused_section == "hosts":
-                                managers[selected_host_idx].toggle()
-                            else:
-                                names = list(tunnel_mgr.tunnels.keys())
-                                if names:
-                                    tunnel_mgr.toggle(names[selected_tunnel_idx])
-                        elif key == 'm' or key == 'M':
-                            if focused_section == "hosts":
-                                threading.Thread(target=managers[selected_host_idx].mount_host, daemon=True).start()
-                        elif key == 'r' or key == 'R':
-                            if focused_section == "hosts":
-                                mgr = managers[selected_host_idx]
-                                if mgr.active:
-                                    new_idx = (mgr.active_index + 1) % 2
-                                    if hasattr(mgr, 'update_symlink'):
-                                        mgr.update_symlink(new_idx)
-                                        mgr.last_msg = f"Manual Rotate -> {new_idx}"
-
-                        elif key == 't' or key == 'T':
-                            vals = _modal_input(
-                                live, console,
-                                prompt_lines=["[bold]New Tunnel[/bold]", ""],
-                                fields=[("Name", ""), ("Local port", "8888")],
-                                terminal_raw_mode=raw,
-                            )
-                            if vals:
-                                try:
-                                    name = vals["Name"].strip()
-                                    if not name:
-                                        raise ValueError("Name cannot be empty")
-                                    tunnel_mgr.add(
-                                        name=name,
-                                        local_port=int(vals["Local port"]),
-                                    )
-                                    focused_section = "tunnels"
-                                    selected_tunnel_idx = list(tunnel_mgr.tunnels.keys()).index(name)
-                                except (ValueError, KeyError) as e:
-                                    logger.warning(f"add tunnel failed: {e}")
-                                    error_msg = str(e)
-                                    error_panel = Panel(f"[red]Could not create tunnel: {error_msg}[/red]",
-                                                        title="[bold blue]Auto2FA[/bold blue]")
-                                    live.update(error_panel)
-                                    time.sleep(1.5)
-
-                        elif key == '\r' or key == '\n':   # Enter
-                            if focused_section == "tunnels":
-                                names = list(tunnel_mgr.tunnels.keys())
-                                if names:
-                                    n = names[selected_tunnel_idx]
-                                    picked = _node_picker(live, console, tunnel_mgr, n, raw)
-                                    if picked:
-                                        node, user, is_range = picked
-                                        tunnel_mgr.set_node(n, node, user)
-                                        if is_range:
-                                            tunnel_mgr.tunnels[n].last_msg += " (picked first of range)"
-
-                        elif key == 'd' or key == 'D':
-                            if focused_section == "tunnels":
-                                names = list(tunnel_mgr.tunnels.keys())
-                                if names:
-                                    n = names[selected_tunnel_idx]
-                                    confirm = Panel(
-                                        f"Delete tunnel [bold red]{n}[/bold red]? [Y]es / [N]o",
-                                        title="[bold blue]Confirm[/bold blue]", border_style="red")
-                                    live.update(confirm)
-                                    while True:
-                                        ck = sys.stdin.read(1)
-                                        if ck in ('y', 'Y'):
-                                            tunnel_mgr.stop(n)
-                                            tunnel_mgr.remove(n)
-                                            selected_tunnel_idx = max(0, selected_tunnel_idx - 1)
-                                            break
-                                        elif ck in ('n', 'N', '\x1b'):
-                                            break
-
-                    except Exception:
-                        pass
-                    
-    # Cleanup
-    # RawMode exit will restore terminal
-    print("Stopping managers...")
-    for mgr in managers:
-        mgr.running = False
-        mgr.active = False
-
+    app = Auto2FAApp(managers, tunnel_mgr)
     try:
-        tunnel_mgr.shutdown()
-    except Exception as e:
-        logger.error(f"tunnel_mgr.shutdown failed: {e}")
+        app.run()
+    finally:
+        for mgr in managers:
+            mgr.running = False
+            mgr.active = False
+        try:
+            tunnel_mgr.shutdown()
+        except Exception as e:
+            logger.error(f"tunnel_mgr.shutdown failed: {e}")
+        time.sleep(0.3)
 
-    time.sleep(0.5)
-    print("Clean exit.")
 
 if __name__ == "__main__":
     main()

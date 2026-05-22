@@ -5,9 +5,11 @@ setup(
     version="0.2.0",
     packages=find_packages(),
     install_requires=[
+        "textual>=0.40",
         "rich",
         "pyotp",
         "pexpect",
+        "python-dotenv",
     ],
     entry_points={
         "console_scripts": [
