@@ -5,24 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-import pyotp
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from rich.text import Text
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
-from textual.widgets.data_table import RowKey
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
 from .backend import SSHHostManager, extract_secret_from_url
 from .tunnels import DiscoveryError, NodeDiscovery, TunnelManager, expand_first_node
@@ -48,15 +46,24 @@ def load_hosts():
         sys.exit(1)
 
 
+_SSH_USER_CACHE: dict[str, str] = {}
+
+
 def ssh_config_user(host: str) -> str:
+    """Resolve the User from `ssh -G <host>`. Cached so subprocess only runs once per host."""
+    if host in _SSH_USER_CACHE:
+        return _SSH_USER_CACHE[host]
+    user = ""
     try:
         res = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=2)
         for line in res.stdout.splitlines():
             if line.lower().startswith("user "):
-                return line.split(" ", 1)[1].strip()
+                user = line.split(" ", 1)[1].strip()
+                break
     except Exception:
         pass
-    return ""
+    _SSH_USER_CACHE[host] = user
+    return user
 
 
 # ---------- Modals ----------
@@ -222,7 +229,7 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
     DEFAULT_CSS = """
     NodePickerScreen { align: center middle; }
     NodePickerScreen > Vertical {
-        width: 100; height: 30; padding: 1 2;
+        width: 100; height: auto; max-height: 90%; padding: 1 2;
         border: thick $accent; background: $panel;
     }
     NodePickerScreen Label.title { content-align: center middle; padding-bottom: 1; }
@@ -448,13 +455,16 @@ class Auto2FAApp(App):
         super().__init__()
         self.managers = managers
         self.tunnel_mgr = tunnel_mgr
-        self._host_row_keys: list[RowKey] = []
         self._tunnel_names: list[str] = []
         self._tick_stop = threading.Event()
         self._tick_thread: threading.Thread | None = None
         # Cache last-rendered "fingerprint" to skip redundant table rebuilds.
         self._last_host_fp: tuple = ()
         self._last_tunnel_fp: tuple = ()
+        # Per-tunnel lock to debounce rapid Space presses; while a toggle is
+        # in flight for a tunnel, additional presses are ignored.
+        self._toggle_in_flight: set[str] = set()
+        self._toggle_in_flight_lock = threading.Lock()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -523,11 +533,9 @@ class Auto2FAApp(App):
         table = self.query_one("#hosts_table", HostTable)
         prev_row = table.cursor_row
         table.clear()
-        self._host_row_keys = []
         for mgr, (_, _, pool, fs, last_msg) in zip(self.managers, rows):
             status_text = self._render_host_status(mgr)
-            key = table.add_row(mgr.host, status_text, pool, fs, last_msg)
-            self._host_row_keys.append(key)
+            table.add_row(mgr.host, status_text, pool, fs, last_msg)
         if 0 <= prev_row < len(self.managers):
             table.move_cursor(row=prev_row)
 
@@ -536,7 +544,6 @@ class Auto2FAApp(App):
         """Build a colored Text cell for the Status column with a leading glyph."""
         raw = mgr.status
         # Strip any pre-existing rich markup so we can apply our own.
-        import re
         plain = re.sub(r"\[/?[^\]]+\]", "", raw).strip() or ("Active" if mgr.active else "Stopped")
         lc = plain.lower()
         if ("connected" in lc or "active" in lc) and "init" not in lc and "fail" not in lc:
@@ -625,6 +632,14 @@ class Auto2FAApp(App):
         name = self._selected_tunnel_name()
         if not name:
             return
+        # Debounce: if a toggle worker is already in flight for this tunnel,
+        # ignore additional presses so rapid Space mashing doesn't queue
+        # contradictory start/stop operations on the lock.
+        with self._toggle_in_flight_lock:
+            if name in self._toggle_in_flight:
+                return
+            self._toggle_in_flight.add(name)
+
         # toggle() may call start() which blocks for up to 10s on the port
         # probe. Run off the UI thread so the dashboard stays responsive.
         def _do_toggle():
@@ -632,7 +647,13 @@ class Auto2FAApp(App):
                 self.tunnel_mgr.toggle(name)
             except Exception as e:
                 logger.error(f"toggle({name}) failed: {e}")
-            self.call_from_thread(self._refresh_tunnels)
+            finally:
+                with self._toggle_in_flight_lock:
+                    self._toggle_in_flight.discard(name)
+            try:
+                self.call_from_thread(self._refresh_tunnels)
+            except RuntimeError:
+                pass  # app shut down
         threading.Thread(target=_do_toggle, daemon=True).start()
 
     def action_mount_host(self) -> None:
@@ -685,11 +706,16 @@ class Auto2FAApp(App):
             # set_node may call start() which probes a port for up to 10s.
             # Run it off the UI thread so we don't freeze.
             def do_set():
-                self.tunnel_mgr.set_node(name, node, user)
-                if is_range:
-                    self.tunnel_mgr.tunnels[name].last_msg += " (picked first of range)"
-                # Refresh on the UI thread when done
-                self.call_from_thread(self._refresh_tunnels)
+                try:
+                    self.tunnel_mgr.set_node(name, node, user)
+                    if is_range and name in self.tunnel_mgr.tunnels:
+                        self.tunnel_mgr.tunnels[name].last_msg += " (picked first of range)"
+                except Exception as e:
+                    logger.error(f"set_node({name}) failed: {e}")
+                try:
+                    self.call_from_thread(self._refresh_tunnels)
+                except RuntimeError:
+                    pass  # app shut down
             threading.Thread(target=do_set, daemon=True).start()
 
         self.push_screen(NodePickerScreen(self.tunnel_mgr, name), on_picked)
@@ -700,10 +726,21 @@ class Auto2FAApp(App):
             return
 
         def on_confirm(yes: bool) -> None:
-            if yes:
-                self.tunnel_mgr.stop(name)
-                self.tunnel_mgr.remove(name)
-                self._refresh_tunnels()
+            if not yes:
+                return
+            # stop() acquires the lifecycle lock which can be held by a
+            # 10s start probe — must run off the UI thread.
+            def _do_delete():
+                try:
+                    self.tunnel_mgr.stop(name)
+                    self.tunnel_mgr.remove(name)
+                except Exception as e:
+                    logger.error(f"delete({name}) failed: {e}")
+                try:
+                    self.call_from_thread(self._refresh_tunnels)
+                except RuntimeError:
+                    pass  # app shut down
+            threading.Thread(target=_do_delete, daemon=True).start()
 
         self.push_screen(ConfirmScreen(f"Delete tunnel '{name}'?"), on_confirm)
 

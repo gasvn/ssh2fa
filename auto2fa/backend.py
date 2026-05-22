@@ -159,6 +159,13 @@ class SSHHostManager(threading.Thread):
                 self.last_msg = "Inactive"
                 self.cleanup_all()
                 time.sleep(0.5)
+        # Final cleanup on thread exit (e.g. app shutdown while host was active):
+        # manage_pool_loop returns when running flips False, leaving the pool
+        # alive. Reap it here so SSH ControlMaster processes don't outlive the app.
+        try:
+            self.cleanup_all()
+        except Exception as e:
+            logger.error(f"[{self.host}] final cleanup_all error: {e}")
 
     def cleanup_all(self):
         """Clean up everything"""

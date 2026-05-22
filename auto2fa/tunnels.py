@@ -242,8 +242,11 @@ class TunnelManager:
         """Update the saved compute-node target for a tunnel.
 
         If the tunnel is idle/stale/failed, automatically (re)starts it.
+        Silently returns if the tunnel was removed.
         """
-        ts = self.tunnels[name]
+        ts = self.tunnels.get(name)
+        if ts is None:
+            return
         ts.last_node = node
         ts.last_user = user
         # Picking a fresh node clears stale-misses; if it was stale, it can be retried
@@ -279,9 +282,12 @@ class TunnelManager:
 
         Idempotent: no-op if already alive or starting.
         Thread-safe via self._lifecycle_lock — concurrent callers serialise.
+        Silently returns if the tunnel has been removed (race with delete).
         """
         with self._lifecycle_lock:
-            ts = self.tunnels[name]
+            ts = self.tunnels.get(name)
+            if ts is None:
+                return
 
             if ts.status in ("alive", "starting"):
                 return
@@ -372,10 +378,12 @@ class TunnelManager:
     def stop(self, name: str) -> None:
         """Terminate the tunnel's child process and mark idle.
 
-        Safe if already stopped. Thread-safe via self._lifecycle_lock.
+        Safe if already stopped or removed. Thread-safe via self._lifecycle_lock.
         """
         with self._lifecycle_lock:
-            ts = self.tunnels[name]
+            ts = self.tunnels.get(name)
+            if ts is None:
+                return
             child = ts.child
             if child is not None:
                 try:
@@ -393,11 +401,14 @@ class TunnelManager:
 
         NOTE: like start(), this may BLOCK for up to PROBE_TIMEOUT_SEC.
         UI callers must invoke from a worker thread.
+        Silently returns if the tunnel was removed.
         """
         # Read the status without holding the lock to decide the action.
         # The lock-protected operations themselves are idempotent: if status
         # changes between the read and the call, start()/stop() handle it.
-        ts = self.tunnels[name]
+        ts = self.tunnels.get(name)
+        if ts is None:
+            return
         if ts.status in ("alive", "starting"):
             self.stop(name)
         else:
@@ -418,6 +429,10 @@ class TunnelManager:
                     self.start(name)
 
         for name, ts in list(self.tunnels.items()):
+            # Re-check existence — another thread may have called remove()
+            # between snapshotting and reaching this iteration.
+            if name not in self.tunnels:
+                continue
             if ts.status in ("idle", "stale", "port_busy", "failed", "starting"):
                 continue
             # status == "alive"
