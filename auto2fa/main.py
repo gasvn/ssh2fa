@@ -294,6 +294,10 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_jobs_loaded(self, jobs, error_msg) -> None:
+        # Screen may have been dismissed while squeue was running in the
+        # background. Discard the result silently.
+        if not self.is_mounted:
+            return
         self._loading = False
         self.jobs = jobs
         self.error_msg = error_msg or ""
@@ -334,7 +338,7 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if not self.jobs or self.jump_name is None:
             return
-        row = self.query_one("#jobs", DataTable).cursor_row
+        row = event.cursor_row
         if not (0 <= row < len(self.jobs)):
             return
         job = self.jobs[row]
@@ -344,6 +348,7 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
             or self.tunnel_mgr.tunnels[self.tunnel_name].last_user
             or os.environ.get("USER", "")
         )
+        event.stop()
         self.dismiss((node, user, is_range))
 
 
@@ -430,9 +435,13 @@ class Auto2FAApp(App):
 
     # Only truly global bindings. Per-table keys live on HostTable / TunnelTable
     # so they don't interfere with Input widgets in modals.
+    # Only truly global bindings. T is also bound here so it works from the
+    # HOSTS table too (Input widgets in modals still consume 't' first, so
+    # typing 't' in a name field never triggers this).
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("ctrl+n", "new_tunnel", "New tunnel"),  # global shortcut for T
+        Binding("t", "new_tunnel", "New tunnel"),
+        Binding("ctrl+n", "new_tunnel", show=False),  # alt shortcut
     ]
 
     def __init__(self, managers, tunnel_mgr):
@@ -530,7 +539,7 @@ class Auto2FAApp(App):
         import re
         plain = re.sub(r"\[/?[^\]]+\]", "", raw).strip() or ("Active" if mgr.active else "Stopped")
         lc = plain.lower()
-        if "connected" in lc or "active" in lc and "init" not in lc and "fail" not in lc:
+        if ("connected" in lc or "active" in lc) and "init" not in lc and "fail" not in lc:
             glyph, color = "●", "green"
         elif "init" in lc or "connecting" in lc or "spawn" in lc or "starting" in lc:
             glyph, color = "◐", "yellow"
@@ -614,9 +623,17 @@ class Auto2FAApp(App):
 
     def action_toggle_tunnel(self) -> None:
         name = self._selected_tunnel_name()
-        if name:
-            self.tunnel_mgr.toggle(name)
-            self._refresh_tunnels()
+        if not name:
+            return
+        # toggle() may call start() which blocks for up to 10s on the port
+        # probe. Run off the UI thread so the dashboard stays responsive.
+        def _do_toggle():
+            try:
+                self.tunnel_mgr.toggle(name)
+            except Exception as e:
+                logger.error(f"toggle({name}) failed: {e}")
+            self.call_from_thread(self._refresh_tunnels)
+        threading.Thread(target=_do_toggle, daemon=True).start()
 
     def action_mount_host(self) -> None:
         mgr = self._selected_host()
@@ -645,7 +662,7 @@ class Auto2FAApp(App):
                         row=self._tunnel_names.index(name)
                     )
                 self.notify(f"Tunnel '{name}' created — press Enter to pick a node.")
-            except (ValueError, KeyError) as e:
+            except (ValueError, KeyError, OSError) as e:
                 self.notify(str(e), severity="error", timeout=5)
 
         self.push_screen(NewTunnelScreen(), on_done)

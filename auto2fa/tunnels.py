@@ -13,6 +13,7 @@ import logging
 import os
 import socket as _socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -142,6 +143,9 @@ class TunnelManager:
         self.tunnels: Dict[str, TunnelState] = {}
         self.startup_ts: float = 0.0
         self.auto_started: bool = False
+        # Serialises start/stop/tick mutations across threads
+        # (UI worker threads, tick_loop thread, and direct UI callers).
+        self._lifecycle_lock = threading.Lock()
 
     def load(self) -> None:
         """Load tunnels.json into self.tunnels. Missing file is empty.
@@ -268,62 +272,67 @@ class TunnelManager:
     PROBE_INTERVAL_SEC = 0.2
 
     def start(self, name: str) -> None:
-        """Start (or restart) a tunnel. Idempotent: no-op if already alive or starting."""
-        ts = self.tunnels[name]
+        """Start (or restart) a tunnel.
 
-        if ts.status in ("alive", "starting"):
-            return
+        BLOCKS for up to PROBE_TIMEOUT_SEC (~10s) while probing the local port.
+        Callers on the UI thread MUST invoke this from a worker thread.
 
-        if ts.last_node is None:
-            ts.status = "idle"
-            ts.last_msg = "no node — press Enter to pick"
-            return
+        Idempotent: no-op if already alive or starting.
+        Thread-safe via self._lifecycle_lock — concurrent callers serialise.
+        """
+        with self._lifecycle_lock:
+            ts = self.tunnels[name]
 
-        jump = self.pick_active_jump(ts)
-        if jump is None:
-            ts.status = "idle"
-            ts.last_msg = "waiting for jump"
-            return
+            if ts.status in ("alive", "starting"):
+                return
 
-        if not self._port_available(ts.local_port):
-            ts.status = "port_busy"
-            ts.last_msg = f"port {ts.local_port} in use"
-            return
+            if ts.last_node is None:
+                ts.status = "idle"
+                ts.last_msg = "no node — press Enter to pick"
+                return
 
-        ts.status = "starting"
-        ts.active_jump = jump
-        ts.last_msg = f"starting via {jump}"
+            jump = self.pick_active_jump(ts)
+            if jump is None:
+                ts.status = "idle"
+                ts.last_msg = "waiting for jump"
+                return
 
-        argv = [
-            "-N",
-            "-J", jump,
-            "-L", f"{ts.local_port}:localhost:{ts.remote_port}",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=15",
-            f"{ts.last_user}@{ts.last_node}",
-        ]
-        child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
-        ts.child = child
+            if not self._port_available(ts.local_port):
+                ts.status = "port_busy"
+                ts.last_msg = f"port {ts.local_port} in use"
+                return
 
-        # Blocking probe (≤10s). This freezes the TUI briefly. Acceptable because
-        # the user just pressed Enter and expects feedback; moving this off-thread
-        # would complicate state machine for marginal UX gain.
-        if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
-            ts.status = "alive"
-            ts.last_msg = f"via {jump}"
-            ts.consecutive_squeue_misses = 0
-        else:
-            try:
-                child.terminate(force=True)
-            except Exception:
-                pass
-            reason = self._extract_failure_reason(child)
-            ts.status = "failed"
-            ts.last_msg = reason
-            ts.child = None
-            ts.active_jump = None
+            ts.status = "starting"
+            ts.active_jump = jump
+            ts.last_msg = f"starting via {jump}"
+
+            argv = [
+                "-N",
+                "-J", jump,
+                "-L", f"{ts.local_port}:localhost:{ts.remote_port}",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ExitOnForwardFailure=yes",
+                "-o", "ServerAliveInterval=15",
+                f"{ts.last_user}@{ts.last_node}",
+            ]
+            child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
+            ts.child = child
+
+            if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
+                ts.status = "alive"
+                ts.last_msg = f"via {jump}"
+                ts.consecutive_squeue_misses = 0
+            else:
+                try:
+                    child.terminate(force=True)
+                except Exception:
+                    pass
+                reason = self._extract_failure_reason(child)
+                ts.status = "failed"
+                ts.last_msg = reason
+                ts.child = None
+                ts.active_jump = None
 
     def _probe_port_ready(self, port: int, timeout: float) -> bool:
         """Poll 127.0.0.1:port until connect() succeeds or timeout."""
@@ -361,22 +370,33 @@ class TunnelManager:
         return "ssh failed"
 
     def stop(self, name: str) -> None:
-        """Terminate the tunnel's child process and mark idle. Safe if already stopped."""
-        ts = self.tunnels[name]
-        child = ts.child
-        if child is not None:
-            try:
-                if child.isalive():
-                    child.terminate(force=True)
-            except Exception:
-                pass
-        ts.child = None
-        ts.active_jump = None
-        ts.status = "idle"
-        ts.last_msg = "stopped"
+        """Terminate the tunnel's child process and mark idle.
+
+        Safe if already stopped. Thread-safe via self._lifecycle_lock.
+        """
+        with self._lifecycle_lock:
+            ts = self.tunnels[name]
+            child = ts.child
+            if child is not None:
+                try:
+                    if child.isalive():
+                        child.terminate(force=True)
+                except Exception:
+                    pass
+            ts.child = None
+            ts.active_jump = None
+            ts.status = "idle"
+            ts.last_msg = "stopped"
 
     def toggle(self, name: str) -> None:
-        """If alive/starting, stop. Otherwise, start."""
+        """If alive/starting, stop. Otherwise, start.
+
+        NOTE: like start(), this may BLOCK for up to PROBE_TIMEOUT_SEC.
+        UI callers must invoke from a worker thread.
+        """
+        # Read the status without holding the lock to decide the action.
+        # The lock-protected operations themselves are idempotent: if status
+        # changes between the read and the call, start()/stop() handle it.
         ts = self.tunnels[name]
         if ts.status in ("alive", "starting"):
             self.stop(name)
