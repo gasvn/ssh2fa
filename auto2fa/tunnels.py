@@ -132,6 +132,11 @@ class TunnelManager:
             self.tunnels = {}
             return
 
+        if not isinstance(data, dict):
+            logger.error("tunnels.json root is not an object; treating as empty")
+            self.tunnels = {}
+            return
+
         loaded: Dict[str, TunnelState] = {}
         for name, cfg in (data.get("tunnels") or {}).items():
             loaded[name] = TunnelState(

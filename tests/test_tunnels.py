@@ -1,3 +1,6 @@
+import json
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock
 import unittest.mock
@@ -132,9 +135,6 @@ class TestNodeDiscoveryDiscover(unittest.TestCase):
             self.assertIn("squeue", str(ctx.exception))
 
 
-import json
-import tempfile
-import shutil
 
 
 class TestTunnelManagerPersistence(unittest.TestCase):
