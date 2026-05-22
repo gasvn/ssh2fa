@@ -274,6 +274,14 @@ class TestTunnelManagerAdd(unittest.TestCase):
         finally:
             s.close()
 
+    def test_add_rejects_remote_port_out_of_range(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        with self.assertRaises(ValueError):
+            tm.add(name="x", local_port=self._free_port(), remote_port=22)
+        with self.assertRaises(ValueError):
+            tm.add(name="y", local_port=self._free_port(), remote_port=70000)
+
 
 if __name__ == "__main__":
     unittest.main()

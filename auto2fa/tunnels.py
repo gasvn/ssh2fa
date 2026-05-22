@@ -185,13 +185,15 @@ class TunnelManager:
             raise ValueError(f"Tunnel '{name}' already exists")
         if not (1024 <= int(local_port) <= 65535):
             raise ValueError(f"Port must be 1024..65535, got {local_port}")
+        if remote_port is not None and not (1024 <= int(remote_port) <= 65535):
+            raise ValueError(f"remote_port must be 1024..65535, got {remote_port}")
         if not self._port_available(int(local_port)):
             raise ValueError(f"Port {local_port} in use, try another")
 
         ts = TunnelState(
             name=name,
             local_port=int(local_port),
-            remote_port=int(remote_port) if remote_port else int(local_port),
+            remote_port=int(remote_port) if remote_port is not None else int(local_port),
             jump_candidates=jump_candidates,
             last_node=None,
             last_user=None,
