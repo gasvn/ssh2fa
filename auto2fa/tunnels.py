@@ -418,6 +418,42 @@ class TunnelManager:
                     ts.status = "stale"
                     ts.last_msg = f"node {ts.last_node} no longer in squeue"
 
+    def shutdown(self) -> None:
+        """Stop every tunnel. Called on dashboard exit."""
+        for name in list(self.tunnels.keys()):
+            try:
+                self.stop(name)
+            except Exception as e:
+                logger.error("[tunnel:%s] shutdown error: %s", name, e)
+
+    def cleanup_orphans(self) -> None:
+        """Reap stray `ssh -N -J ... -L <our_port>:...` processes left from a prior run.
+
+        For each tunnel, pgrep -f for the unique '-L <port>:localhost:' fragment and
+        SIGTERM whatever we find. Called once on dashboard startup.
+        """
+        for ts in self.tunnels.values():
+            pattern = f"-L {ts.local_port}:localhost:"
+            try:
+                res = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, text=True, timeout=2,
+                )
+            except Exception as e:
+                logger.warning("pgrep failed: %s", e)
+                continue
+            if res.returncode != 0:
+                continue
+            for pid_str in res.stdout.split():
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                try:
+                    os.kill(pid, 15)
+                except OSError:
+                    pass
+
     @staticmethod
     def _port_available(port: int) -> bool:
         """True iff we can bind 127.0.0.1:port right now."""

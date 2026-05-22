@@ -688,5 +688,56 @@ class TestTunnelManagerTick(unittest.TestCase):
             self.assertEqual(ts.consecutive_squeue_misses, 0)
 
 
+class TestOrphansAndShutdown(unittest.TestCase):
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _free_port(self):
+        s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+    def test_shutdown_stops_all_tunnels(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", self._free_port())
+        tm.add("b", self._free_port())
+        with unittest.mock.patch.object(tm, "stop") as p_stop:
+            tm.shutdown()
+            self.assertEqual(p_stop.call_count, 2)
+
+    def test_cleanup_orphans_pgrep_and_kills(self):
+        from tunnels import TunnelManager
+        import tunnels as t
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", 8888)
+        tm.add("b", 8889)
+        # pgrep returns two PIDs
+        completed = MagicMock(returncode=0, stdout="12345\n12346\n", stderr="")
+        with unittest.mock.patch.object(t.subprocess, "run", return_value=completed) as p_run, \
+             unittest.mock.patch.object(t.os, "kill") as p_kill:
+            tm.cleanup_orphans()
+        # We expect at least one pgrep call and kill called for both PIDs
+        self.assertTrue(p_run.called)
+        kill_pids = [args[0] for args, _ in p_kill.call_args_list]
+        self.assertIn(12345, kill_pids)
+        self.assertIn(12346, kill_pids)
+
+    def test_cleanup_orphans_no_match_is_noop(self):
+        from tunnels import TunnelManager
+        import tunnels as t
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", 8888)
+        completed = MagicMock(returncode=1, stdout="", stderr="")
+        with unittest.mock.patch.object(t.subprocess, "run", return_value=completed), \
+             unittest.mock.patch.object(t.os, "kill") as p_kill:
+            tm.cleanup_orphans()
+        p_kill.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
