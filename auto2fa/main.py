@@ -432,6 +432,25 @@ def main():
                                         tunnel_mgr.set_node(n, node, user)
                                         tunnel_mgr.start(n)
 
+                        elif key == 'd' or key == 'D':
+                            if focused_section == "tunnels":
+                                names = list(tunnel_mgr.tunnels.keys())
+                                if names:
+                                    n = names[selected_tunnel_idx]
+                                    confirm = Panel(
+                                        f"Delete tunnel [bold red]{n}[/bold red]? [Y]es / [N]o",
+                                        title="[bold blue]Confirm[/bold blue]", border_style="red")
+                                    live.update(confirm)
+                                    while True:
+                                        ck = sys.stdin.read(1)
+                                        if ck in ('y', 'Y'):
+                                            tunnel_mgr.stop(n)
+                                            tunnel_mgr.remove(n)
+                                            selected_tunnel_idx = max(0, selected_tunnel_idx - 1)
+                                            break
+                                        elif ck in ('n', 'N', '\x1b'):
+                                            break
+
                     except Exception:
                         pass
                     
