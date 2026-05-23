@@ -46,6 +46,21 @@ def load_hosts():
         sys.exit(1)
 
 
+def _system_notify(title: str, message: str) -> None:
+    """Best-effort native desktop notification (macOS via osascript)."""
+    try:
+        safe_title = title.replace('"', '\\"')
+        safe_msg = message.replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{safe_msg}" with title "{safe_title}"'],
+            check=False, timeout=2,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
 _SSH_USER_CACHE: dict[str, str] = {}
 
 
@@ -192,7 +207,10 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
             with Horizontal(classes="buttons"):
                 yield Button("Submit", variant="primary", id="submit_btn")
                 yield Button("Cancel", id="cancel_btn")
-            yield Label("Tab: next   Enter: submit   Esc: cancel", classes="hint")
+            yield Label("Tab/Enter: next field   Ctrl+S: submit   Esc: cancel",
+                        classes="hint")
+            yield Label("(Paste with ⌘V / Ctrl+Shift+V works in both fields)",
+                        classes="hint")
 
     def on_mount(self) -> None:
         self.query_one("#node", Input).focus()
@@ -204,11 +222,14 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
         self._submit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        node = self.query_one("#node", Input).value.strip()
-        if node:
-            self._submit()
+        # Don't auto-submit on Enter — pasted hostnames often contain a
+        # trailing newline which would trigger Input.Submitted mid-paste.
+        # Instead move focus forward: node → user → click Submit (or Ctrl+S).
+        if event.input.id == "node":
+            self.query_one("#user", Input).focus()
         else:
-            self.query_one("#node", Input).focus()
+            # On the user field, Enter does submit (rarely contains newlines)
+            self._submit()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "submit_btn":
@@ -217,8 +238,13 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
             self.dismiss(None)
 
     def _submit(self) -> None:
-        node = self.query_one("#node", Input).value.strip()
-        user = self.query_one("#user", Input).value.strip() or os.environ.get("USER", "")
+        # Strip leading/trailing whitespace AND any embedded newlines that may
+        # have arrived via paste — defensive: hostnames never contain those.
+        node = self.query_one("#node", Input).value.strip().replace("\n", "").replace("\r", "")
+        user = (
+            self.query_one("#user", Input).value.strip().replace("\n", "").replace("\r", "")
+            or os.environ.get("USER", "")
+        )
         if node:
             self.dismiss((node, user))
 
@@ -555,10 +581,9 @@ class Auto2FAApp(App):
         # Optimistic-status overlay: shows pending action immediately, cleared
         # once the real status changes. Maps tunnel name → display text.
         self._pending_status: dict[str, str] = {}
-        # Animation frame for "starting/connecting" spinner
-        self._spinner_frame: int = 0
-        # Force tunnel-table rerender on the next refresh (e.g. when spinner advances)
-        self._force_tunnel_refresh: bool = False
+        # Track last-seen status per tunnel to notify on transitions like
+        # alive → failed / stale (so the user knows when things break).
+        self._last_seen_status: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -579,12 +604,11 @@ class Auto2FAApp(App):
         hosts.focus()
         self._update_section_focus_styles()
         self._refresh_tables()
-        # Render-only timer (cheap, runs on UI thread)
-        self.set_interval(0.5, self._safe_refresh_tables)
-        # Also refresh the summary every second
-        self.set_interval(1.0, self._refresh_summary)
-        # Spinner animation (250ms — smooth feeling)
-        self.set_interval(0.25, self._advance_spinner)
+        # Single combined timer to minimise event-loop wake-ups. Each tick:
+        #   - refresh tables if state changed (fingerprint comparison)
+        #   - refresh summary if numbers changed
+        # All work is skipped when a modal is on top so input stays smooth.
+        self.set_interval(1.0, self._tick_ui)
         # tick() can block (start() probes for up to 10s) — run it on its own thread
         self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self._tick_thread.start()
@@ -608,28 +632,21 @@ class Auto2FAApp(App):
             tunnels_title.remove_class("dim")
             hosts_title.add_class("dim")
 
+    _last_summary: str = ""
+
     def _refresh_summary(self) -> None:
         connected = sum(1 for m in self.managers if m.is_master_ready())
         active_tunnels = sum(1 for t in self.tunnel_mgr.tunnels.values() if t.status == "alive")
         n_tunnels = len(self.tunnel_mgr.tunnels)
-        self.sub_title = (
+        summary = (
             f"hosts {connected}/{len(self.managers)} connected   "
             f"·   tunnels {active_tunnels}/{n_tunnels} alive   "
             f"·   ? for help"
         )
-
-    SPINNER_FRAMES = "◐◓◑◒"
-
-    def _advance_spinner(self) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
-        # Only force a re-render if any tunnel is in a spinning state
-        spinning = any(
-            ts.status in ("starting",) or self._pending_status.get(name)
-            for name, ts in self.tunnel_mgr.tunnels.items()
-        )
-        if spinning and len(self.screen_stack) <= 1:
-            self._force_tunnel_refresh = True
-            self._refresh_tunnels()
+        # Only write if changed — avoids needless header re-renders
+        if summary != self._last_summary:
+            self._last_summary = summary
+            self.sub_title = summary
 
     def action_help(self) -> None:
         # Don't stack help on top of other modals
@@ -654,6 +671,14 @@ class Auto2FAApp(App):
         if len(self.screen_stack) > 1:
             return
         self._refresh_tables()
+
+    def _tick_ui(self) -> None:
+        """Single combined UI tick. Hard-skips ALL work when a modal is open
+        so input fields in CustomNodeScreen / NewTunnelScreen stay snappy."""
+        if len(self.screen_stack) > 1:
+            return
+        self._refresh_tables()
+        self._refresh_summary()
 
     # ---- Rendering ----
 
@@ -720,14 +745,16 @@ class Auto2FAApp(App):
                 name, ts.local_port, ts.remote_port,
                 ts.last_node, ts.active_jump, ts.status, ts.last_msg, pending,
             ))
+
+        # Detect transitions and notify the user about meaningful state changes.
+        self._notify_status_transitions(rows)
+
         fp = tuple(rows)
-        if not self._force_tunnel_refresh and fp == self._last_tunnel_fp and self._tunnel_names == names:
+        if fp == self._last_tunnel_fp and self._tunnel_names == names:
             return
-        self._force_tunnel_refresh = False
         self._last_tunnel_fp = fp
         self._tunnel_names = names
 
-        spin = self.SPINNER_FRAMES[self._spinner_frame]
         table = self.query_one("#tunnels_table", TunnelTable)
         prev_row = table.cursor_row
         table.clear()
@@ -744,19 +771,56 @@ class Auto2FAApp(App):
             node = last_node or Text("(no node yet)", style="grey50")
             via = active_jump or "—"
 
-            status_cell = self._render_tunnel_status(status, pending, last_msg, active_jump, lp, spin)
+            status_cell = self._render_tunnel_status(status, pending, last_msg, active_jump, lp)
             table.add_row(name, ports, node, via, status_cell)
         if 0 <= prev_row < len(names):
             table.move_cursor(row=prev_row)
 
+    def _notify_status_transitions(self, rows) -> None:
+        """Compare the new rows to the last seen status and toast on transitions
+        that the user cares about — e.g. alive → failed / stale / port_busy."""
+        present_names = set()
+        for row in rows:
+            name = row[0]
+            status = row[5]
+            last_msg = row[6]
+            present_names.add(name)
+            prev = self._last_seen_status.get(name)
+            self._last_seen_status[name] = status
+            if prev is None or prev == status:
+                continue
+            # Bad transitions: tell the user loudly (in-app toast + macOS notification).
+            if prev == "alive" and status == "stale":
+                msg = f"{name}: compute node ended — press Enter to repick"
+                self.notify("⚠  " + msg, severity="warning", timeout=10)
+                _system_notify("Auto2FA: tunnel stale", msg)
+            elif prev == "alive" and status == "failed":
+                msg = f"{name} disconnected: {last_msg}"
+                self.notify("✕  " + msg, severity="error", timeout=10)
+                _system_notify("Auto2FA: tunnel failed", msg)
+            elif prev == "alive" and status == "idle":
+                msg = f"{name}: connection dropped — waiting to reconnect"
+                self.notify("⚠  " + msg, severity="warning", timeout=8)
+                _system_notify("Auto2FA: tunnel idle", msg)
+            elif prev == "alive" and status == "starting":
+                # ssh -N child died and tick() is respawning. Toast quietly.
+                self.notify(f"↻  {name}: reconnecting…", severity="warning", timeout=4)
+            # Good transitions
+            elif prev in ("starting", "idle", "stale", "failed", "port_busy") \
+                 and status == "alive":
+                self.notify(f"✓  {name} connected", timeout=3)
+        # Drop entries for tunnels that were removed
+        for name in list(self._last_seen_status.keys()):
+            if name not in present_names:
+                self._last_seen_status.pop(name, None)
+
     def _render_tunnel_status(self, status: str, pending: str | None,
                               last_msg: str, jump: str | None,
-                              local_port: int, spin: str) -> Text:
+                              local_port: int) -> Text:
         """Render the Status column cell with friendly human-readable text."""
         cell = Text()
         if pending:
-            # Optimistic feedback
-            cell.append(f"{spin} {pending}", style="bold yellow")
+            cell.append(f"◐ {pending}", style="bold yellow")
             return cell
 
         if status == "alive":
@@ -768,7 +832,7 @@ class Auto2FAApp(App):
             return cell
 
         if status == "starting":
-            cell.append(f"{spin} ", style="yellow")
+            cell.append("◐ ", style="yellow")
             cell.append("Connecting…", style="bold yellow")
             if jump:
                 cell.append(f"  via {jump}", style="grey62")
