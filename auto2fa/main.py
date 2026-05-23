@@ -111,6 +111,8 @@ class NewTunnelScreen(ModalScreen[tuple[str, int] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+s", "submit", "Submit"),
+        # Catch q so it doesn't bubble to App.action_quit and kill the dashboard
+        Binding("q", "cancel", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -197,6 +199,7 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+s", "submit", "Submit"),
+        Binding("q", "cancel", show=False),
     ]
 
     def __init__(self, default_user: str = ""):
@@ -272,6 +275,7 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("q", "cancel", show=False),  # Don't let q quit the app from here
         Binding("r", "refresh", "Refresh"),
         Binding("c", "custom", "Custom"),
     ]
@@ -310,6 +314,12 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
             )
             return
         title.update(f"[b]Pick node for '{self.tunnel_name}' via {self.jump_name}[/b]")
+        # Pre-warm the ssh_config_user cache on a background thread so the
+        # first Enter to pick a node doesn't pay the 2s subprocess cost.
+        jump = self.jump_name
+        threading.Thread(
+            target=lambda: ssh_config_user(jump), daemon=True
+        ).start()
         self._kick_off_refresh()
 
     def _kick_off_refresh(self) -> None:
@@ -480,7 +490,7 @@ class ConfirmScreen(ModalScreen[bool]):
 
     BINDINGS = [
         Binding("y", "confirm(True)", "Yes"),
-        Binding("n,escape", "confirm(False)", "No"),
+        Binding("n,escape,q", "confirm(False)", "No"),
     ]
 
     def __init__(self, message: str):
@@ -1041,23 +1051,43 @@ class Auto2FAApp(App):
             self._fallback_clipboard(url)
 
     def _fallback_clipboard(self, text: str) -> None:
-        """Best-effort system clipboard fallback via pbcopy / xclip / wl-copy."""
-        for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+        """Best-effort system clipboard fallback via pbcopy / xclip / wl-copy.
+
+        Runs on a worker thread because pbcopy/xclip can briefly hang on
+        some systems; we never want to freeze the UI for a copy operation.
+        """
+        def _run():
+            for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+                try:
+                    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                    try:
+                        p.communicate(text.encode(), timeout=2)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                        p.communicate()
+                        continue
+                    if p.returncode == 0:
+                        try:
+                            self.call_from_thread(
+                                lambda: self.notify(f"Copied  {text}  to clipboard", timeout=3)
+                            )
+                        except RuntimeError:
+                            pass
+                        return
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
             try:
-                p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-                p.communicate(text.encode())
-                if p.returncode == 0:
-                    self.notify(f"Copied  {text}  to clipboard", timeout=3)
-                    return
-            except FileNotFoundError:
-                continue
-            except Exception:
-                continue
-        # All clipboard mechanisms failed
-        self.notify(
-            f"Couldn't access clipboard. URL: {text}",
-            severity="warning", timeout=8,
-        )
+                self.call_from_thread(
+                    lambda: self.notify(
+                        f"Couldn't access clipboard. URL: {text}",
+                        severity="warning", timeout=8,
+                    )
+                )
+            except RuntimeError:
+                pass
+        threading.Thread(target=_run, daemon=True).start()
 
     def action_delete_tunnel(self) -> None:
         name = self._selected_tunnel_name()

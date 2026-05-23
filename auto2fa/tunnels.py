@@ -338,6 +338,14 @@ class TunnelManager:
             ts.active_jump = jump
             ts.last_msg = f"starting via {jump}"
 
+            # Defensive default for hand-edited tunnels.json missing last_user
+            user = ts.last_user or os.environ.get("USER", "")
+            if not user:
+                ts.status = "failed"
+                ts.last_msg = "no user (set last_user in tunnels.json)"
+                ts.active_jump = None
+                return
+
             argv = [
                 "-N",
                 "-J", jump,
@@ -346,9 +354,16 @@ class TunnelManager:
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "ExitOnForwardFailure=yes",
                 "-o", "ServerAliveInterval=15",
-                f"{ts.last_user}@{ts.last_node}",
+                f"{user}@{ts.last_node}",
             ]
-            child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
+            try:
+                child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=15)
+            except Exception as e:
+                # Could not spawn (ssh missing, OS resource limit, etc.)
+                ts.status = "failed"
+                ts.last_msg = f"spawn failed: {str(e)[:60]}"
+                ts.active_jump = None
+                return
             ts.child = child
 
             if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
