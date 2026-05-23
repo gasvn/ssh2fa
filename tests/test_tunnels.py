@@ -1,12 +1,13 @@
 import json
+import os
 import shutil
 import socket
-import tempfile
-import unittest
-from unittest.mock import MagicMock
-import unittest.mock
-import os
 import sys
+import tempfile
+import time
+import unittest
+import unittest.mock
+from unittest.mock import MagicMock
 
 mock_pexpect = MagicMock()
 mock_subprocess = MagicMock()
@@ -706,9 +707,37 @@ class TestOrphansAndShutdown(unittest.TestCase):
         tm = TunnelManager(host_managers={}, config_path=self.cfg)
         tm.add("a", self._free_port())
         tm.add("b", self._free_port())
-        with unittest.mock.patch.object(tm, "stop") as p_stop:
-            tm.shutdown()
-            self.assertEqual(p_stop.call_count, 2)
+        # Give each tunnel a live mock child so shutdown has something to kill
+        for name in ("a", "b"):
+            child = MagicMock()
+            child.isalive.return_value = True
+            tm.tunnels[name].child = child
+            tm.tunnels[name].status = "alive"
+            tm.tunnels[name].active_jump = "k8"
+        tm.shutdown()
+        for name in ("a", "b"):
+            tm.tunnels[name].child  # already nulled
+            self.assertIsNone(tm.tunnels[name].child)
+            self.assertEqual(tm.tunnels[name].status, "idle")
+            self.assertIsNone(tm.tunnels[name].active_jump)
+
+    def test_shutdown_does_not_block_on_held_lock(self):
+        """If start() is mid-probe holding the lock, shutdown shouldn't wait."""
+        from tunnels import TunnelManager
+        import threading as _th
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", self._free_port())
+        child = MagicMock(); child.isalive.return_value = True
+        tm.tunnels["a"].child = child
+        # Hold the lock from another thread
+        lock = tm._lock_for("a")
+        lock.acquire()
+        try:
+            t0 = time.time()
+            tm.shutdown()  # should return promptly, not block 10s
+            self.assertLess(time.time() - t0, 2.0)
+        finally:
+            lock.release()
 
     def test_cleanup_orphans_pgrep_and_kills(self):
         from tunnels import TunnelManager

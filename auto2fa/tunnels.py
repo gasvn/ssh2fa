@@ -537,10 +537,35 @@ class TunnelManager:
                     ts.last_msg = f"node {ts.last_node} no longer in squeue"
 
     def shutdown(self) -> None:
-        """Stop every tunnel. Called on dashboard exit."""
+        """Stop every tunnel. Called on dashboard exit.
+
+        Aggressive variant of stop(): does NOT wait for the per-tunnel lock,
+        because a tunnel currently inside a 10-second start() probe would
+        otherwise hang the app exit for that long. Kills children directly;
+        the running start()'s probe will just fail when it next polls the
+        (now-closed) port and return on its own.
+        """
         for name in list(self.tunnels.keys()):
             try:
-                self.stop(name)
+                lock = self._lock_for(name)
+                acquired = lock.acquire(timeout=0.5)
+                try:
+                    ts = self.tunnels.get(name)
+                    if ts is None:
+                        continue
+                    child = ts.child
+                    if child is not None:
+                        try:
+                            if child.isalive():
+                                child.terminate(force=True)
+                        except Exception:
+                            pass
+                    ts.child = None
+                    ts.active_jump = None
+                    ts.status = "idle"
+                finally:
+                    if acquired:
+                        lock.release()
             except Exception as e:
                 logger.error("[tunnel:%s] shutdown error: %s", name, e)
 
