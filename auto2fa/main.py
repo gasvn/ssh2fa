@@ -828,6 +828,19 @@ class Auto2FAApp(App):
             elif prev == "alive" and status == "starting":
                 # ssh -N child died and tick() is respawning. Toast quietly.
                 self.notify(f"↻  {name}: reconnecting…", severity="warning", timeout=4)
+            # Initial-connect failures (no alive-prev to compare): catch any
+            # transition into a bad state so the user sees what went wrong.
+            elif status == "failed":
+                self.notify(f"✕  {name}: {last_msg or 'failed to connect'}",
+                            severity="error", timeout=10)
+                _system_notify("Auto2FA: tunnel failed",
+                               f"{name}: {last_msg or 'failed to connect'}")
+            elif status == "port_busy":
+                self.notify(f"✕  {name}: port in use — change the port or free it",
+                            severity="error", timeout=8)
+            elif status == "stale":
+                self.notify(f"⚠  {name}: node not running — Enter to repick",
+                            severity="warning", timeout=8)
             # Good transitions
             elif prev in ("starting", "idle", "stale", "failed", "port_busy") \
                  and status == "alive":
