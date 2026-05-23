@@ -359,6 +359,60 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
         self.dismiss((node, user, is_range))
 
 
+class HelpScreen(ModalScreen[None]):
+    """Help overlay listing all keybindings and workflow."""
+
+    DEFAULT_CSS = """
+    HelpScreen { align: center middle; }
+    HelpScreen > Vertical {
+        width: 78; height: auto; max-height: 90%;
+        padding: 1 2;
+        border: thick $accent; background: $panel;
+    }
+    HelpScreen Label.title { content-align: center middle; padding-bottom: 1; }
+    HelpScreen Label.section { color: $accent; padding-top: 1; }
+    HelpScreen Label.row { padding-left: 2; }
+    HelpScreen Label.hint { color: $text-muted; content-align: center middle; padding-top: 1; }
+    """
+
+    BINDINGS = [Binding("escape,q,?", "dismiss_help", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("[b]Auto2FA — Keyboard Reference[/b]", classes="title")
+
+            yield Label("[b]Navigation[/b]", classes="section")
+            yield Label("  Tab            Switch between HOSTS and TUNNELS", classes="row")
+            yield Label("  ↑ / ↓          Move cursor within current section", classes="row")
+            yield Label("  Mouse click    Focus a row directly", classes="row")
+
+            yield Label("[b]Hosts[/b]", classes="section")
+            yield Label("  Space          Start / stop the selected host", classes="row")
+            yield Label("  M              Mount remote filesystem (sshfs)", classes="row")
+            yield Label("  R              Rotate connection pool", classes="row")
+
+            yield Label("[b]Tunnels[/b]", classes="section")
+            yield Label("  T              New tunnel (works from any section)", classes="row")
+            yield Label("  Enter          Pick a compute node for selected tunnel", classes="row")
+            yield Label("  Space          Start / stop the selected tunnel", classes="row")
+            yield Label("  D              Delete the selected tunnel", classes="row")
+
+            yield Label("[b]Global[/b]", classes="section")
+            yield Label("  ?              Show this help", classes="row")
+            yield Label("  Q              Quit", classes="row")
+
+            yield Label("[b]Workflow[/b]", classes="section")
+            yield Label("  1. Wait for a host to show ● Connected (green)", classes="row")
+            yield Label("  2. Press T → enter name + port → Submit", classes="row")
+            yield Label("  3. Cursor on the new tunnel → Enter → pick a job", classes="row")
+            yield Label("  4. Tunnel shows ● alive — use localhost:<port>", classes="row")
+
+            yield Label("Esc or Q to close", classes="hint")
+
+    def action_dismiss_help(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Yes/No confirmation."""
 
@@ -436,19 +490,32 @@ class TunnelTable(DataTable):
 class Auto2FAApp(App):
     CSS = """
     Screen { layout: vertical; }
-    #hosts_table, #tunnels_table { height: 1fr; }
-    .section-title { background: $primary 30%; color: $text; padding: 0 1; }
+    /* HOSTS gets only the space its rows need (+ header + a little padding);
+       TUNNELS gets all remaining vertical space. Most users have 2-3 hosts
+       and many tunnels, so this is the right balance. */
+    #hosts_table { height: auto; max-height: 40%; }
+    #tunnels_table { height: 1fr; }
+    .section-title {
+        background: $accent 40%;
+        color: $text;
+        padding: 0 1;
+        text-style: bold;
+    }
+    .section-title.dim { background: $surface; color: $text-muted; }
+    DataTable > .datatable--cursor { background: $accent 30%; }
     """
 
     # Only truly global bindings. Per-table keys live on HostTable / TunnelTable
     # so they don't interfere with Input widgets in modals.
-    # Only truly global bindings. T is also bound here so it works from the
-    # HOSTS table too (Input widgets in modals still consume 't' first, so
-    # typing 't' in a name field never triggers this).
+    # T is also bound here so it works from the HOSTS table too (Input widgets
+    # in modals still consume 't' first, so typing 't' in a name field never
+    # triggers this).
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("t", "new_tunnel", "New tunnel"),
         Binding("ctrl+n", "new_tunnel", show=False),  # alt shortcut
+        Binding("question_mark", "help", "Help"),
+        Binding("?", "help", show=False),
     ]
 
     def __init__(self, managers, tunnel_mgr):
@@ -465,17 +532,22 @@ class Auto2FAApp(App):
         # in flight for a tunnel, additional presses are ignored.
         self._toggle_in_flight: set[str] = set()
         self._toggle_in_flight_lock = threading.Lock()
+        # Optimistic-status overlay: shows pending action immediately, cleared
+        # once the real status changes. Maps tunnel name → display text.
+        self._pending_status: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Label("HOSTS", classes="section-title")
+        yield Label("HOSTS", classes="section-title", id="hosts_title")
         yield HostTable(id="hosts_table", cursor_type="row")
-        yield Label("TUNNELS  (Tab to focus)", classes="section-title")
+        yield Label("TUNNELS  ·  Tab to switch  ·  T to create  ·  Enter to pick node",
+                    classes="section-title", id="tunnels_title")
         yield TunnelTable(id="tunnels_table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "Auto2FA"
+        self.sub_title = "Press ? for help"
         hosts = self.query_one("#hosts_table", HostTable)
         hosts.add_columns("Host", "Status", "Pool", "FS", "Last Message")
         tunnels = self.query_one("#tunnels_table", TunnelTable)
@@ -484,9 +556,27 @@ class Auto2FAApp(App):
         self._refresh_tables()
         # Render-only timer (cheap, runs on UI thread)
         self.set_interval(0.5, self._safe_refresh_tables)
+        # Also refresh the summary every second
+        self.set_interval(1.0, self._refresh_summary)
         # tick() can block (start() probes for up to 10s) — run it on its own thread
         self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self._tick_thread.start()
+
+    def _refresh_summary(self) -> None:
+        connected = sum(1 for m in self.managers if m.is_master_ready())
+        active_tunnels = sum(1 for t in self.tunnel_mgr.tunnels.values() if t.status == "alive")
+        n_tunnels = len(self.tunnel_mgr.tunnels)
+        self.sub_title = (
+            f"hosts {connected}/{len(self.managers)} connected   "
+            f"·   tunnels {active_tunnels}/{n_tunnels} alive   "
+            f"·   ? for help"
+        )
+
+    def action_help(self) -> None:
+        # Don't stack help on top of other modals
+        if len(self.screen_stack) > 1:
+            return
+        self.push_screen(HelpScreen())
 
     def on_unmount(self) -> None:
         self._tick_stop.set()
@@ -566,9 +656,10 @@ class Auto2FAApp(App):
         rows = []
         for name in names:
             ts = self.tunnel_mgr.tunnels[name]
+            pending = self._pending_status.get(name)
             rows.append((
                 name, ts.local_port, ts.remote_port,
-                ts.last_node, ts.active_jump, ts.status, ts.last_msg,
+                ts.last_node, ts.active_jump, ts.status, ts.last_msg, pending,
             ))
         fp = tuple(rows)
         if fp == self._last_tunnel_fp and self._tunnel_names == names:
@@ -586,7 +677,7 @@ class Auto2FAApp(App):
             )
             return
         for name, row in zip(names, rows):
-            _, lp, rp, last_node, active_jump, status, last_msg = row
+            _, lp, rp, last_node, active_jump, status, last_msg, pending = row
             ports = f":{lp}→:{rp}"
             node = last_node or Text("(no node yet)", style="grey50")
             via = active_jump or "—"
@@ -599,8 +690,13 @@ class Auto2FAApp(App):
                 "failed": ("●", "red"),
             }.get(status, ("?", "white"))
             status_cell = Text()
-            status_cell.append(f"{glyph} {status}", style=color)
-            status_cell.append(f"   {last_msg}", style="grey50")
+            if pending:
+                status_cell.append(f"◐ {pending}", style="bold yellow")
+                status_cell.append(f"   (was {status})", style="grey50")
+            else:
+                status_cell.append(f"{glyph} {status}", style=color)
+                if last_msg:
+                    status_cell.append(f"   {last_msg}", style="grey50")
             table.add_row(name, ports, node, via, status_cell)
         if 0 <= prev_row < len(names):
             table.move_cursor(row=prev_row)
@@ -640,6 +736,16 @@ class Auto2FAApp(App):
                 return
             self._toggle_in_flight.add(name)
 
+        # Optimistic UI: show pending action immediately, so the user gets
+        # instant feedback while the (possibly 10s) start probe runs.
+        ts = self.tunnel_mgr.tunnels.get(name)
+        if ts is not None:
+            if ts.status in ("alive", "starting"):
+                self._pending_status[name] = "stopping…"
+            else:
+                self._pending_status[name] = "starting…"
+            self._refresh_tunnels()
+
         # toggle() may call start() which blocks for up to 10s on the port
         # probe. Run off the UI thread so the dashboard stays responsive.
         def _do_toggle():
@@ -650,6 +756,7 @@ class Auto2FAApp(App):
             finally:
                 with self._toggle_in_flight_lock:
                     self._toggle_in_flight.discard(name)
+                self._pending_status.pop(name, None)
             try:
                 self.call_from_thread(self._refresh_tunnels)
             except RuntimeError:
