@@ -716,8 +716,10 @@ class Auto2FAApp(App):
                 pool = f"{mgr.active_index}/{alive}"
             except Exception:
                 pool = "?"
-            fs = "📂" if ("Mounted" in mgr.last_msg or "Mounting" in mgr.last_msg) else ""
-            # Use raw status string in the fingerprint (markup-aware compare unnecessary)
+            # Use the dedicated is_mounted bit, not string-sniffing last_msg —
+            # last_msg gets overwritten by the pool monitor and the indicator
+            # would disappear within seconds otherwise.
+            fs = "📂" if getattr(mgr, "is_mounted", False) else ""
             rows.append((mgr.host, mgr.status, pool, fs, mgr.last_msg))
         fp = tuple(rows)
         if fp == self._last_host_fp:
@@ -979,8 +981,16 @@ class Auto2FAApp(App):
 
     def action_mount_host(self) -> None:
         mgr = self._selected_host()
-        if mgr:
-            threading.Thread(target=mgr.mount_host, daemon=True).start()
+        if not mgr:
+            return
+        # Toggle: mount if not mounted, unmount if mounted. Run off the UI
+        # thread because sshfs / umount can take seconds.
+        def _do_mount():
+            try:
+                mgr.toggle_mount()
+            except Exception as e:
+                logger.error(f"toggle_mount({mgr.host}) failed: {e}")
+        threading.Thread(target=_do_mount, daemon=True).start()
 
     def action_rotate_host(self) -> None:
         mgr = self._selected_host()
@@ -1051,17 +1061,14 @@ class Auto2FAApp(App):
         if ts is None:
             return
         url = f"localhost:{ts.local_port}"
-        copied = False
+        # OSC52 (copy_to_clipboard) is a one-way terminal sequence — we can't
+        # detect whether the terminal actually copied it. So ALWAYS try the
+        # system clipboard tool too. That call notifies the user itself.
         try:
-            self.copy_to_clipboard(url)
-            copied = True
+            self.copy_to_clipboard(url)  # bonus path, may silently no-op
         except Exception:
             pass
-        if copied:
-            self.notify(f"Copied  {url}  to clipboard", timeout=3)
-        else:
-            # Fallback (notifies the user itself based on result)
-            self._fallback_clipboard(url)
+        self._fallback_clipboard(url)
 
     def _fallback_clipboard(self, text: str) -> None:
         """Best-effort system clipboard fallback via pbcopy / xclip / wl-copy.

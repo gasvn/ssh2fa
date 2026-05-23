@@ -122,7 +122,11 @@ class SSHHostManager(threading.Thread):
         self.running = True   # Thread running state
         self.status = "Stopped"
         self.last_msg = "Ready"
-        
+        # Dedicated mount-state bit. Was previously inferred by string-sniffing
+        # last_msg, which lost the indicator the moment manage_pool_loop wrote
+        # a new last_msg like "Pool Active (0)".
+        self.is_mounted = False
+
         # Pooling State
         self.pool = {}        # {index: pexpect_child}
         self.pool_status = {} # {index: "Init/Ready/Dead"}
@@ -512,55 +516,70 @@ class SSHHostManager(threading.Thread):
         return True # Handled by monitor loop
             
     def mount_host(self):
-        """Attempts to mount the remote host using sshfs"""
+        """Attempts to mount the remote host using sshfs. Returns True iff mounted."""
         if not shutil.which("sshfs"):
-            return 
-            
+            self.last_msg = "sshfs not installed"
+            return False
+
         mount_point = os.path.expanduser(f"~/Mounts/{self.host}")
         os.makedirs(mount_point, exist_ok=True)
         if os.path.ismount(mount_point):
-            return
+            self.is_mounted = True
+            return True
 
         logger.info(f"Mounting {self.host} to {mount_point} via symlink")
         self.last_msg = "Mounting FS..."
-        
-        # Use target_control_path (Symlink)
-        # sshfs should follow it if we point to it OR if config points to it.
-        # User config points to target_control_path.
-        
+
         cmd = f"sshfs {self.host}:/ {mount_point} -o reconnect,ServerAliveInterval=15,volname={self.host},StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
-        
+
         try:
-            # We assume passwordless because of control master
             subprocess.run(cmd, shell=True, timeout=10)
-            
             if os.path.ismount(mount_point):
-                 send_notification("Auto2FA", f"Mounted files for {self.host}")
-                 self.last_msg = "Mounted"
+                self.is_mounted = True
+                send_notification("Auto2FA", f"Mounted files for {self.host}")
+                self.last_msg = "Mounted"
+                return True
+            else:
+                self.last_msg = "Mount Failed"
+                return False
         except Exception as e:
             logger.error(f"Failed to mount: {e}")
             self.last_msg = "Mount Failed"
+            return False
 
     def unmount_host(self):
-        """Unmounts the sshfs volume"""
+        """Unmounts the sshfs volume. Returns True iff unmounted (or never mounted)."""
         if not shutil.which("sshfs"):
-            return
+            return True
 
         mount_point = os.path.expanduser(f"~/Mounts/{self.host}")
-        if not os.path.exists(mount_point):
-            return
-            
+        if not os.path.exists(mount_point) or not os.path.ismount(mount_point):
+            self.is_mounted = False
+            return True
+
         try:
             cmd = ["umount", "-f", mount_point]
             subprocess.run(cmd, capture_output=True, timeout=5)
-            
             if not os.path.ismount(mount_point):
+                self.is_mounted = False
+                self.last_msg = "Unmounted"
                 try:
                     os.rmdir(mount_point)
-                except:
+                except Exception:
                     pass
+                return True
+            self.last_msg = "Unmount Failed"
+            return False
         except Exception as e:
             logger.error(f"Failed to unmount {self.host}: {e}")
+            self.last_msg = "Unmount Failed"
+            return False
+
+    def toggle_mount(self):
+        """User-facing mount toggle: mount if not mounted, else unmount."""
+        if self.is_mounted or os.path.ismount(os.path.expanduser(f"~/Mounts/{self.host}")):
+            return self.unmount_host()
+        return self.mount_host()
 
     def toggle(self):
         self.active = not self.active
