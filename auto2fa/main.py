@@ -317,9 +317,24 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
         if not jobs:
             err.update("No running jobs. Press C to enter a node manually.")
             return
-        err.update("")
-        for j in jobs:
-            table.add_row(j.jobid, j.partition, j.name, j.time, j.node)
+
+        # Smart default: if the previously-used node is still in the list,
+        # pre-select it (saves the user from re-finding it).
+        last_node = self.tunnel_mgr.tunnels[self.tunnel_name].last_node
+        preselect = -1
+        for i, j in enumerate(jobs):
+            marker = ""
+            if j.node == last_node:
+                marker = "  ← previous"
+                preselect = i
+            table.add_row(j.jobid, j.partition, j.name, j.time,
+                          Text(j.node) + Text(marker, style="yellow"))
+        if preselect >= 0:
+            err.update(Text("Previously used node is highlighted. Enter to use it again, or pick another.",
+                            style="grey62"))
+            table.move_cursor(row=preselect)
+        else:
+            err.update("")
         table.focus()
 
     def action_refresh(self) -> None:
@@ -395,6 +410,7 @@ class HelpScreen(ModalScreen[None]):
             yield Label("  T              New tunnel (works from any section)", classes="row")
             yield Label("  Enter          Pick a compute node for selected tunnel", classes="row")
             yield Label("  Space          Start / stop the selected tunnel", classes="row")
+            yield Label("  Y              Copy 'localhost:<port>' to clipboard", classes="row")
             yield Label("  D              Delete the selected tunnel", classes="row")
 
             yield Label("[b]Global[/b]", classes="section")
@@ -473,6 +489,7 @@ class TunnelTable(DataTable):
         Binding("space", "tunnel_toggle", "Start/Stop"),
         Binding("t", "tunnel_new", "New tunnel"),
         Binding("d", "tunnel_delete", "Delete"),
+        Binding("y", "tunnel_yank", "Copy URL"),
     ]
 
     def action_tunnel_toggle(self) -> None:
@@ -483,6 +500,9 @@ class TunnelTable(DataTable):
 
     def action_tunnel_delete(self) -> None:
         self.app.action_delete_tunnel()
+
+    def action_tunnel_yank(self) -> None:
+        self.app.action_yank_url()
 
 
 # ---------- Main app ----------
@@ -535,6 +555,10 @@ class Auto2FAApp(App):
         # Optimistic-status overlay: shows pending action immediately, cleared
         # once the real status changes. Maps tunnel name → display text.
         self._pending_status: dict[str, str] = {}
+        # Animation frame for "starting/connecting" spinner
+        self._spinner_frame: int = 0
+        # Force tunnel-table rerender on the next refresh (e.g. when spinner advances)
+        self._force_tunnel_refresh: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -553,14 +577,36 @@ class Auto2FAApp(App):
         tunnels = self.query_one("#tunnels_table", TunnelTable)
         tunnels.add_columns("Name", "Local→Remote", "Node", "Via", "Status")
         hosts.focus()
+        self._update_section_focus_styles()
         self._refresh_tables()
         # Render-only timer (cheap, runs on UI thread)
         self.set_interval(0.5, self._safe_refresh_tables)
         # Also refresh the summary every second
         self.set_interval(1.0, self._refresh_summary)
+        # Spinner animation (250ms — smooth feeling)
+        self.set_interval(0.25, self._advance_spinner)
         # tick() can block (start() probes for up to 10s) — run it on its own thread
         self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self._tick_thread.start()
+
+    def on_descendant_focus(self, event) -> None:
+        """Update section title styling whenever focus changes."""
+        self._update_section_focus_styles()
+
+    def _update_section_focus_styles(self) -> None:
+        try:
+            hosts_title = self.query_one("#hosts_title", Label)
+            tunnels_title = self.query_one("#tunnels_title", Label)
+        except Exception:
+            return
+        focused = self.focused
+        focused_id = getattr(focused, "id", None) if focused is not None else None
+        if focused_id == "hosts_table":
+            hosts_title.remove_class("dim")
+            tunnels_title.add_class("dim")
+        elif focused_id == "tunnels_table":
+            tunnels_title.remove_class("dim")
+            hosts_title.add_class("dim")
 
     def _refresh_summary(self) -> None:
         connected = sum(1 for m in self.managers if m.is_master_ready())
@@ -571,6 +617,19 @@ class Auto2FAApp(App):
             f"·   tunnels {active_tunnels}/{n_tunnels} alive   "
             f"·   ? for help"
         )
+
+    SPINNER_FRAMES = "◐◓◑◒"
+
+    def _advance_spinner(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(self.SPINNER_FRAMES)
+        # Only force a re-render if any tunnel is in a spinning state
+        spinning = any(
+            ts.status in ("starting",) or self._pending_status.get(name)
+            for name, ts in self.tunnel_mgr.tunnels.items()
+        )
+        if spinning and len(self.screen_stack) <= 1:
+            self._force_tunnel_refresh = True
+            self._refresh_tunnels()
 
     def action_help(self) -> None:
         # Don't stack help on top of other modals
@@ -662,17 +721,20 @@ class Auto2FAApp(App):
                 ts.last_node, ts.active_jump, ts.status, ts.last_msg, pending,
             ))
         fp = tuple(rows)
-        if fp == self._last_tunnel_fp and self._tunnel_names == names:
+        if not self._force_tunnel_refresh and fp == self._last_tunnel_fp and self._tunnel_names == names:
             return
+        self._force_tunnel_refresh = False
         self._last_tunnel_fp = fp
         self._tunnel_names = names
 
+        spin = self.SPINNER_FRAMES[self._spinner_frame]
         table = self.query_one("#tunnels_table", TunnelTable)
         prev_row = table.cursor_row
         table.clear()
         if not names:
             table.add_row(
-                Text("(no tunnels — press T to create one)", style="grey50"),
+                Text("✨  No tunnels yet. Press T (or Ctrl+N) to create one.",
+                     style="bold yellow"),
                 "", "", "", "",
             )
             return
@@ -681,25 +743,77 @@ class Auto2FAApp(App):
             ports = f":{lp}→:{rp}"
             node = last_node or Text("(no node yet)", style="grey50")
             via = active_jump or "—"
-            glyph, color = {
-                "alive": ("●", "green"),
-                "starting": ("◐", "yellow"),
-                "stale": ("○", "red"),
-                "idle": ("○", "grey50"),
-                "port_busy": ("●", "red"),
-                "failed": ("●", "red"),
-            }.get(status, ("?", "white"))
-            status_cell = Text()
-            if pending:
-                status_cell.append(f"◐ {pending}", style="bold yellow")
-                status_cell.append(f"   (was {status})", style="grey50")
-            else:
-                status_cell.append(f"{glyph} {status}", style=color)
-                if last_msg:
-                    status_cell.append(f"   {last_msg}", style="grey50")
+
+            status_cell = self._render_tunnel_status(status, pending, last_msg, active_jump, lp, spin)
             table.add_row(name, ports, node, via, status_cell)
         if 0 <= prev_row < len(names):
             table.move_cursor(row=prev_row)
+
+    def _render_tunnel_status(self, status: str, pending: str | None,
+                              last_msg: str, jump: str | None,
+                              local_port: int, spin: str) -> Text:
+        """Render the Status column cell with friendly human-readable text."""
+        cell = Text()
+        if pending:
+            # Optimistic feedback
+            cell.append(f"{spin} {pending}", style="bold yellow")
+            return cell
+
+        if status == "alive":
+            cell.append("● ", style="green")
+            cell.append("Connected", style="bold green")
+            if jump:
+                cell.append(f"  via {jump}", style="grey62")
+            cell.append(f"   → localhost:{local_port}", style="grey50")
+            return cell
+
+        if status == "starting":
+            cell.append(f"{spin} ", style="yellow")
+            cell.append("Connecting…", style="bold yellow")
+            if jump:
+                cell.append(f"  via {jump}", style="grey62")
+            return cell
+
+        if status == "stale":
+            cell.append("○ ", style="red")
+            cell.append("Job ended", style="bold red")
+            cell.append("   Press Enter to repick", style="grey62")
+            return cell
+
+        if status == "idle":
+            if last_msg and "waiting for jump" in last_msg.lower():
+                cell.append("○ ", style="yellow")
+                cell.append("Waiting for jump host", style="bold yellow")
+                return cell
+            if last_msg and "no node" in last_msg.lower():
+                cell.append("○ ", style="grey50")
+                cell.append("No node selected", style="bold")
+                cell.append("   Press Enter to pick", style="grey62")
+                return cell
+            cell.append("○ ", style="grey50")
+            cell.append("Stopped", style="bold")
+            cell.append("   Press Space to start", style="grey62")
+            return cell
+
+        if status == "port_busy":
+            cell.append("● ", style="red")
+            cell.append(f"Port {local_port} in use", style="bold red")
+            cell.append("   Free it or change the port", style="grey62")
+            return cell
+
+        if status == "failed":
+            cell.append("● ", style="red")
+            cell.append("Failed", style="bold red")
+            if last_msg:
+                cell.append(f"   {last_msg}", style="grey62")
+            cell.append("   Press Space to retry", style="grey50")
+            return cell
+
+        # Fallback
+        cell.append(f"? {status}", style="white")
+        if last_msg:
+            cell.append(f"   {last_msg}", style="grey50")
+        return cell
 
     # ---- Helpers ----
 
@@ -810,6 +924,7 @@ class Auto2FAApp(App):
             if not result:
                 return
             node, user, is_range = result
+            self.notify(f"Connecting '{name}' to {node}…", timeout=3)
             # set_node may call start() which probes a port for up to 10s.
             # Run it off the UI thread so we don't freeze.
             def do_set():
@@ -826,6 +941,36 @@ class Auto2FAApp(App):
             threading.Thread(target=do_set, daemon=True).start()
 
         self.push_screen(NodePickerScreen(self.tunnel_mgr, name), on_picked)
+
+    def action_yank_url(self) -> None:
+        """Copy localhost:<port> for the selected tunnel to the clipboard."""
+        name = self._selected_tunnel_name()
+        if not name:
+            return
+        ts = self.tunnel_mgr.tunnels.get(name)
+        if ts is None:
+            return
+        url = f"localhost:{ts.local_port}"
+        try:
+            self.copy_to_clipboard(url)
+            self.notify(f"Copied  {url}  to clipboard", severity="information", timeout=3)
+        except Exception:
+            # Fallback for terminals without OSC52 clipboard support
+            self._fallback_clipboard(url)
+
+    @staticmethod
+    def _fallback_clipboard(text: str) -> None:
+        """Best-effort system clipboard fallback via pbcopy / xclip / wl-copy."""
+        for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+            try:
+                p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                p.communicate(text.encode())
+                if p.returncode == 0:
+                    return
+            except FileNotFoundError:
+                continue
+            except Exception:
+                continue
 
     def action_delete_tunnel(self) -> None:
         name = self._selected_tunnel_name()
@@ -845,6 +990,9 @@ class Auto2FAApp(App):
                     logger.error(f"delete({name}) failed: {e}")
                 try:
                     self.call_from_thread(self._refresh_tunnels)
+                    self.call_from_thread(
+                        lambda: self.notify(f"Deleted tunnel '{name}'", timeout=3)
+                    )
                 except RuntimeError:
                     pass  # app shut down
             threading.Thread(target=_do_delete, daemon=True).start()
