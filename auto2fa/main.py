@@ -604,6 +604,10 @@ class Auto2FAApp(App):
         # Track last-seen status per tunnel to notify on transitions like
         # alive → failed / stale (so the user knows when things break).
         self._last_seen_status: dict[str, str] = {}
+        # Names the user just explicitly stopped — used to suppress the
+        # "connection dropped — reconnecting" toast on the alive→idle
+        # transition that follows. One-shot; cleared by the notify pass.
+        self._user_stopped: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -824,9 +828,14 @@ class Auto2FAApp(App):
                 self.notify("✕  " + msg, severity="error", timeout=10)
                 _system_notify("Auto2FA: tunnel failed", msg)
             elif prev == "alive" and status == "idle":
-                msg = f"{name}: connection dropped — waiting to reconnect"
-                self.notify("⚠  " + msg, severity="warning", timeout=8)
-                _system_notify("Auto2FA: tunnel idle", msg)
+                if name in self._user_stopped:
+                    # Intentional stop — quiet confirmation, no scary warning
+                    self._user_stopped.discard(name)
+                    self.notify(f"⊘  {name} stopped", timeout=3)
+                else:
+                    msg = f"{name}: connection dropped — waiting to reconnect"
+                    self.notify("⚠  " + msg, severity="warning", timeout=8)
+                    _system_notify("Auto2FA: tunnel idle", msg)
             elif prev == "alive" and status == "starting":
                 # ssh -N child died and tick() is respawning. Toast quietly.
                 self.notify(f"↻  {name}: reconnecting…", severity="warning", timeout=4)
@@ -954,13 +963,25 @@ class Auto2FAApp(App):
 
         # Optimistic UI: show pending action immediately, so the user gets
         # instant feedback while the (possibly 10s) start probe runs.
+        # Wrapped in try/except so a render failure can't leave _toggle_in_flight
+        # stuck (which would silently ignore all subsequent Space presses).
         ts = self.tunnel_mgr.tunnels.get(name)
+        user_initiated_stop = False
         if ts is not None:
-            if ts.status in ("alive", "starting"):
-                self._pending_status[name] = "stopping…"
-            else:
-                self._pending_status[name] = "starting…"
-            self._refresh_tunnels()
+            try:
+                if ts.status in ("alive", "starting"):
+                    self._pending_status[name] = "stopping…"
+                    user_initiated_stop = True
+                else:
+                    self._pending_status[name] = "starting…"
+                self._refresh_tunnels()
+            except Exception as e:
+                logger.error(f"optimistic refresh failed: {e}")
+        # Track user-initiated stops so the alive→idle transition doesn't
+        # toast "connection dropped — waiting to reconnect" (it's not — the
+        # user just stopped it intentionally).
+        if user_initiated_stop:
+            self._user_stopped.add(name)
 
         # toggle() may call start() which blocks for up to 10s on the port
         # probe. Run off the UI thread so the dashboard stays responsive.

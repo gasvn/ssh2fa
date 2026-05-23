@@ -530,10 +530,24 @@ class SSHHostManager(threading.Thread):
         logger.info(f"Mounting {self.host} to {mount_point} via symlink")
         self.last_msg = "Mounting FS..."
 
-        cmd = f"sshfs {self.host}:/ {mount_point} -o reconnect,ServerAliveInterval=15,volname={self.host},StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
-
+        # Use argv list (no shell) — guards against host names containing
+        # spaces, semicolons, or other shell metacharacters.
+        argv = [
+            "sshfs",
+            f"{self.host}:/",
+            mount_point,
+            "-o",
+            ",".join([
+                "reconnect",
+                "ServerAliveInterval=15",
+                f"volname={self.host}",
+                "StrictHostKeyChecking=no",
+                "UserKnownHostsFile=/dev/null",
+            ]),
+        ]
         try:
-            subprocess.run(cmd, shell=True, timeout=10)
+            subprocess.run(argv, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             if os.path.ismount(mount_point):
                 self.is_mounted = True
                 send_notification("Auto2FA", f"Mounted files for {self.host}")
@@ -576,10 +590,23 @@ class SSHHostManager(threading.Thread):
             return False
 
     def toggle_mount(self):
-        """User-facing mount toggle: mount if not mounted, else unmount."""
-        if self.is_mounted or os.path.ismount(os.path.expanduser(f"~/Mounts/{self.host}")):
-            return self.unmount_host()
-        return self.mount_host()
+        """User-facing mount toggle: mount if not mounted, else unmount.
+
+        Debounced via self._mount_in_flight so rapid M presses don't fire
+        simultaneous mount + unmount on the same host.
+        """
+        if not hasattr(self, "_mount_in_flight"):
+            self._mount_in_flight = threading.Lock()
+        if not self._mount_in_flight.acquire(blocking=False):
+            return False  # another mount/unmount already running
+        try:
+            if self.is_mounted or os.path.ismount(
+                os.path.expanduser(f"~/Mounts/{self.host}")
+            ):
+                return self.unmount_host()
+            return self.mount_host()
+        finally:
+            self._mount_in_flight.release()
 
     def toggle(self):
         self.active = not self.active
