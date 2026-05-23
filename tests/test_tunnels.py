@@ -601,8 +601,13 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.last_node = "node1"; ts.last_user = "shgao"
         dead = MagicMock(); dead.isalive.return_value = False
         ts.child = dead
-        with unittest.mock.patch.object(tm, "start") as p_start:
+        # tick() must call stop() first to clear status="alive", THEN start() —
+        # otherwise start() short-circuits on status check and the dead tunnel
+        # is never actually respawned.
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop:
             tm.tick()
+            p_stop.assert_called_once_with("x")
             p_start.assert_called_once_with("x")
 
     def test_tick_failover_when_jump_master_gone(self):

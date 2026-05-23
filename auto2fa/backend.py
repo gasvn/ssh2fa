@@ -19,15 +19,22 @@ ROTATION_CHECK_INTERVAL = 5   # Seconds (Remote Check - Light Load)
 HEARTBEAT_INTERVAL = 3        # Seconds (Local Check - Zero Load)
 
 def send_notification(title, message):
-    """Sends a native macOS desktop notification"""
-    try:
-        # Escape quotes to prevent shell injection/errors
-        safe_title = title.replace('"', '\\"')
-        safe_message = message.replace('"', '\\"')
-        cmd = f'osascript -e \'display notification "{safe_message}" with title "{safe_title}"\''
-        subprocess.run(cmd, shell=True, check=False)
-    except Exception as e:
-        logger.error(f"Failed to send notification: {e}")
+    """Sends a native macOS desktop notification.
+
+    Runs on a daemon thread with a timeout — osascript can hang for several
+    seconds (Notification Center backlog, DND changes), and we must never
+    block the host's manage_pool_loop on a cosmetic notification.
+    """
+    def _run():
+        try:
+            safe_title = title.replace('"', '\\"')
+            safe_message = message.replace('"', '\\"')
+            cmd = f'osascript -e \'display notification "{safe_message}" with title "{safe_title}"\''
+            subprocess.run(cmd, shell=True, check=False, timeout=2,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"Failed to send notification: {e}")
+    threading.Thread(target=_run, daemon=True).start()
 
 def generate_passcode_from_secret(secret):
     try:
@@ -64,9 +71,10 @@ def cleanup_stale_connection(control_path, host, kill_zombies=False):
     # 2. Identify and kill process holding the socket (if socket still exists)
     if os.path.exists(control_path):
         try:
-            # Try lsof first (Precise)
-            # lsof -t returns just PID
-            result = subprocess.run(["lsof", "-t", control_path], capture_output=True, text=True)
+            # Try lsof first (Precise). Add a timeout — lsof can hang on
+            # NFS or wedged sockets and would block the host thread otherwise.
+            result = subprocess.run(["lsof", "-t", control_path],
+                                    capture_output=True, text=True, timeout=5)
             pids = result.stdout.strip().split()
             if pids:
                 logger.info(f"[{host}] Killing stale PIDs holding socket: {pids}")
@@ -97,9 +105,10 @@ def cleanup_stale_connection(control_path, host, kill_zombies=False):
     if kill_zombies:
         try:
             # Pkill pattern: "ssh .* <host>"
-            # We use -f for full command line match
+            # We use -f for full command line match. Timeout because pkill -f
+            # scans every process and can be slow under load.
             logger.info(f"[{host}] Killing zombie SSH clients...")
-            subprocess.run(["pkill", "-f", f"ssh .*{host}"], check=False)
+            subprocess.run(["pkill", "-f", f"ssh .*{host}"], check=False, timeout=5)
         except Exception:
             pass
 
@@ -133,9 +142,11 @@ class SSHHostManager(threading.Thread):
     def get_ssh_control_path(self, host):
         """Resolves the ControlPath that ssh expects to use for this host"""
         try:
-            # query ssh for the configuration options
+            # query ssh for the configuration options. timeout so we don't
+            # hang the entire app startup on a wedged ssh / proxy config.
             cmd = ["ssh", "-G", host]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    check=True, timeout=5)
             for line in result.stdout.splitlines():
                 if line.lower().startswith("controlpath "):
                     path = line.split(" ", 1)[1].strip()
@@ -166,6 +177,11 @@ class SSHHostManager(threading.Thread):
             self.cleanup_all()
         except Exception as e:
             logger.error(f"[{self.host}] final cleanup_all error: {e}")
+        # Unmount any sshfs mount so a broken volume isn't left behind.
+        try:
+            self.unmount_host()
+        except Exception as e:
+            logger.error(f"[{self.host}] final unmount_host error: {e}")
 
     def cleanup_all(self):
         """Clean up everything"""
@@ -231,16 +247,27 @@ class SSHHostManager(threading.Thread):
             "-o ControlPersist=yes"
         )
         
-        cmd = f"ssh {ssh_options} {self.host}"
-        
+        # Build argv as a list directly so paths containing spaces (e.g. a
+        # home directory like "/Users/john doe/.ssh/...") don't get split.
+        ssh_argv = [
+            "-v",
+            "-E", log_file,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ServerAliveInterval=10",
+            "-o", "ServerAliveCountMax=2",
+            "-o", "ConnectTimeout=10",
+            "-o", "ControlMaster=auto",
+            "-o", f"ControlPath={path}",
+            "-o", "ControlPersist=yes",
+            self.host,
+        ]
+
         try:
             self.last_msg = f"Init Spawn #{index}..."
             try:
-                # Debugging spawn hang - forcing ignore of parent headers
-                # using preexec_fn=os.setsid might help detach?
-                cmd_parts = cmd.split()
                 self.last_msg = f"Spawning #{index}..."
-                child = pexpect.spawn(cmd_parts[0], cmd_parts[1:], encoding='utf-8', timeout=20)
+                child = pexpect.spawn("ssh", ssh_argv, encoding='utf-8', timeout=20)
                 self.last_msg = f"Spawned #{index}"
                 
                 # Debug Pexpect
@@ -313,13 +340,17 @@ class SSHHostManager(threading.Thread):
                 logger.info(f"[{self.host}] Master #{index} Ready")
                 return True
             else:
-                if not password_sent and not should_send_otp and idx == 6: # EOF shifted to 6
+                # First-expect index layout: 0=Password, 1=Verification[c]ode,
+                # 2=Token, 3=Verification code, 4=$, 5=#, 6=TIMEOUT, 7=EOF
+                if not password_sent and not should_send_otp and idx == 7:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Process exited immediately (EOF). Likely Can't Assign Address or Config Error.")
+                elif not password_sent and not should_send_otp and idx == 6:
+                    logger.warning(f"[{self.host}] Master #{index} Failed Login. Timed out waiting for any prompt (host unreachable?).")
                 elif idx == 4:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Server looped back to Password prompt (Wrong Creds/OTP?). FinalIdx={idx}")
                 else:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Steps: Pwd={password_sent}, OTP={should_send_otp}, FinalIdx={idx}")
-                
+
                 self.pool_status[index] = "Failed"
                 return False
                 
@@ -419,7 +450,11 @@ class SSHHostManager(threading.Thread):
                                 self.update_symlink(other)
                 
                 if current_time - last_heartbeat > HEARTBEAT_INTERVAL:
-                    last_heartbeat = current_time
+                    # Use time.time() not current_time — the loop body above
+                    # may have done a 20s start_master, making current_time
+                    # a stale "now" that would fire the heartbeat again
+                    # immediately on the next iteration.
+                    last_heartbeat = time.time()
                 
                 # Rotation Check
                 if time.time() - last_rotate_check > ROTATION_CHECK_INTERVAL:
@@ -430,6 +465,9 @@ class SSHHostManager(threading.Thread):
         except Exception as e:
             logger.error(f"[{self.host}] manage_pool_loop CRASHED: {e}")
             self.status = "[red]Pool Crashed[/red]"
+            # Back off before run() re-enters us, so a systemic failure
+            # (wrong creds, network outage) doesn't hammer the server.
+            time.sleep(5)
             self.last_msg = str(e)[:30]
 
     def start_master_async(self, index):

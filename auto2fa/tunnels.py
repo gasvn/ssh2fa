@@ -491,10 +491,13 @@ class TunnelManager:
                 continue
             # status == "alive"
 
-            # Case 1: child died
+            # Case 1: child died → must clear status first so start() proceeds.
+            # start() short-circuits on status in ("alive", "starting"), so
+            # calling it directly would be a permanent no-op.
             child = ts.child
             if child is None or not child.isalive():
                 logger.warning("[tunnel:%s] child died, respawning", name)
+                self.stop(name)
                 self.start(name)
                 continue
 
