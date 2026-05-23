@@ -47,18 +47,24 @@ def load_hosts():
 
 
 def _system_notify(title: str, message: str) -> None:
-    """Best-effort native desktop notification (macOS via osascript)."""
-    try:
-        safe_title = title.replace('"', '\\"')
-        safe_msg = message.replace('"', '\\"')
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification "{safe_msg}" with title "{safe_title}"'],
-            check=False, timeout=2,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    """Best-effort native desktop notification (macOS via osascript).
+
+    Runs on a daemon thread — osascript can take up to its timeout window
+    and we must never block the Textual event loop.
+    """
+    def _run():
+        try:
+            safe_title = title.replace('"', '\\"')
+            safe_msg = message.replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display notification "{safe_msg}" with title "{safe_title}"'],
+                check=False, timeout=2,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 
 
 _SSH_USER_CACHE: dict[str, str] = {}
@@ -318,11 +324,15 @@ class NodePickerScreen(ModalScreen[tuple[str, str, bool] | None]):
         def worker():
             try:
                 jobs = NodeDiscovery.discover(mgr)
-                self.app.call_from_thread(self._on_jobs_loaded, jobs, None)
+                err_msg = None
             except DiscoveryError as e:
-                self.app.call_from_thread(self._on_jobs_loaded, [], str(e))
+                jobs, err_msg = [], str(e)
             except Exception as e:
-                self.app.call_from_thread(self._on_jobs_loaded, [], f"unexpected: {e}")
+                jobs, err_msg = [], f"unexpected: {e}"
+            try:
+                self.app.call_from_thread(self._on_jobs_loaded, jobs, err_msg)
+            except RuntimeError:
+                pass  # app shut down before worker finished
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -736,10 +746,13 @@ class Auto2FAApp(App):
         return t
 
     def _refresh_tunnels(self) -> None:
-        names = list(self.tunnel_mgr.tunnels.keys())
+        # Snapshot via items() so a concurrent delete from a worker thread
+        # can't make the names/values fall out of sync. Iterating items()
+        # of a dict snapshot is safe even if the original dict mutates.
+        names: list[str] = []
         rows = []
-        for name in names:
-            ts = self.tunnel_mgr.tunnels[name]
+        for name, ts in list(self.tunnel_mgr.tunnels.items()):
+            names.append(name)
             pending = self._pending_status.get(name)
             rows.append((
                 name, ts.local_port, ts.remote_port,
@@ -1015,26 +1028,36 @@ class Auto2FAApp(App):
         if ts is None:
             return
         url = f"localhost:{ts.local_port}"
+        copied = False
         try:
             self.copy_to_clipboard(url)
-            self.notify(f"Copied  {url}  to clipboard", severity="information", timeout=3)
+            copied = True
         except Exception:
-            # Fallback for terminals without OSC52 clipboard support
+            pass
+        if copied:
+            self.notify(f"Copied  {url}  to clipboard", timeout=3)
+        else:
+            # Fallback (notifies the user itself based on result)
             self._fallback_clipboard(url)
 
-    @staticmethod
-    def _fallback_clipboard(text: str) -> None:
+    def _fallback_clipboard(self, text: str) -> None:
         """Best-effort system clipboard fallback via pbcopy / xclip / wl-copy."""
         for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
             try:
                 p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
                 p.communicate(text.encode())
                 if p.returncode == 0:
+                    self.notify(f"Copied  {text}  to clipboard", timeout=3)
                     return
             except FileNotFoundError:
                 continue
             except Exception:
                 continue
+        # All clipboard mechanisms failed
+        self.notify(
+            f"Couldn't access clipboard. URL: {text}",
+            severity="warning", timeout=8,
+        )
 
     def action_delete_tunnel(self) -> None:
         name = self._selected_tunnel_name()

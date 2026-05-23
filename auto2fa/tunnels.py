@@ -148,6 +148,9 @@ class TunnelManager:
         # _locks_meta protects _tunnel_locks itself (creation / cleanup).
         self._tunnel_locks: Dict[str, threading.Lock] = {}
         self._locks_meta = threading.Lock()
+        # Serialises save() — without this, two concurrent worker threads
+        # could both write to the same .tmp file and produce corrupt JSON.
+        self._save_lock = threading.Lock()
 
     def _lock_for(self, name: str) -> threading.Lock:
         """Return (and lazily create) the lock for one tunnel."""
@@ -191,26 +194,31 @@ class TunnelManager:
         self.tunnels = loaded
 
     def save(self) -> None:
-        """Atomic write: serialise to tmp file then os.replace."""
-        # Snapshot the dict — another thread may add/remove tunnels mid-loop.
-        snapshot = list(self.tunnels.items())
-        payload = {"tunnels": {}}
-        for name, ts in snapshot:
-            payload["tunnels"][name] = {f: getattr(ts, f) for f in self.PERSISTED_FIELDS}
+        """Atomic write: serialise to tmp file then os.replace.
 
-        tmp = self.config_path + ".tmp"
-        try:
-            with open(tmp, "w") as f:
-                json.dump(payload, f, indent=2)
-            os.replace(tmp, self.config_path)
-        except Exception:
-            # Make sure we don't leave a half-written tmp behind
+        Thread-safe via self._save_lock so concurrent workers don't trash
+        each other's writes to the same .tmp path.
+        """
+        with self._save_lock:
+            # Snapshot the dict — another thread may add/remove tunnels mid-loop.
+            snapshot = list(self.tunnels.items())
+            payload = {"tunnels": {}}
+            for name, ts in snapshot:
+                payload["tunnels"][name] = {f: getattr(ts, f) for f in self.PERSISTED_FIELDS}
+
+            tmp = self.config_path + ".tmp"
             try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
-            raise
+                with open(tmp, "w") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(tmp, self.config_path)
+            except Exception:
+                # Make sure we don't leave a half-written tmp behind
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
+                raise
 
     def add(self, name: str, local_port: int,
             remote_port: Optional[int] = None,
@@ -442,10 +450,14 @@ class TunnelManager:
         now = time.time()
         # Auto-start (one-shot, after a short grace period to let masters come up)
         if not self.auto_started and self.startup_ts and now - self.startup_ts >= 3.0:
-            self.auto_started = True
-            for name, ts in self.tunnels.items():
+            # Snapshot first so a concurrent add() can't trip
+            # "dictionary changed size during iteration". Set the flag
+            # AFTER the loop so a mid-iteration crash doesn't permanently
+            # skip the remaining tunnels.
+            for name, ts in list(self.tunnels.items()):
                 if ts.auto_start and ts.last_node is not None:
                     self.start(name)
+            self.auto_started = True
 
         for name, ts in list(self.tunnels.items()):
             # Re-check existence — another thread may have called remove()
