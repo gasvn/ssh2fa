@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual envs / packaging
+.env
+.venv
+env/
+venv/
+
+# Test / cache
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+htmlcov/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Project-specific local debug / backups (kept out of repo on purpose)
+debug_*.py
+*.bak
+*.rich.bak
