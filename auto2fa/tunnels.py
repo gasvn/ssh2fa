@@ -143,9 +143,20 @@ class TunnelManager:
         self.tunnels: Dict[str, TunnelState] = {}
         self.startup_ts: float = 0.0
         self.auto_started: bool = False
-        # Serialises start/stop/tick mutations across threads
-        # (UI worker threads, tick_loop thread, and direct UI callers).
-        self._lifecycle_lock = threading.Lock()
+        # Per-tunnel locks so concurrent start/stop on DIFFERENT tunnels
+        # don't serialise behind each other's 10-second port probes.
+        # _locks_meta protects _tunnel_locks itself (creation / cleanup).
+        self._tunnel_locks: Dict[str, threading.Lock] = {}
+        self._locks_meta = threading.Lock()
+
+    def _lock_for(self, name: str) -> threading.Lock:
+        """Return (and lazily create) the lock for one tunnel."""
+        with self._locks_meta:
+            lock = self._tunnel_locks.get(name)
+            if lock is None:
+                lock = threading.Lock()
+                self._tunnel_locks[name] = lock
+            return lock
 
     def load(self) -> None:
         """Load tunnels.json into self.tunnels. Missing file is empty.
@@ -181,8 +192,10 @@ class TunnelManager:
 
     def save(self) -> None:
         """Atomic write: serialise to tmp file then os.replace."""
+        # Snapshot the dict — another thread may add/remove tunnels mid-loop.
+        snapshot = list(self.tunnels.items())
         payload = {"tunnels": {}}
-        for name, ts in self.tunnels.items():
+        for name, ts in snapshot:
             payload["tunnels"][name] = {f: getattr(ts, f) for f in self.PERSISTED_FIELDS}
 
         tmp = self.config_path + ".tmp"
@@ -236,6 +249,9 @@ class TunnelManager:
         if name not in self.tunnels:
             return
         del self.tunnels[name]
+        # Clean up the per-tunnel lock so it doesn't linger.
+        with self._locks_meta:
+            self._tunnel_locks.pop(name, None)
         self.save()
 
     def set_node(self, name: str, node: str, user: str) -> None:
@@ -281,10 +297,12 @@ class TunnelManager:
         Callers on the UI thread MUST invoke this from a worker thread.
 
         Idempotent: no-op if already alive or starting.
-        Thread-safe via self._lifecycle_lock — concurrent callers serialise.
+        Thread-safe via a per-tunnel lock — calls on DIFFERENT tunnels do
+        NOT block each other (so two tunnels can probe in parallel).
+        Calls on the SAME tunnel serialise.
         Silently returns if the tunnel has been removed (race with delete).
         """
-        with self._lifecycle_lock:
+        with self._lock_for(name):
             ts = self.tunnels.get(name)
             if ts is None:
                 return
@@ -378,9 +396,10 @@ class TunnelManager:
     def stop(self, name: str) -> None:
         """Terminate the tunnel's child process and mark idle.
 
-        Safe if already stopped or removed. Thread-safe via self._lifecycle_lock.
+        Safe if already stopped or removed. Per-tunnel locking — doesn't
+        block other tunnels' lifecycle operations.
         """
-        with self._lifecycle_lock:
+        with self._lock_for(name):
             ts = self.tunnels.get(name)
             if ts is None:
                 return
