@@ -249,7 +249,15 @@ class TunnelManager:
             auto_start=False,
         )
         self.tunnels[name] = ts
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            # Roll back the in-memory insertion so the failed add doesn't
+            # leave a phantom tunnel visible in the UI but absent from disk.
+            self.tunnels.pop(name, None)
+            with self._locks_meta:
+                self._tunnel_locks.pop(name, None)
+            raise
         return ts
 
     def remove(self, name: str) -> None:
