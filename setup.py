@@ -14,6 +14,7 @@ setup(
     entry_points={
         "console_scripts": [
             "auto2fa=auto2fa.main:main",
+            "auto2fa-daemon=auto2fa.daemon:main",
         ],
     },
     author="Auto2FA Team",

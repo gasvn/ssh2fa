@@ -2,13 +2,25 @@
 
 Auto2FA is a robust SSH connection manager that handles 2FA (TOTP) automation and maintains persistent connections using SSH ControlMaster.
 
+## Three frontends, one backend
+
+| Frontend | Best for | How to run |
+|---|---|---|
+| **Textual TUI** (`auto2fa`) | SSH sessions, headless servers, no GUI | `auto2fa` |
+| **Daemon mode** (`auto2fa-daemon`) | Background service consumed by the Mac app | `auto2fa-daemon`, or auto-start via `LaunchAgents/com.auto2fa.daemon.plist` |
+| **Native macOS app** (Swift) | Daily driver on a Mac — menu bar status + dock window + Dynamic Notch toasts | Open `auto2fa-mac/Auto2FA.xcodeproj` in Xcode, ⌘R |
+
+All three share the same Python backend (`auto2fa/backend.py`, `auto2fa/tunnels.py`). The TUI runs it in-process; the Mac app talks to the daemon over `~/.auto2fa/auto2fa.sock` (line-delimited JSON-RPC). See [`auto2fa-mac/README.md`](auto2fa-mac/README.md) and [`docs/superpowers/specs/2026-05-24-mac-app-design.md`](docs/superpowers/specs/2026-05-24-mac-app-design.md).
+
 ## Features
 
-- **Multi-Server Dashboard**: Manage all your SSH connections in one place (TUI).
+- **Multi-Server Dashboard**: Manage all your SSH connections in one place.
 - **Auto-2FA**: Automatically generates and inputs TOTP codes.
 - **Instant Login**: Uses SSH ControlMaster to allow instant, password-less logins (`ssh host`).
-- **Smart Reliability**: Actively checks connection health and automatically reconnects if the socket dies (sleep/wake protection).
-- **Desktop Notifications**: Native alerts for connection status.
+- **Two-Layer Port Forwards**: Named, persistent SLURM-aware tunnels (login host → compute node) with auto-recovery.
+- **Smart Reliability**: Actively checks connection health and automatically reconnects.
+- **Native Notifications**: Desktop alerts on connection / disconnection; **Dynamic Notch** toasts on MacBook Pros (Mac app only).
+- **Auto-start on Login**: LaunchAgent template included.
 
 ## Installation
 

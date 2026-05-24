@@ -1,0 +1,132 @@
+import Foundation
+import SwiftUI
+
+/// Observable mirror of daemon state. Lives for the lifetime of the app.
+///
+/// Owns one `BackendClient`. Periodically pulls full snapshots AND reacts to
+/// pushed events for instant updates. Falls back to polling if the daemon
+/// hasn't pushed an event in a while.
+@MainActor
+final class AppState: ObservableObject {
+    @Published var hosts: [SSHHost] = []
+    @Published var tunnels: [Tunnel] = []
+    @Published var connectionError: String?
+    @Published var notchPresenter: NotchPresenter = NotchPresenter()
+
+    private let client = BackendClient()
+    private var eventTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+
+    func bootstrap() async {
+        do {
+            try await client.connect()
+            connectionError = nil
+        } catch {
+            connectionError = "Daemon unreachable: \(error.localizedDescription). " +
+                              "Is auto2fa-daemon running?"
+            return
+        }
+        await reloadAll()
+        startEventTask()
+        startPollFallback()
+    }
+
+    func reloadAll() async {
+        do {
+            self.hosts = try await client.listHosts()
+            self.tunnels = try await client.listTunnels()
+        } catch {
+            connectionError = error.localizedDescription
+        }
+    }
+
+    private func startEventTask() {
+        eventTask?.cancel()
+        let stream = client.events
+        eventTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                await self.apply(event: event)
+            }
+        }
+    }
+
+    private func startPollFallback() {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s safety net
+                await self?.reloadAll()
+            }
+        }
+    }
+
+    private func apply(event: DaemonEvent) async {
+        switch event {
+        case .hostChanged:
+            await reloadAll()
+        case .tunnelChanged(let name, let status, let lastMsg, _):
+            await reloadAll()
+            maybeShowNotch(name: name, status: status, lastMsg: lastMsg)
+        case .notification(let severity, let title, let message):
+            notchPresenter.show(
+                systemImage: severity == "error" ? "exclamationmark.octagon.fill"
+                          : severity == "warning" ? "exclamationmark.triangle.fill"
+                          : "info.circle.fill",
+                title: title,
+                description: message,
+                tint: severity == "error" ? .red : severity == "warning" ? .orange : .blue
+            )
+        case .unknown:
+            break
+        }
+    }
+
+    private func maybeShowNotch(name: String, status: String, lastMsg: String) {
+        switch status {
+        case "alive":
+            notchPresenter.show(
+                systemImage: "bolt.fill",
+                title: "Connected",
+                description: name,
+                tint: .green
+            )
+        case "failed", "stale":
+            notchPresenter.show(
+                systemImage: "exclamationmark.triangle.fill",
+                title: status == "failed" ? "Disconnected" : "Node ended",
+                description: "\(name): \(lastMsg)",
+                tint: .red
+            )
+        case "starting":
+            notchPresenter.show(
+                systemImage: "arrow.triangle.2.circlepath",
+                title: "Connecting…",
+                description: name,
+                tint: .yellow
+            )
+        default:
+            break
+        }
+    }
+
+    // MARK: - User actions (thin wrappers that report errors via connectionError)
+
+    func toggleHost(_ host: SSHHost) async {
+        do { try await client.toggleHost(host.host) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    func toggleTunnel(_ tunnel: Tunnel) async {
+        do { try await client.toggleTunnel(tunnel.name) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    func deleteTunnel(_ tunnel: Tunnel) async {
+        do { try await client.removeTunnel(tunnel.name) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+}
