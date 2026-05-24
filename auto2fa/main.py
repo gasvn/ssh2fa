@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.coordinate import Coordinate
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
 from .backend import SSHHostManager, extract_secret_from_url
@@ -622,9 +623,13 @@ class Auto2FAApp(App):
         self.title = "Auto2FA"
         self.sub_title = "Press ? for help"
         hosts = self.query_one("#hosts_table", HostTable)
-        hosts.add_columns("Host", "Status", "Pool", "FS", "Last Message")
+        # Keep column keys so we can update_cell_at instead of rebuilding rows
+        self._host_col_keys = hosts.add_columns("Host", "Status", "Pool", "FS", "Last Message")
         tunnels = self.query_one("#tunnels_table", TunnelTable)
-        tunnels.add_columns("Name", "Local→Remote", "Node", "Via", "Status")
+        self._tunnel_col_keys = tunnels.add_columns("Name", "Local→Remote", "Node", "Via", "Status")
+        # Cached row contents per host/tunnel for cell-level diffing
+        self._host_row_cells: dict[str, tuple] = {}
+        self._tunnel_row_cells: dict[str, tuple] = {}
         hosts.focus()
         self._update_section_focus_styles()
         self._refresh_tables()
@@ -711,33 +716,39 @@ class Auto2FAApp(App):
         self._refresh_tunnels()
 
     def _refresh_hosts(self) -> None:
-        # Compute a fingerprint of the rendered state. Skip the rebuild if nothing changed.
-        rows = []
-        for mgr in self.managers:
+        # Build the rendered cell tuple for each host. The host list is
+        # fixed at startup, so we never add/remove rows — only update cells.
+        # This avoids the table.clear()+add_row flicker/residue that the
+        # previous approach caused on every status change.
+        table = self.query_one("#hosts_table", HostTable)
+        for i, mgr in enumerate(self.managers):
             try:
                 pool_snapshot = list(mgr.pool.values())
                 alive = sum(1 for c in pool_snapshot if c.isalive())
                 pool = f"{mgr.active_index}/{alive}"
             except Exception:
                 pool = "?"
-            # Use the dedicated is_mounted bit, not string-sniffing last_msg —
-            # last_msg gets overwritten by the pool monitor and the indicator
-            # would disappear within seconds otherwise.
             fs = "📂" if getattr(mgr, "is_mounted", False) else ""
-            rows.append((mgr.host, mgr.status, pool, fs, mgr.last_msg))
-        fp = tuple(rows)
-        if fp == self._last_host_fp:
-            return
-        self._last_host_fp = fp
-
-        table = self.query_one("#hosts_table", HostTable)
-        prev_row = table.cursor_row
-        table.clear()
-        for mgr, (_, _, pool, fs, last_msg) in zip(self.managers, rows):
             status_text = self._render_host_status(mgr)
-            table.add_row(mgr.host, status_text, pool, fs, last_msg)
-        if 0 <= prev_row < len(self.managers):
-            table.move_cursor(row=prev_row)
+            new_cells = (mgr.host, mgr.status, pool, fs, mgr.last_msg)
+            cached = self._host_row_cells.get(mgr.host)
+            if cached is None:
+                # First time — add the row
+                try:
+                    table.add_row(mgr.host, status_text, pool, fs, mgr.last_msg,
+                                  key=mgr.host)
+                except Exception as e:
+                    logger.error(f"hosts add_row error: {e}")
+            else:
+                # Only update cells that actually changed
+                for col_idx, (new_v, old_v) in enumerate(zip(new_cells, cached)):
+                    if new_v != old_v:
+                        value = status_text if col_idx == 1 else new_v
+                        try:
+                            table.update_cell_at(Coordinate(i, col_idx), value)
+                        except Exception as e:
+                            logger.error(f"hosts update_cell error: {e}")
+            self._host_row_cells[mgr.host] = new_cells
 
     @staticmethod
     def _render_host_status(mgr) -> Text:
@@ -761,10 +772,9 @@ class Auto2FAApp(App):
         t.append(plain, style=color)
         return t
 
+    _PLACEHOLDER_KEY = "__placeholder__"
+
     def _refresh_tunnels(self) -> None:
-        # Snapshot via items() so a concurrent delete from a worker thread
-        # can't make the names/values fall out of sync. Iterating items()
-        # of a dict snapshot is safe even if the original dict mutates.
         names: list[str] = []
         rows = []
         for name, ts in list(self.tunnel_mgr.tunnels.items()):
@@ -775,35 +785,64 @@ class Auto2FAApp(App):
                 ts.last_node, ts.active_jump, ts.status, ts.last_msg, pending,
             ))
 
-        # Detect transitions and notify the user about meaningful state changes.
+        # Detect transitions and notify (always — fingerprint-independent).
         self._notify_status_transitions(rows)
 
-        fp = tuple(rows)
-        if fp == self._last_tunnel_fp and self._tunnel_names == names:
-            return
-        self._last_tunnel_fp = fp
-        self._tunnel_names = names
-
         table = self.query_one("#tunnels_table", TunnelTable)
-        prev_row = table.cursor_row
-        table.clear()
-        if not names:
-            table.add_row(
-                Text("✨  No tunnels yet. Press T (or Ctrl+N) to create one.",
-                     style="bold yellow"),
-                "", "", "", "",
-            )
-            return
-        for name, row in zip(names, rows):
-            _, lp, rp, last_node, active_jump, status, last_msg, pending = row
-            ports = f":{lp}→:{rp}"
-            node = last_node or Text("(no node yet)", style="grey50")
-            via = active_jump or "—"
 
-            status_cell = self._render_tunnel_status(status, pending, last_msg, active_jump, lp)
-            table.add_row(name, ports, node, via, status_cell)
-        if 0 <= prev_row < len(names):
-            table.move_cursor(row=prev_row)
+        # Tunnel set CAN change (add/remove). When it does we have to clear &
+        # rebuild because update_cell_at can't add/remove rows. When the set
+        # is stable (just statuses changing) we update cells in place — this
+        # is the common case and avoids the flicker/residue from clear+add.
+        names_changed = names != self._tunnel_names
+        if names_changed:
+            prev_row = table.cursor_row
+            table.clear()
+            self._tunnel_row_cells.clear()
+            if not names:
+                table.add_row(
+                    Text("✨  No tunnels yet. Press T (or Ctrl+N) to create one.",
+                         style="bold yellow"),
+                    "", "", "", "",
+                    key=self._PLACEHOLDER_KEY,
+                )
+                self._tunnel_names = names
+                return
+            for name, row in zip(names, rows):
+                cells = self._build_tunnel_cells(row)
+                table.add_row(*cells, key=name)
+                self._tunnel_row_cells[name] = self._tunnel_cells_signature(row)
+            if 0 <= prev_row < len(names):
+                table.move_cursor(row=prev_row)
+            self._tunnel_names = names
+            return
+
+        # Same set of tunnels — diff and update only changed cells
+        for i, (name, row) in enumerate(zip(names, rows)):
+            sig = self._tunnel_cells_signature(row)
+            if self._tunnel_row_cells.get(name) == sig:
+                continue
+            cells = self._build_tunnel_cells(row)
+            for col_idx, value in enumerate(cells):
+                try:
+                    table.update_cell_at(Coordinate(i, col_idx), value)
+                except Exception as e:
+                    logger.error(f"tunnels update_cell error: {e}")
+            self._tunnel_row_cells[name] = sig
+
+    @staticmethod
+    def _tunnel_cells_signature(row: tuple) -> tuple:
+        """Hashable signature of all fields that affect rendering."""
+        name, lp, rp, last_node, active_jump, status, last_msg, pending = row
+        return (lp, rp, last_node, active_jump, status, last_msg, pending)
+
+    def _build_tunnel_cells(self, row: tuple) -> list:
+        name, lp, rp, last_node, active_jump, status, last_msg, pending = row
+        ports = f":{lp}→:{rp}"
+        node = last_node or Text("(no node yet)", style="grey50")
+        via = active_jump or "—"
+        status_cell = self._render_tunnel_status(status, pending, last_msg, active_jump, lp)
+        return [name, ports, node, via, status_cell]
 
     def _notify_status_transitions(self, rows) -> None:
         """Compare the new rows to the last seen status and toast on transitions
