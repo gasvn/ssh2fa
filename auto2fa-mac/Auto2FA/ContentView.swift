@@ -6,6 +6,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var confirmingReset = false
+    @State private var showingWelcome = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -101,8 +102,23 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { appState.dismissSheet() }
         }
+        .sheet(isPresented: $showingWelcome) {
+            WelcomeSheet().environmentObject(appState)
+        }
+        .onChange(of: appState.hosts.count) { _, _ in maybeShowWelcome() }
+        .onAppear { maybeShowWelcome() }
         // bootstrap() is called from Auto2FAApp's WindowGroup .task, AFTER
         // it ensures the daemon is running. Doing it here too would race.
+    }
+
+    /// Show the welcome sheet on first launch where the daemon reports no
+    /// hosts AND the user hasn't dismissed it before. Once they hit Skip
+    /// or Add Host we set the flag and never re-show.
+    private func maybeShowWelcome() {
+        let seen = UserDefaults.standard.bool(forKey: SettingsKey.welcomeShown)
+        if !seen && appState.hosts.isEmpty {
+            showingWelcome = true
+        }
     }
 
     private func confirmDeleteTitle() -> String {

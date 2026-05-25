@@ -6,13 +6,16 @@ import SwiftUI
 /// is intentional opt-out.
 enum SettingsKey {
     static let notchEnabled = "auto2fa.notch.enabled"
+    static let notchPersistent = "auto2fa.notch.persistent"
     static let autoOpenBrowser = "auto2fa.autoOpenBrowser"
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
+    static let welcomeShown = "auto2fa.welcomeShown"
 }
 
 struct SettingsView: View {
     @AppStorage(SettingsKey.notchEnabled) private var notchEnabled = true
+    @AppStorage(SettingsKey.notchPersistent) private var notchPersistent = false
     @AppStorage(SettingsKey.autoOpenBrowser) private var autoOpenBrowser = false
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
@@ -52,6 +55,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)
                     Text("Notifications for tunnel state changes appear over the MacBook Pro notch. Disabling falls back to no UI feedback.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Always-on notch status (experimental)", isOn: $notchPersistent)
+                        .disabled(!notchEnabled)
+                    Text("When any tunnel is alive or transitioning, a small persistent indicator sits over the notch. Click for the full toast. Off by default — can be visually busy.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Notifications") }

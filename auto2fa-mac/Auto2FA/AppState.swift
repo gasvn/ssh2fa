@@ -31,6 +31,7 @@ final class AppState: ObservableObject {
     @Published var tunnels: [Tunnel] = []
     @Published var connectionError: String?
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
+    let persistentNotch: PersistentNotchController = PersistentNotchController()
     @Published var activeSheet: ActiveSheet?
     /// Names of hosts/tunnels with an action currently in flight (toggle,
     /// pick_node, delete). UI uses this to swap the action button for a
@@ -134,6 +135,7 @@ final class AppState: ObservableObject {
 
     /// Set the Dock-tile badge to the # of alive tunnels (or to the # of
     /// failed things prefixed with "!"). Fires whenever state reloads.
+    /// Also drives the persistent notch overlay (off by default).
     private func updateDockBadge() {
         var alive = 0
         var failed = 0
@@ -152,6 +154,8 @@ final class AppState: ObservableObject {
         else if alive > 0 { label = "\(alive)" }
         else { label = nil }
         NSApp.dockTile.badgeLabel = label
+        // Refresh persistent notch (cheap — early-outs if signature unchanged).
+        persistentNotch.update(from: self)
     }
 
     private func startEventTask() {
