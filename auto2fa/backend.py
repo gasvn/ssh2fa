@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 POOL_SIZE = 2
 ROTATION_CHECK_INTERVAL = 5   # Seconds (Remote Check - Light Load)
 HEARTBEAT_INTERVAL = 3        # Seconds (Local Check - Zero Load)
+# After a known remote failure (probe round-trip or downstream tunnel using this
+# host as a jump), treat the host as "not ready" for this many seconds so a
+# silently-dead TCP can't be re-picked while the master is being rebuilt.
+REMOTE_FAILURE_COOLDOWN = 20
 
 def send_notification(title, message):
     """Sends a native macOS desktop notification.
@@ -131,6 +135,11 @@ class SSHHostManager(threading.Thread):
         self.pool = {}        # {index: pexpect_child}
         self.pool_status = {} # {index: "Init/Ready/Dead"}
         self.active_index = 0
+        # Timestamp of the last KNOWN-bad remote round-trip (either our own
+        # rotation probe or a downstream tunnel that failed using us as jump).
+        # Drives a cooldown in is_master_ready so silently-dead TCPs aren't
+        # picked again while the master is being torn down + rebuilt.
+        self.last_remote_failure_ts = 0.0
         
         # Paths
         self.target_control_path = self.get_ssh_control_path(host)
@@ -139,9 +148,50 @@ class SSHHostManager(threading.Thread):
         }
 
     def is_master_ready(self) -> bool:
-        """Read-only: True iff this host is enabled AND its active master is Ready.
-        Used by TunnelManager to pick a jump host."""
-        return self.active and self.pool_status.get(self.active_index) == "Ready"
+        """Read-only: True iff this host is enabled, its active master is Ready,
+        AND we have no recent evidence the remote TCP is dead.
+
+        The pool_status flag alone is unreliable for "really reachable" — the
+        local ControlMaster process can stay alive (and `ssh -O check` keeps
+        passing) for a long time after the underlying TCP is gone. We layer a
+        short cooldown on top: any code path that observes a real remote
+        failure stamps `last_remote_failure_ts`, which suppresses this host
+        from being picked as a jump until the cooldown lapses or the master
+        is rebuilt (`mark_remote_ok` clears the stamp)."""
+        if not (self.active and self.pool_status.get(self.active_index) == "Ready"):
+            return False
+        if time.time() - self.last_remote_failure_ts < REMOTE_FAILURE_COOLDOWN:
+            return False
+        return True
+
+    def mark_remote_failure(self):
+        """Record that a real remote round-trip just failed against this host.
+        Called by check_and_rotate and by TunnelManager when start() failed
+        through this host as a jump."""
+        self.last_remote_failure_ts = time.time()
+
+    def mark_remote_ok(self):
+        """Clear the failure cooldown — a real remote round-trip succeeded."""
+        self.last_remote_failure_ts = 0.0
+
+    def demote_master(self, index):
+        """Forcibly tear down the master at `index` so the heartbeat loop
+        rebuilds it. Used when we know the underlying TCP is gone but the
+        local pexpect child is still alive (and would otherwise pass the
+        local `ssh -O check` for a long time)."""
+        child = self.pool.pop(index, None)
+        if child is not None:
+            try:
+                if child.isalive():
+                    child.close(force=True)
+            except Exception:
+                pass
+        self.pool_status[index] = "Dead"
+        try:
+            cleanup_stale_connection(self.pool_control_paths[index],
+                                     self.host, kill_zombies=False)
+        except Exception:
+            pass
 
     def get_ssh_control_path(self, host):
         """Resolves the ControlPath that ssh expects to use for this host"""
@@ -342,6 +392,10 @@ class SSHHostManager(threading.Thread):
             if is_success:
                 self.pool_status[index] = "Ready"
                 logger.info(f"[{self.host}] Master #{index} Ready")
+                # A fresh master implies a fresh TCP — lift any stale cooldown
+                # so tunnels can pick this host again right away.
+                if index == self.active_index:
+                    self.mark_remote_ok()
                 return True
             else:
                 # First-expect index layout: 0=Password, 1=Verification[c]ode,
@@ -479,38 +533,66 @@ class SSHHostManager(threading.Thread):
         self.start_master(index)
 
     def check_and_rotate(self):
-        """Checks if active master is full/unresponsive and rotates if needed"""
+        """Probe the active master with a real remote round-trip. If it fails,
+        classify the failure: 'MaxSessions full' (master is fine, just busy)
+        vs. 'actually broken' (remote TCP dead / auth gone / etc.). For the
+        former, rotate symlink to the other pool slot. For the latter, also
+        demote the failed master so the heartbeat loop rebuilds it, AND stamp
+        the host-wide remote-failure cooldown so the tunnel layer won't pick
+        us as a jump while we're in the middle of recovery."""
         active = self.active_index
         path = self.pool_control_paths[active]
-        
+
         try:
-            # Probe if it accepts new session
             cmd = ["ssh", "-o", f"ControlPath={path}", self.host, "echo ok"]
-            # Timeout fast (3s). If MaxSessions full, it might hang or Refuse
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            
-            # If return code is not 0, or if "Session open refused" in stderr
-            if res.returncode != 0:
-                logger.warning(f"[{self.host}] Active Master #{active} refused/failed. Rotating...")
-                
-                other = (active + 1) % POOL_SIZE
-                
-                # Check if other is ready?
-                if self.pool_status.get(other) == "Ready":
-                    self.update_symlink(other)
-                    self.status = f"[green]Pool Active ({other})[/green]"
-                    self.last_msg = f"Rotated {active}->{other}"
-                    
-                    # Note: We don't kill the full master. It might just be full.
-                    # It will drain eventually.
-        except Exception:
-            # Timeout usually means full too?
-            logger.warning(f"[{self.host}] Probe timed out. Rotating...")
+        except subprocess.TimeoutExpired:
+            # Timeout: ambiguous. Could be MaxSessions full (master is fine)
+            # OR could be a wedged/dead TCP. Be conservative — demote the
+            # active master so it gets rebuilt. The heartbeat loop will spawn
+            # a fresh one within ~3s; in the meantime is_master_ready returns
+            # False for the cooldown window.
+            logger.warning(f"[{self.host}] Probe timed out — assuming dead, demoting #{active}")
+            self.mark_remote_failure()
+            self.demote_master(active)
+            return
+        except Exception as e:
+            logger.warning(f"[{self.host}] Probe errored ({e}) — demoting #{active}")
+            self.mark_remote_failure()
+            self.demote_master(active)
+            return
+
+        if res.returncode == 0:
+            # Real remote round-trip succeeded → clear any stale cooldown.
+            self.mark_remote_ok()
+            return
+
+        # Non-zero return code. Inspect stderr to distinguish "full" from "dead".
+        stderr = (res.stderr or "").lower()
+        full_signal = "administratively prohibited" in stderr \
+                      or "open failed: connect failed" in stderr \
+                      or "channel" in stderr and "open failed" in stderr
+        if full_signal:
+            # MaxSessions exhaustion — master is alive, just saturated. Rotate
+            # symlink but keep the old master around to drain.
+            logger.info(f"[{self.host}] Master #{active} full. Rotating symlink only.")
             other = (active + 1) % POOL_SIZE
             if self.pool_status.get(other) == "Ready":
                 self.update_symlink(other)
                 self.status = f"[green]Pool Active ({other})[/green]"
                 self.last_msg = f"Rotated {active}->{other}"
+            return
+
+        # Looks like an actually-broken connection: demote and rebuild.
+        logger.warning(f"[{self.host}] Master #{active} broken ({stderr.strip()[:80]}). "
+                       f"Demoting + rebuilding.")
+        self.mark_remote_failure()
+        self.demote_master(active)
+        other = (active + 1) % POOL_SIZE
+        if self.pool_status.get(other) == "Ready":
+            self.update_symlink(other)
+            self.status = f"[yellow]Failover -> {other}[/yellow]"
+            self.last_msg = f"Failover {active}->{other}"
 
     def check_ssh_socket(self):
         return True # Handled by monitor loop

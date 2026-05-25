@@ -495,6 +495,125 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm.start("x")
         self.assertEqual(tm.tunnels["x"].status, "starting")
 
+    # --- Jump-demotion / cooldown signaling ---
+
+    def test_start_success_clears_jump_cooldown(self):
+        """A working port-forward proves the jump's remote TCP is alive →
+        mark_remote_ok must fire on the jump's manager."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        mgr = self._mgr(ready=True)
+        hm = {"k8": mgr}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        # Wire node directly to avoid set_node's auto-start side effect, which
+        # would also exercise (and trip) the failure path we're trying to test.
+        tm.tunnels["x"].last_node = "holygpu01"
+        tm.tunnels["x"].last_user = "shgao"
+
+        child = MagicMock(); child.isalive.return_value = True
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=True):
+            tm.start("x")
+
+        mgr.mark_remote_ok.assert_called_once()
+        mgr.mark_remote_failure.assert_not_called()
+
+    def test_start_failure_jump_unreachable_demotes_jump(self):
+        """ssh stderr matching 'connection refused' classifies as
+        'jump unreachable' → mark_remote_failure on the jump."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        mgr = self._mgr(ready=True)
+        hm = {"k8": mgr}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        # Wire node directly to avoid set_node's auto-start side effect, which
+        # would also exercise (and trip) the failure path we're trying to test.
+        tm.tunnels["x"].last_node = "holygpu01"
+        tm.tunnels["x"].last_user = "shgao"
+
+        child = MagicMock(); child.isalive.return_value = True
+        child.before = "ssh: connect to host k8: Connection refused"
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=False):
+            tm.start("x")
+
+        self.assertEqual(tm.tunnels["x"].status, "failed")
+        mgr.mark_remote_failure.assert_called_once()
+        self.assertIn("via k8", tm.tunnels["x"].last_msg)
+
+    def test_start_failure_generic_ssh_failed_still_demotes_jump(self):
+        """Generic 'ssh failed' is ambiguous but we conservatively demote so
+        we don't keep retrying the same suspicious jump."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        mgr = self._mgr(ready=True)
+        hm = {"k8": mgr}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        # Wire node directly to avoid set_node's auto-start side effect, which
+        # would also exercise (and trip) the failure path we're trying to test.
+        tm.tunnels["x"].last_node = "holygpu01"
+        tm.tunnels["x"].last_user = "shgao"
+
+        child = MagicMock(); child.isalive.return_value = True
+        child.before = "some unmatched ssh output"
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=False):
+            tm.start("x")
+
+        mgr.mark_remote_failure.assert_called_once()
+
+    def test_start_failure_node_unreachable_does_not_demote_jump(self):
+        """'open failed' = downstream forward (compute node) failed, jump was
+        fine. We must NOT demote the jump in that case."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        mgr = self._mgr(ready=True)
+        hm = {"k8": mgr}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        # Wire node directly to avoid set_node's auto-start side effect, which
+        # would also exercise (and trip) the failure path we're trying to test.
+        tm.tunnels["x"].last_node = "holygpu01"
+        tm.tunnels["x"].last_user = "shgao"
+
+        child = MagicMock(); child.isalive.return_value = True
+        child.before = "channel 0: open failed: connect failed"
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=False):
+            tm.start("x")
+
+        self.assertEqual(tm.tunnels["x"].status, "failed")
+        # "open failed" maps to "node unreachable" — should NOT demote jump
+        mgr.mark_remote_failure.assert_not_called()
+
+    def test_extract_failure_reason_classifies_jump_vs_node(self):
+        """Round-trip the classifier on representative strings."""
+        from tunnels import TunnelManager
+        for text, expected in [
+            ("ssh: connect to host k8 port 22: Connection refused", "jump unreachable"),
+            ("Connection reset by peer", "jump unreachable"),
+            ("ssh_exchange_identification: Connection closed by remote host", "jump unreachable"),
+            ("Broken pipe", "jump unreachable"),
+            ("ssh: connect to host k8 port 22: Operation timed out", "jump unreachable"),
+            ("ssh: connect to host: No route to host", "jump unreachable"),
+            ("channel 0: open failed: connect failed", "node unreachable"),
+            ("Permission denied (publickey)", "auth failed"),
+            ("Host key verification failed.", "host key verification failed"),
+            ("bind: Address already in use", "remote bind failed"),
+            ("forward failed", "remote bind failed"),
+            ("totally unrelated noise", "ssh failed"),
+        ]:
+            child = MagicMock(); child.before = text; child.after = ""
+            self.assertEqual(TunnelManager._extract_failure_reason(child), expected,
+                             f"misclassified: {text!r}")
+
 
 class TestTunnelManagerStopToggle(unittest.TestCase):
     def setUp(self):
