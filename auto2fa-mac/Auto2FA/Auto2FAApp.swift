@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct Auto2FAApp: App {
@@ -16,6 +17,7 @@ struct Auto2FAApp: App {
                     SingleInstance.enforceOrExit()
                     installMenuBarOnce()
                     installSleepWakeMonitor()
+                    installNotificationHandling()
                 }
                 .task {
                     // Spawn daemon first (or detect existing one), THEN run
@@ -104,6 +106,14 @@ struct Auto2FAApp: App {
     /// Also hook applicationWillTerminate so we can shut down the daemon we
     /// spawned (using NotificationCenter avoids @NSApplicationDelegateAdaptor,
     /// which in some macOS releases prevents the SwiftUI window from showing).
+    /// Hook the notification action buttons (Restart / Show Activity) up
+    /// to AppState so clicking them does the right thing.
+    private func installNotificationHandling() {
+        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        NotificationDelegate.shared.appState = appState
+        MacNotifications.registerCategories()
+    }
+
     private func installSleepWakeMonitor() {
         guard sleepWakeMonitor == nil else { return }
         let monitor = SleepWakeMonitor(

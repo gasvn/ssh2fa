@@ -9,4 +9,6 @@ extension Notification.Name {
     static let a2fShowPalette = Notification.Name("auto2fa.showPalette")
     /// Open the in-app daemon log viewer.
     static let a2fShowLogs = Notification.Name("auto2fa.showLogs")
+    /// Open the per-tunnel details popover. userInfo["name"] = tunnel name.
+    static let a2fShowTunnelDetails = Notification.Name("auto2fa.showTunnelDetails")
 }

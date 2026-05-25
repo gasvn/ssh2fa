@@ -202,11 +202,12 @@ final class AppState: ObservableObject {
                     maybeAutoOpenBrowser(for: t)
                 }
             }
-            // Hand-off: post a macOS notification on hard failures so the
-            // user knows even if the app/notch is occluded.
+            // Hand-off: post a macOS notification on hard failures with
+            // action buttons (Restart / Show Activity) so user can react
+            // without switching back to the app.
             if status == "failed" || status == "stale" {
-                MacNotifications.post(
-                    title: "Tunnel \(name) \(status)",
+                MacNotifications.postTunnelFailed(
+                    name: name,
                     body: lastMsg.isEmpty ? "see app for details" : lastMsg
                 )
             }

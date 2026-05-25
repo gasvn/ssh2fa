@@ -31,6 +31,28 @@ struct TunnelDetailsPopover: View {
 
             Divider()
 
+            // Stats strip — cheap glance summary above the activity feed.
+            HStack(spacing: 16) {
+                statCell(label: "Connects",
+                         value: "\(tunnel.connectCount)",
+                         color: .blue)
+                statCell(label: "Failures",
+                         value: "\(tunnel.failCount)",
+                         color: tunnel.failCount > 0 ? .red : .secondary)
+                statCell(label: "Uptime",
+                         value: tunnel.uptimeHuman,
+                         color: .green)
+                statCell(label: tunnel.displayState == .alive ? "Alive since" : "Last alive",
+                         value: tunnel.aliveSince() ?? "never",
+                         color: .primary)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.gray.opacity(0.04))
+
+            Divider()
+
             sectionHeader("Recent activity")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -107,6 +129,18 @@ struct TunnelDetailsPopover: View {
             startPolling()
         }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private func statCell(label: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.weight(.medium))
+                .foregroundColor(color)
+        }
     }
 
     private func sectionHeader(_ t: String) -> some View {

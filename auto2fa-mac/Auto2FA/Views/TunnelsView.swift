@@ -24,6 +24,7 @@ struct PulsingDot: View {
 
 struct TunnelsView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @State private var selection: Set<Tunnel.ID> = []
     @State private var detailsForTunnel: Tunnel?
     @State private var filter: String = ""
@@ -76,6 +77,8 @@ struct TunnelsView: View {
                 filterBar
                 Divider()
                 tunnelsTable
+                    .controlSize(compactRows ? .small : .regular)
+                    .font(compactRows ? .caption : .body)
             }
         }
     }
@@ -295,6 +298,12 @@ struct TunnelsView: View {
             .sheet(item: $detailsForTunnel) { t in
                 TunnelDetailsPopover(tunnel: t)
                     .environmentObject(appState)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .a2fShowTunnelDetails)) { note in
+                if let name = note.userInfo?["name"] as? String,
+                   let t = appState.tunnels.first(where: { $0.name == name }) {
+                    detailsForTunnel = t
+                }
             }
             .sheet(item: $renamingTunnel) { t in
                 renameSheet(for: t)

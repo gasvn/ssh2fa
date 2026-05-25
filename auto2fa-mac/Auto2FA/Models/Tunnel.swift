@@ -15,6 +15,9 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let status: String
     let lastMsg: String
     let lastAliveAt: Double
+    let totalUptimeSec: Double
+    let connectCount: Int
+    let failCount: Int
 
     var id: String { name }
     var url: String { "localhost:\(localPort)" }
@@ -31,6 +34,9 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case activeJump = "active_jump"
         case lastMsg = "last_msg"
         case lastAliveAt = "last_alive_at"
+        case totalUptimeSec = "total_uptime_sec"
+        case connectCount = "connect_count"
+        case failCount = "fail_count"
     }
 
     // Defaults so older daemon snapshots still decode.
@@ -49,6 +55,18 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         self.activeJump = try c.decodeIfPresent(String.self, forKey: .activeJump)
         self.lastMsg = try c.decode(String.self, forKey: .lastMsg)
         self.lastAliveAt = (try? c.decode(Double.self, forKey: .lastAliveAt)) ?? 0
+        self.totalUptimeSec = (try? c.decode(Double.self, forKey: .totalUptimeSec)) ?? 0
+        self.connectCount = (try? c.decode(Int.self, forKey: .connectCount)) ?? 0
+        self.failCount = (try? c.decode(Int.self, forKey: .failCount)) ?? 0
+    }
+
+    /// Human-friendly cumulative uptime (since daemon start).
+    var uptimeHuman: String {
+        let s = max(0, totalUptimeSec)
+        if s < 60 { return "\(Int(s))s" }
+        if s < 3600 { return "\(Int(s/60))m" }
+        if s < 86400 { return String(format: "%.1fh", s/3600) }
+        return String(format: "%.1fd", s/86400)
     }
 
     /// Human-friendly "alive 2h", "last alive 5m ago", "never alive".

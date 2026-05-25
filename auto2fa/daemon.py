@@ -179,6 +179,12 @@ class Auto2FADaemon:
             "status": ts.status,
             "last_msg": ts.last_msg,
             "last_alive_at": ts.last_alive_at,
+            # Live-computed: total_uptime + current run if alive
+            "total_uptime_sec": ts.total_uptime_sec + (
+                (time.time() - ts._alive_since) if ts._alive_since > 0 else 0
+            ),
+            "connect_count": ts.connect_count,
+            "fail_count": ts.fail_count,
         }
 
     def list_hosts(self) -> list[dict]:

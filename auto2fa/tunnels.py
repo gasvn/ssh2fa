@@ -92,6 +92,14 @@ class TunnelState:
     # show "alive 2h" / "last alive 5m ago" — way more useful than the
     # opaque last_msg string for figuring out staleness.
     last_alive_at: float = 0.0
+    # Lifetime stats (resets only on daemon restart). UI shows these in
+    # the tunnel-details popover.
+    total_uptime_sec: float = 0.0       # cumulative time spent in "alive"
+    connect_count: int = 0              # successful alive transitions
+    fail_count: int = 0                 # failed/stale transitions
+    # Internal: when did we last enter alive? Used to accumulate uptime
+    # when we leave alive.
+    _alive_since: float = 0.0
 
 
 class NodeDiscovery:
@@ -399,6 +407,8 @@ class TunnelManager:
                 ts.last_msg = f"via {jump}"
                 ts.consecutive_squeue_misses = 0
                 ts.last_alive_at = time.time()
+                ts._alive_since = time.time()
+                ts.connect_count += 1
                 self._record(ts, f"connected via {jump} → {ts.last_node}:{ts.remote_port}")
                 # Run the per-tunnel post-connect hook if any. Threaded so a
                 # slow hook can't block us — we capture stderr to the event
@@ -414,6 +424,7 @@ class TunnelManager:
                 except Exception:
                     pass
                 reason = self._extract_failure_reason(child)
+                ts.fail_count += 1
                 ts.status = "failed"
                 ts.last_msg = reason
                 ts.child = None
@@ -461,6 +472,14 @@ class TunnelManager:
         ts.events.append({"ts": time.time(), "msg": msg})
         if len(ts.events) > self.EVENT_BUFFER_LIMIT:
             del ts.events[: len(ts.events) - self.EVENT_BUFFER_LIMIT]
+
+    def _accumulate_uptime(self, ts: TunnelState) -> None:
+        """If this tunnel was in alive, fold its current run into total_uptime
+        and clear the _alive_since marker. Idempotent — safe to call before
+        any status transition out of alive."""
+        if ts._alive_since > 0:
+            ts.total_uptime_sec += max(0.0, time.time() - ts._alive_since)
+            ts._alive_since = 0.0
 
     def _run_post_connect(self, name: str) -> None:
         """Run the user-supplied post-connect shell command. We deliberately
@@ -515,6 +534,7 @@ class TunnelManager:
                     pass
             ts.child = None
             ts.active_jump = None
+            self._accumulate_uptime(ts)
             ts.status = "idle"
             ts.last_msg = "stopped"
 
@@ -608,6 +628,8 @@ class TunnelManager:
                         pass
                     ts.child = None
                     ts.active_jump = None
+                    self._accumulate_uptime(ts)
+                    ts.fail_count += 1
                     ts.status = "stale"
                     ts.last_msg = f"node {ts.last_node} no longer in squeue"
 

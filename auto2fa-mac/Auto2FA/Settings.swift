@@ -11,6 +11,7 @@ enum SettingsKey {
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
     static let welcomeShown = "auto2fa.welcomeShown"
+    static let compactRows = "auto2fa.compactRows"
 }
 
 struct SettingsView: View {
@@ -19,6 +20,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.autoOpenBrowser) private var autoOpenBrowser = false
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
+    @AppStorage(SettingsKey.compactRows) private var compactRows = false
     // launch-at-login state isn't a persisted preference (it's owned by
     // macOS via SMAppService); we just mirror it in @State for the Toggle.
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -67,6 +69,10 @@ struct SettingsView: View {
                 Section {
                     Toggle("Open localhost URL in browser when tunnel comes up", isOn: $autoOpenBrowser)
                     Text("Triggers once per tunnel transition idle → alive. If your tunnel hosts a notebook server (jupyter etc.), this saves you a click.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Compact row mode", isOn: $compactRows)
+                    Text("Tighter row height + smaller font for the tunnel table. Helpful when you have more than 10 tunnels.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Tunnels") }
