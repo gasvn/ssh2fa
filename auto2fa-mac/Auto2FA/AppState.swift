@@ -501,6 +501,50 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Apply imported tunnel definitions. Each one is added via the same
+    /// add+configure dance as Undo. Existing names are skipped (renaming
+    /// is the user's job — silent overwrite would surprise them).
+    /// Returns counts so caller can toast a summary.
+    func importTunnels(_ imported: [TunnelExportImport.ExportedTunnel])
+        async -> (added: Int, skipped: Int, failed: Int)
+    {
+        var added = 0, skipped = 0, failed = 0
+        let existing = Set(tunnels.map(\.name))
+        for t in imported {
+            if existing.contains(t.name) { skipped += 1; continue }
+            do {
+                _ = try await client.addTunnel(name: t.name, localPort: t.local_port)
+                if t.auto_start {
+                    try? await client.setTunnelAutostart(t.name, value: true)
+                }
+                if !t.tags.isEmpty {
+                    try? await client.setTunnelTags(t.name, tags: t.tags)
+                }
+                if let cmd = t.post_connect_cmd, !cmd.isEmpty {
+                    try? await client.setTunnelPostConnect(t.name, cmd: cmd)
+                }
+                if let jc = t.jump_candidates {
+                    try? await client.setTunnelJumpCandidates(t.name, candidates: jc)
+                }
+                if let node = t.last_node, !node.isEmpty {
+                    try? await client.setTunnelNode(t.name, node: node,
+                                                    user: t.last_user ?? NSUserName())
+                }
+                added += 1
+            } catch {
+                failed += 1
+            }
+        }
+        await reloadTunnelsOnly()
+        notchPresenter.show(
+            systemImage: "square.and.arrow.down",
+            title: "Imported \(added)",
+            description: "\(skipped) skipped, \(failed) failed",
+            tint: failed > 0 ? .orange : .green
+        )
+        return (added, skipped, failed)
+    }
+
     /// Best-effort batch start/stop. Toasts a single summary at the end.
     func batchTunnels(action: String, names: [String]) async {
         do {

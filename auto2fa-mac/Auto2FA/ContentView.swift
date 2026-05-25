@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var confirmingReset = false
     @State private var showingWelcome = false
+    @State private var showingPalette = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -135,8 +136,14 @@ struct ContentView: View {
         .sheet(isPresented: $showingWelcome) {
             WelcomeSheet().environmentObject(appState)
         }
+        .sheet(isPresented: $showingPalette) {
+            CommandPalette().environmentObject(appState)
+        }
         .onChange(of: appState.hosts.count) { _, _ in maybeShowWelcome() }
         .onAppear { maybeShowWelcome() }
+        .onReceive(NotificationCenter.default.publisher(for: .a2fShowPalette)) { _ in
+            showingPalette = true
+        }
         // bootstrap() is called from Auto2FAApp's WindowGroup .task, AFTER
         // it ensures the daemon is running. Doing it here too would race.
     }

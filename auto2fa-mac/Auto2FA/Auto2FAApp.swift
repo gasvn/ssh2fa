@@ -44,6 +44,24 @@ struct Auto2FAApp: App {
                     appState.presentNewTunnel()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+                Button("Command Palette…") {
+                    NotificationCenter.default.post(name: .a2fShowPalette, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .saveItem) {
+                Button("Export Tunnels…") {
+                    _ = TunnelExportImport.exportToFile(appState.tunnels)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Import Tunnels…") {
+                    let (imported, err) = TunnelExportImport.importFromFile()
+                    if let imported, !imported.isEmpty {
+                        Task { _ = await appState.importTunnels(imported) }
+                    } else if let err, err != "cancelled" {
+                        appState.connectionError = err
+                    }
+                }
             }
             CommandGroup(replacing: .help) {
                 Link("Auto2FA on GitHub",
