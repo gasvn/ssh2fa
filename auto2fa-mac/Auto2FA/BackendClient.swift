@@ -281,6 +281,16 @@ actor BackendClient {
                               params: ["name": name, "value": value])
     }
 
+    /// Set the per-tunnel jump-host whitelist. nil = auto (any ready host),
+    /// non-nil = priority-ordered list (first ready one wins). Daemon
+    /// restarts the tunnel immediately if it's currently alive.
+    func setTunnelJumpCandidates(_ name: String, candidates: [String]?) async throws {
+        var params: [String: Any] = ["name": name]
+        // JSONSerialization writes NSNull as JSON null.
+        params["candidates"] = candidates as Any? ?? NSNull()
+        _ = try await sendRaw(method: "tunnel_set_jump_candidates", params: params)
+    }
+
     /// Ask the daemon for the next free local port, starting at `base`.
     func suggestPort(base: Int = 8888) async throws -> Int {
         let data = try await sendRaw(method: "port_suggest", params: ["base": base])

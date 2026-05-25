@@ -48,10 +48,31 @@ struct TunnelsView: View {
                 }
 
                 TableColumn("Via") { t in
-                    Text(t.activeJump ?? "—")
-                        .foregroundStyle(.secondary)
+                    // Clickable Menu — left-click opens jump-picker so the
+                    // user can pin this tunnel to a specific login node OR
+                    // restore Auto. The label shows the CURRENT active
+                    // jump (with a small lock if pinned) so at-a-glance
+                    // status stays familiar.
+                    Menu {
+                        jumpPickerMenu(for: t)
+                    } label: {
+                        HStack(spacing: 4) {
+                            if let pinned = t.jumpCandidates, !pinned.isEmpty {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(t.activeJump ?? (t.jumpCandidates?.first ?? "—"))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(t.jumpCandidates == nil
+                          ? "Auto — any ready host. Click to pin."
+                          : "Pinned to \(t.jumpCandidates!.joined(separator: ", ")). Click to change.")
                 }
-                .width(min: 60, ideal: 70)
+                .width(min: 80, ideal: 100)
 
                 TableColumn("Status") { t in
                     HStack(spacing: 6) {
@@ -133,6 +154,9 @@ struct TunnelsView: View {
                     Button("Pick node…") {
                         appState.presentNodePicker(for: t)
                     }
+                    Menu("Use jump host") {
+                        jumpPickerMenu(for: t)
+                    }
                     Button("Open in browser") {
                         openInBrowser(t)
                     }
@@ -160,6 +184,33 @@ struct TunnelsView: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(url, forType: .string)
+    }
+
+    /// Menu builder used by both the "Via" column dropdown and the right-
+    /// click "Use jump host" submenu. Currently-selected mode (auto vs.
+    /// pinned to a specific host) shows a leading checkmark via SF symbol.
+    @ViewBuilder
+    private func jumpPickerMenu(for t: Tunnel) -> some View {
+        let isAuto = (t.jumpCandidates == nil) || (t.jumpCandidates?.isEmpty ?? true)
+        Button {
+            Task { await appState.setJumpCandidates(for: t, candidates: nil) }
+        } label: {
+            Label("Auto (any ready host)",
+                  systemImage: isAuto ? "checkmark" : "circle")
+        }
+        Divider()
+        // Only list hosts that exist as managers — typos / disabled hosts
+        // would just wedge the tunnel.
+        ForEach(appState.hosts, id: \.host) { host in
+            let pinned = (t.jumpCandidates == [host.host])
+            Button {
+                Task { await appState.setJumpCandidates(for: t, candidates: [host.host]) }
+            } label: {
+                Label(host.host,
+                      systemImage: pinned ? "checkmark"
+                                          : (host.isMasterReady ? "circle.fill" : "circle"))
+            }
+        }
     }
 
     /// Busy = we just clicked something (inFlightTunnels) OR the daemon is

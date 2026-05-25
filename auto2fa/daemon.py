@@ -285,6 +285,33 @@ class Auto2FADaemon:
                     ],
                 )
 
+            if method == ipc.Method.TUNNEL_SET_JUMP_CANDIDATES:
+                # Set the per-tunnel jump-host whitelist. null/None means
+                # "auto, any ready host"; a list pins this tunnel to the
+                # given hosts in priority order. If the tunnel is currently
+                # alive, restart it through the new candidates so the change
+                # takes effect immediately.
+                name = params["name"]
+                cands = params.get("candidates")  # null OR list[str]
+                if cands is not None and not isinstance(cands, list):
+                    return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS,
+                                          "candidates must be list or null")
+                if cands is not None:
+                    # Defensive: drop unknown host names so the tunnel can't
+                    # be wedged by typos in a list editor.
+                    cands = [c for c in cands if c in self.host_map]
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                was_alive = ts.status == "alive"
+                if was_alive:
+                    await asyncio.to_thread(self.tunnel_mgr.stop, name)
+                ts.jump_candidates = cands
+                self.tunnel_mgr.save()
+                if was_alive:
+                    await asyncio.to_thread(self.tunnel_mgr.start, name)
+                return ipc.make_response(req_id, self._tunnel_snapshot(name))
+
             if method == ipc.Method.TUNNEL_SET_AUTOSTART:
                 name = params["name"]
                 value = bool(params.get("value", False))

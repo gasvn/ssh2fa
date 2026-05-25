@@ -31,6 +31,7 @@ class Method:
     TUNNEL_TOGGLE = "tunnel_toggle"
     TUNNEL_SET_NODE = "tunnel_set_node"
     TUNNEL_SET_AUTOSTART = "tunnel_set_autostart"
+    TUNNEL_SET_JUMP_CANDIDATES = "tunnel_set_jump_candidates"
     DISCOVER_NODES = "discover_nodes"
     SUBSCRIBE_EVENTS = "subscribe_events"
     WAKE_RECOVER = "wake_recover"

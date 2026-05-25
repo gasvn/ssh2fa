@@ -269,6 +269,18 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    /// Pin (or unpin) the tunnel's jump host. nil = auto pick any ready host;
+    /// non-nil = priority-ordered list, daemon takes the first ready entry.
+    /// If the tunnel is currently alive the daemon restarts it through the
+    /// new candidates so the change takes effect immediately.
+    func setJumpCandidates(for tunnel: Tunnel, candidates: [String]?) async {
+        inFlightTunnels.insert(tunnel.name)
+        defer { inFlightTunnels.remove(tunnel.name) }
+        do { try await client.setTunnelJumpCandidates(tunnel.name, candidates: candidates) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
     /// Add a new host via daemon. Returns nil on success, error message on failure.
     @discardableResult
     func addHost(host: String, password: String, otpauthURL: String,
