@@ -40,6 +40,11 @@ final class AppState: ObservableObject {
     /// they probe the local port / wait for SSH to settle.
     @Published var inFlightHosts: Set<String> = []
     @Published var inFlightTunnels: Set<String> = []
+    /// Snapshot of the most recently deleted tunnel, kept ~8s so the user
+    /// can hit Undo from the snackbar. Auto-clears on timer or on the next
+    /// successful delete.
+    @Published var undoableDelete: Tunnel?
+    private var undoExpireTask: Task<Void, Never>?
 
     let client = BackendClient()
     private var eventTask: Task<Void, Never>?
@@ -302,6 +307,105 @@ final class AppState: ObservableObject {
         do { try await client.removeTunnel(tunnel.name) }
         catch { connectionError = error.localizedDescription }
         await reloadAll()
+        // Stash a snapshot so the snackbar can offer Undo for ~8s.
+        undoableDelete = tunnel
+        undoExpireTask?.cancel()
+        undoExpireTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self else { return }
+            await MainActor.run {
+                if self.undoableDelete?.name == tunnel.name {
+                    self.undoableDelete = nil
+                }
+            }
+        }
+    }
+
+    /// Re-create a tunnel from a snapshot. Used by the Undo snackbar after
+    /// a delete. We re-issue the addTunnel + restore the persistent fields
+    /// (auto_start, post_connect_cmd, tags, jump_candidates, last_node).
+    func undoDelete() async {
+        guard let t = undoableDelete else { return }
+        undoableDelete = nil
+        undoExpireTask?.cancel()
+        do {
+            _ = try await client.addTunnel(name: t.name, localPort: t.localPort)
+            if t.autoStart {
+                try? await client.setTunnelAutostart(t.name, value: true)
+            }
+            if !t.tags.isEmpty {
+                try? await client.setTunnelTags(t.name, tags: t.tags)
+            }
+            if let cmd = t.postConnectCmd, !cmd.isEmpty {
+                try? await client.setTunnelPostConnect(t.name, cmd: cmd)
+            }
+            if let jc = t.jumpCandidates {
+                try? await client.setTunnelJumpCandidates(t.name, candidates: jc)
+            }
+            if let node = t.lastNode, !node.isEmpty {
+                try? await client.setTunnelNode(t.name, node: node,
+                                                user: t.lastUser ?? NSUserName())
+            }
+            await reloadTunnelsOnly()
+            FriendlyText.haptic()
+            notchPresenter.show(
+                systemImage: "arrow.uturn.backward",
+                title: "Restored",
+                description: t.name,
+                tint: .green
+            )
+        } catch {
+            connectionError = "Couldn't restore: \(error.localizedDescription)"
+        }
+    }
+
+    /// Clone an existing tunnel: same node/jump/tags/post-connect, next
+    /// free port, name = `<original>-copy[-N]`. Returns the new name
+    /// (or nil on failure).
+    @discardableResult
+    func cloneTunnel(_ t: Tunnel) async -> String? {
+        let newName = nextCloneName(for: t.name)
+        do {
+            let newPort = try await client.suggestPort(base: t.localPort + 1)
+            _ = try await client.addTunnel(name: newName, localPort: newPort)
+            if !t.tags.isEmpty {
+                try? await client.setTunnelTags(newName, tags: t.tags)
+            }
+            if let cmd = t.postConnectCmd, !cmd.isEmpty {
+                try? await client.setTunnelPostConnect(newName, cmd: cmd)
+            }
+            if let jc = t.jumpCandidates {
+                try? await client.setTunnelJumpCandidates(newName, candidates: jc)
+            }
+            if let node = t.lastNode, !node.isEmpty {
+                try? await client.setTunnelNode(newName, node: node,
+                                                user: t.lastUser ?? NSUserName())
+            }
+            await reloadTunnelsOnly()
+            FriendlyText.haptic()
+            notchPresenter.show(
+                systemImage: "doc.on.doc.fill",
+                title: "Cloned",
+                description: "\(t.name) → \(newName)",
+                tint: .blue
+            )
+            return newName
+        } catch {
+            connectionError = "Clone failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func nextCloneName(for base: String) -> String {
+        let stem = base.hasSuffix("-copy") ? String(base.dropLast(5)) : base
+        let names = Set(tunnels.map(\.name))
+        var candidate = "\(stem)-copy"
+        var i = 2
+        while names.contains(candidate) {
+            candidate = "\(stem)-copy-\(i)"
+            i += 1
+        }
+        return candidate
     }
 
     func rotateHost(_ host: SSHHost) async {

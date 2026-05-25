@@ -178,6 +178,7 @@ class Auto2FADaemon:
             "active_jump": ts.active_jump,
             "status": ts.status,
             "last_msg": ts.last_msg,
+            "last_alive_at": ts.last_alive_at,
         }
 
     def list_hosts(self) -> list[dict]:

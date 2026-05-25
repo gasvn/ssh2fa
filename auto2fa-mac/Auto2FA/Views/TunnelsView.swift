@@ -1,5 +1,27 @@
 import SwiftUI
 
+/// Status dot that pulses (scale + opacity) when `animated` is true.
+/// Used for the .starting state so users can see the system is still
+/// working rather than wondering if it wedged.
+struct PulsingDot: View {
+    let color: Color
+    let animated: Bool
+    @State private var phase: Bool = false
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+            .scaleEffect(animated && phase ? 1.4 : 1.0)
+            .opacity(animated && phase ? 0.5 : 1.0)
+            .animation(
+                animated ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default,
+                value: phase
+            )
+            .onAppear { if animated { phase = true } }
+            .onChange(of: animated) { _, on in phase = on }
+    }
+}
+
 struct TunnelsView: View {
     @EnvironmentObject var appState: AppState
     @State private var selection: Set<Tunnel.ID> = []
@@ -126,17 +148,30 @@ struct TunnelsView: View {
     private var tunnelsTable: some View {
         Table(visibleTunnels, selection: $selection) {
                 TableColumn("Name") { t in
-                    HStack(spacing: 4) {
-                        Text(t.name).fontDesign(.monospaced)
-                        if t.autoStart {
-                            Image(systemName: "bolt.fill")
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 4) {
+                            Text(t.name).fontDesign(.monospaced)
+                            if t.autoStart {
+                                Image(systemName: "bolt.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.yellow)
+                                    .help("Starts automatically when the daemon boots")
+                            }
+                            if t.postConnectCmd != nil {
+                                Image(systemName: "terminal.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                                    .help("Has a post-connect command")
+                            }
+                        }
+                        if let aliveTxt = t.aliveSince(), t.displayState != .alive {
+                            Text(aliveTxt)
                                 .font(.caption2)
-                                .foregroundStyle(.yellow)
-                                .help("Starts automatically when the daemon boots")
+                                .foregroundStyle(.tertiary)
                         }
                     }
                 }
-                .width(min: 80, ideal: 110)
+                .width(min: 100, ideal: 130)
 
                 TableColumn("Local → Remote") { t in
                     Text(":\(t.localPort) → :\(t.remotePort)")
@@ -190,16 +225,16 @@ struct TunnelsView: View {
                                 .fontWeight(.medium)
                                 .foregroundStyle(.orange)
                         } else {
-                            Circle()
-                                .fill(color(for: t.displayState))
-                                .frame(width: 8, height: 8)
+                            PulsingDot(color: color(for: t.displayState),
+                                       animated: t.displayState == .starting)
                             Text(displayName(for: t.displayState))
                                 .fontWeight(.medium)
                         }
-                        Text(t.lastMsg)
+                        Text(FriendlyText.tunnelStatusBlurb(t))
                             .foregroundStyle(.secondary)
                             .font(.caption)
                             .lineLimit(1)
+                            .help(t.lastMsg)  // hover for full raw message
                     }
                 }
                 .width(min: 200)
@@ -284,6 +319,9 @@ struct TunnelsView: View {
                         copyURL(t.url)
                     }
                     Divider()
+                    Button("Clone…") {
+                        Task { await appState.cloneTunnel(t) }
+                    }
                     Button("Rename…") {
                         renameDraft = t.name
                         renamingTunnel = t
@@ -303,6 +341,58 @@ struct TunnelsView: View {
                     }
                 }
             }
+            // Keyboard handlers — fire when the table has focus and a row
+            // is selected. Cuts the rounds-trip-to-mouse loop in half for
+            // power users.
+            .onKeyPress(.space) {
+                guard let t = singleSelectedTunnel else { return .ignored }
+                Task { await appState.toggleTunnel(t) }
+                return .handled
+            }
+            .onKeyPress(.return) {
+                guard let t = singleSelectedTunnel else { return .ignored }
+                appState.presentNodePicker(for: t)
+                return .handled
+            }
+            .onKeyPress(.delete) {
+                guard let t = singleSelectedTunnel else { return .ignored }
+                appState.presentConfirmDelete(for: t)
+                return .handled
+            }
+            .onKeyPress(keys: ["c"]) { press in
+                guard press.modifiers.contains(.command),
+                      let t = singleSelectedTunnel else { return .ignored }
+                copyURL(t.url)
+                FriendlyText.haptic()
+                appState.notchPresenter.show(
+                    systemImage: "doc.on.doc",
+                    title: "Copied",
+                    description: t.url,
+                    tint: .blue
+                )
+                return .handled
+            }
+            .onKeyPress(keys: ["o"]) { press in
+                guard press.modifiers.contains(.command),
+                      let t = singleSelectedTunnel,
+                      t.displayState == .alive else { return .ignored }
+                openInBrowser(t)
+                return .handled
+            }
+            .onKeyPress(keys: ["d"]) { press in
+                guard press.modifiers.contains(.command),
+                      let t = singleSelectedTunnel else { return .ignored }
+                Task { await appState.cloneTunnel(t) }
+                return .handled
+            }
+    }
+
+    /// Convenience: returns the Tunnel iff EXACTLY one row is selected.
+    /// Multi-select keyboard ops are handled by the batch toolbar buttons
+    /// instead of these single-row shortcuts.
+    private var singleSelectedTunnel: Tunnel? {
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return appState.tunnels.first { $0.id == id }
     }
 
     @ViewBuilder

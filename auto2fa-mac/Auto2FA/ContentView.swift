@@ -40,6 +40,7 @@ struct ContentView: View {
                     confirmingReset = true
                 } label: {
                     Label("Reset", systemImage: "exclamationmark.arrow.circlepath")
+                        .foregroundStyle(.red)
                 }
                 .help("Stop every tunnel + rebuild every SSH master (use when things wedge)")
             }
@@ -65,6 +66,35 @@ struct ContentView: View {
                     .onTapGesture { appState.connectionError = nil }
             }
         }
+        .overlay(alignment: .bottom) {
+            // Undo snackbar — visible for ~8s after a tunnel delete.
+            if let deleted = appState.undoableDelete {
+                HStack(spacing: 12) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                    Text("Deleted '\(deleted.name)'")
+                        .font(.callout)
+                    Spacer(minLength: 12)
+                    Button("Undo") {
+                        Task { await appState.undoDelete() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    Button {
+                        appState.undoableDelete = nil
+                    } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.gray.opacity(0.25), lineWidth: 1))
+                .padding(.bottom, 16)
+                .frame(maxWidth: 360)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: appState.undoableDelete?.name)
         // Sheets — bind to a derived value that's nil for .confirmDelete so the
         // sheet machinery doesn't flash an empty sheet alongside the
         // confirmation dialog below.

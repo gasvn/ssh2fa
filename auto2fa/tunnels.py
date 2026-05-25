@@ -88,6 +88,10 @@ class TunnelState:
     # running daemon doesn't accumulate megabytes of history per tunnel.
     # Format: list of {"ts": epoch_seconds, "msg": str}.
     events: List[Dict[str, Any]] = field(default_factory=list)
+    # Last time this tunnel reached "alive". 0 = never. Used by UI to
+    # show "alive 2h" / "last alive 5m ago" — way more useful than the
+    # opaque last_msg string for figuring out staleness.
+    last_alive_at: float = 0.0
 
 
 class NodeDiscovery:
@@ -394,6 +398,7 @@ class TunnelManager:
                 ts.status = "alive"
                 ts.last_msg = f"via {jump}"
                 ts.consecutive_squeue_misses = 0
+                ts.last_alive_at = time.time()
                 self._record(ts, f"connected via {jump} → {ts.last_node}:{ts.remote_port}")
                 # Run the per-tunnel post-connect hook if any. Threaded so a
                 # slow hook can't block us — we capture stderr to the event

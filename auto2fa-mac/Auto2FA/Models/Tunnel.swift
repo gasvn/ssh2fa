@@ -14,6 +14,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let activeJump: String?
     let status: String
     let lastMsg: String
+    let lastAliveAt: Double
 
     var id: String { name }
     var url: String { "localhost:\(localPort)" }
@@ -29,9 +30,10 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case postConnectCmd = "post_connect_cmd"
         case activeJump = "active_jump"
         case lastMsg = "last_msg"
+        case lastAliveAt = "last_alive_at"
     }
 
-    // Defaults so older daemon snapshots (pre-tags) still decode.
+    // Defaults so older daemon snapshots still decode.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try c.decode(String.self, forKey: .name)
@@ -46,6 +48,23 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         self.tags = (try? c.decode([String].self, forKey: .tags)) ?? []
         self.activeJump = try c.decodeIfPresent(String.self, forKey: .activeJump)
         self.lastMsg = try c.decode(String.self, forKey: .lastMsg)
+        self.lastAliveAt = (try? c.decode(Double.self, forKey: .lastAliveAt)) ?? 0
+    }
+
+    /// Human-friendly "alive 2h", "last alive 5m ago", "never alive".
+    /// Negative numbers handled defensively even though they shouldn't happen.
+    func aliveSince(now: Date = Date()) -> String? {
+        guard lastAliveAt > 0 else { return nil }
+        let elapsed = now.timeIntervalSince1970 - lastAliveAt
+        let abs = max(0, elapsed)
+        let prefix = (displayState == .alive) ? "alive" : "last alive"
+        let suffix = (displayState == .alive) ? "" : " ago"
+        let unit: String
+        if abs < 60 { unit = "\(Int(abs))s" }
+        else if abs < 3600 { unit = "\(Int(abs/60))m" }
+        else if abs < 86400 { unit = "\(Int(abs/3600))h" }
+        else { unit = "\(Int(abs/86400))d" }
+        return "\(prefix) \(unit)\(suffix)"
     }
 
     enum DisplayState: String {

@@ -4,6 +4,33 @@ struct HostsView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
+        if appState.hosts.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "server.rack")
+                    .font(.largeTitle)
+                    .foregroundStyle(.tint)
+                Text("No SSH hosts yet")
+                    .font(.title3)
+                Text("Register a host with its 2FA secret and the daemon will keep its login pool warm in the background.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                Button {
+                    appState.presentAddHost()
+                } label: {
+                    Label("Add your first SSH host", systemImage: "plus")
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        } else {
+            hostsTable
+        }
+    }
+
+    private var hostsTable: some View {
         Table(appState.hosts) {
             TableColumn("Host") { host in
                 Text(host.host)
@@ -24,12 +51,12 @@ struct HostsView: View {
                         Text(busyLabel(host))
                             .foregroundStyle(.orange)
                     } else {
-                        Circle()
-                            .fill(color(for: host.displayState))
-                            .frame(width: 8, height: 8)
-                        Text(displayName(for: host.displayState))
+                        PulsingDot(color: color(for: host.displayState),
+                                   animated: host.displayState == .connecting)
+                        Text(FriendlyText.hostStatus(host.status))
+                            .fontWeight(.medium)
                         if host.poolAlive > 0 {
-                            Text("(\(host.poolIndex)/\(host.poolAlive))")
+                            Text("(\(host.poolAlive)/2 ready)")
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                         }
@@ -45,9 +72,10 @@ struct HostsView: View {
             .width(min: 40, ideal: 50, max: 60)
 
             TableColumn("Last Message") { host in
-                Text(host.lastMsg)
+                Text(FriendlyText.hostLastMsg(host.lastMsg))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(host.lastMsg)
             }
 
             TableColumn("") { host in
