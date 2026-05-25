@@ -16,10 +16,39 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.autoOpenBrowser) private var autoOpenBrowser = false
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
+    // launch-at-login state isn't a persisted preference (it's owned by
+    // macOS via SMAppService); we just mirror it in @State for the Toggle.
+    @State private var launchAtLogin = LoginItem.isEnabled
+    @State private var launchAtLoginError: String?
 
     var body: some View {
         TabView {
             Form {
+                Section {
+                    Toggle("Start Auto2FA at login", isOn: $launchAtLogin)
+                        .disabled(!LoginItem.isSupported)
+                        .onChange(of: launchAtLogin) { _, on in
+                            launchAtLoginError = LoginItem.setEnabled(on)
+                            if launchAtLoginError != nil {
+                                // Revert toggle if the OS rejected the change.
+                                DispatchQueue.main.async {
+                                    launchAtLogin = LoginItem.isEnabled
+                                }
+                            }
+                        }
+                    Text(LoginItem.statusDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let err = launchAtLoginError {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    Text("For best reliability, drag Auto2FA.app to /Applications first — SMAppService remembers the bundle path at register time, so moving the .app later silently breaks the auto-launch.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Launch") }
+
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)
                     Text("Notifications for tunnel state changes appear over the MacBook Pro notch. Disabling falls back to no UI feedback.")
