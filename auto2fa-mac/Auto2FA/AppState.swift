@@ -370,6 +370,44 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    func setTags(for tunnel: Tunnel, tags: [String]) async {
+        do { try await client.setTunnelTags(tunnel.name, tags: tags) }
+        catch { connectionError = error.localizedDescription }
+        await reloadTunnelsOnly()
+    }
+
+    /// Rename a tunnel. Returns nil on success or an error message.
+    @discardableResult
+    func renameTunnel(_ tunnel: Tunnel, to newName: String) async -> String? {
+        let new = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !new.isEmpty, new != tunnel.name else { return nil }
+        inFlightTunnels.insert(tunnel.name)
+        defer { inFlightTunnels.remove(tunnel.name) }
+        do {
+            try await client.renameTunnel(old: tunnel.name, new: new)
+            await reloadTunnelsOnly()
+            return nil
+        } catch {
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
+    /// Best-effort batch start/stop. Toasts a single summary at the end.
+    func batchTunnels(action: String, names: [String]) async {
+        do {
+            let results = try await client.batchTunnels(action: action, names: names)
+            let okCount = results.filter { $0.ok }.count
+            notchPresenter.show(
+                systemImage: action == "start" ? "play.fill" : "stop.fill",
+                title: "\(okCount)/\(results.count) \(action)ed",
+                description: names.joined(separator: ", "),
+                tint: okCount == results.count ? .green : .orange
+            )
+        } catch { connectionError = error.localizedDescription }
+        await reloadTunnelsOnly()
+    }
+
     /// Nuclear reset — stop everything, rebuild every master. Use sparingly.
     func resetAll() async {
         do {

@@ -72,6 +72,10 @@ class TunnelState:
     # Runs in /bin/sh -c. Environment includes AUTO2FA_TUNNEL_NAME,
     # AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.
     post_connect_cmd: Optional[str] = None
+    # User-defined tags for grouping. UI can filter by tag and batch-act
+    # ("start all `jupyter`-tagged tunnels"). Free-form strings; lowercased
+    # in the UI but stored verbatim.
+    tags: List[str] = field(default_factory=list)
 
     # Runtime-only fields
     status: str = "idle"                   # idle | starting | alive | stale | port_busy | failed
@@ -144,7 +148,7 @@ class TunnelManager:
 
     PERSISTED_FIELDS = ("local_port", "remote_port", "jump_candidates",
                         "last_node", "last_user", "auto_start",
-                        "post_connect_cmd")
+                        "post_connect_cmd", "tags")
     EVENT_BUFFER_LIMIT = 200
 
     def __init__(self, host_managers: Dict[str, object], config_path: str):
@@ -200,6 +204,8 @@ class TunnelManager:
                 last_node=cfg.get("last_node"),
                 last_user=cfg.get("last_user"),
                 auto_start=bool(cfg.get("auto_start", False)),
+                post_connect_cmd=cfg.get("post_connect_cmd"),
+                tags=list(cfg.get("tags", []) or []),
             )
         self.tunnels = loaded
 

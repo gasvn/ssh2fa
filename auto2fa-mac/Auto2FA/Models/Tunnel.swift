@@ -10,6 +10,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let lastUser: String?
     let autoStart: Bool
     let postConnectCmd: String?
+    let tags: [String]
     let activeJump: String?
     let status: String
     let lastMsg: String
@@ -18,7 +19,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     var url: String { "localhost:\(localPort)" }
 
     enum CodingKeys: String, CodingKey {
-        case name, status
+        case name, status, tags
         case localPort = "local_port"
         case remotePort = "remote_port"
         case jumpCandidates = "jump_candidates"
@@ -28,6 +29,23 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case postConnectCmd = "post_connect_cmd"
         case activeJump = "active_jump"
         case lastMsg = "last_msg"
+    }
+
+    // Defaults so older daemon snapshots (pre-tags) still decode.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.status = try c.decode(String.self, forKey: .status)
+        self.localPort = try c.decode(Int.self, forKey: .localPort)
+        self.remotePort = try c.decode(Int.self, forKey: .remotePort)
+        self.jumpCandidates = try c.decodeIfPresent([String].self, forKey: .jumpCandidates)
+        self.lastNode = try c.decodeIfPresent(String.self, forKey: .lastNode)
+        self.lastUser = try c.decodeIfPresent(String.self, forKey: .lastUser)
+        self.autoStart = try c.decode(Bool.self, forKey: .autoStart)
+        self.postConnectCmd = try c.decodeIfPresent(String.self, forKey: .postConnectCmd)
+        self.tags = (try? c.decode([String].self, forKey: .tags)) ?? []
+        self.activeJump = try c.decodeIfPresent(String.self, forKey: .activeJump)
+        self.lastMsg = try c.decode(String.self, forKey: .lastMsg)
     }
 
     enum DisplayState: String {

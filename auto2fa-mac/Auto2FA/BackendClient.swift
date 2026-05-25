@@ -357,6 +357,28 @@ actor BackendClient {
         return try JSONDecoder().decode(SSHHost.self, from: data)
     }
 
+    func setTunnelTags(_ name: String, tags: [String]) async throws {
+        _ = try await sendRaw(method: "tunnel_set_tags",
+                              params: ["name": name, "tags": tags])
+    }
+
+    func renameTunnel(old: String, new: String) async throws {
+        _ = try await sendRaw(method: "tunnel_rename",
+                              params: ["old": old, "new": new])
+    }
+
+    struct BatchResult: Decodable {
+        let name: String
+        let ok: Bool
+        let error: String?
+    }
+    func batchTunnels(action: String, names: [String]) async throws -> [BatchResult] {
+        let data = try await sendRaw(method: "tunnels_batch",
+                                     params: ["action": action, "names": names])
+        struct R: Decodable { let results: [BatchResult] }
+        return try JSONDecoder().decode(R.self, from: data).results
+    }
+
     /// Per-tunnel activity log (ring buffer, latest 200 events on daemon
     /// side). Each event is {ts: Double (epoch s), msg: String}.
     struct TunnelEvent: Codable, Identifiable, Hashable {

@@ -2,8 +2,31 @@ import SwiftUI
 
 struct TunnelsView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selection: Tunnel.ID?
+    @State private var selection: Set<Tunnel.ID> = []
     @State private var detailsForTunnel: Tunnel?
+    @State private var filter: String = ""
+    @State private var activeTagFilter: String? = nil
+    @State private var renamingTunnel: Tunnel? = nil
+    @State private var renameDraft: String = ""
+
+    /// All distinct tags currently in use, sorted, for the filter chips.
+    private var allTags: [String] {
+        Array(Set(appState.tunnels.flatMap { $0.tags })).sorted()
+    }
+
+    /// Tunnels passing both the text filter and the tag filter.
+    private var visibleTunnels: [Tunnel] {
+        let q = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return appState.tunnels.filter { t in
+            if let tag = activeTagFilter, !t.tags.contains(tag) { return false }
+            if q.isEmpty { return true }
+            if t.name.lowercased().contains(q) { return true }
+            if (t.lastNode ?? "").lowercased().contains(q) { return true }
+            if (t.activeJump ?? "").lowercased().contains(q) { return true }
+            if t.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
+            return false
+        }
+    }
 
     var body: some View {
         if appState.tunnels.isEmpty {
@@ -27,7 +50,81 @@ struct TunnelsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
         } else {
-            Table(appState.tunnels, selection: $selection) {
+            VStack(spacing: 0) {
+                filterBar
+                Divider()
+                tunnelsTable
+            }
+        }
+    }
+
+    private var filterBar: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("filter by name, node, jump, tag…", text: $filter)
+                    .textFieldStyle(.roundedBorder)
+                if !filter.isEmpty {
+                    Button {
+                        filter = ""
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless)
+                }
+                if !selection.isEmpty {
+                    Divider().frame(height: 16)
+                    Text("\(selection.count) selected")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        Task {
+                            await appState.batchTunnels(action: "start",
+                                names: Array(selection))
+                        }
+                    } label: { Label("Start", systemImage: "play.fill") }
+                        .controlSize(.small)
+                    Button {
+                        Task {
+                            await appState.batchTunnels(action: "stop",
+                                names: Array(selection))
+                        }
+                    } label: { Label("Stop", systemImage: "stop.fill") }
+                        .controlSize(.small)
+                }
+            }
+            if !allTags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        tagChip("All", isActive: activeTagFilter == nil) {
+                            activeTagFilter = nil
+                        }
+                        ForEach(allTags, id: \.self) { tag in
+                            tagChip(tag, isActive: activeTagFilter == tag) {
+                                activeTagFilter = (activeTagFilter == tag) ? nil : tag
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+            }
+        }
+        .padding(8)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private func tagChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(isActive ? Color.accentColor : Color.gray.opacity(0.15),
+                            in: Capsule())
+                .foregroundColor(isActive ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tunnelsTable: some View {
+        Table(visibleTunnels, selection: $selection) {
                 TableColumn("Name") { t in
                     HStack(spacing: 4) {
                         Text(t.name).fontDesign(.monospaced)
@@ -164,6 +261,9 @@ struct TunnelsView: View {
                 TunnelDetailsPopover(tunnel: t)
                     .environmentObject(appState)
             }
+            .sheet(item: $renamingTunnel) { t in
+                renameSheet(for: t)
+            }
             .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
                 if let id = ids.first,
                    let t = appState.tunnels.first(where: { $0.id == id }) {
@@ -184,6 +284,13 @@ struct TunnelsView: View {
                         copyURL(t.url)
                     }
                     Divider()
+                    Button("Rename…") {
+                        renameDraft = t.name
+                        renamingTunnel = t
+                    }
+                    Menu("Tags") {
+                        tagEditorMenu(for: t)
+                    }
                     Toggle("Start on daemon launch", isOn: Binding(
                         get: { t.autoStart },
                         set: { newValue in
@@ -196,7 +303,65 @@ struct TunnelsView: View {
                     }
                 }
             }
+    }
+
+    @ViewBuilder
+    private func renameSheet(for t: Tunnel) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename tunnel").font(.headline)
+            Text("Currently: \(t.name)").font(.caption).foregroundStyle(.secondary)
+            TextField("new-name", text: $renameDraft)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel") { renamingTunnel = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename") {
+                    let target = t
+                    let newName = renameDraft
+                    Task {
+                        _ = await appState.renameTunnel(target, to: newName)
+                        renamingTunnel = nil
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          renameDraft == t.name)
+            }
         }
+        .padding(20)
+        .frame(width: 340)
+    }
+
+    @ViewBuilder
+    private func tagEditorMenu(for t: Tunnel) -> some View {
+        // Quick toggles for existing tags, plus a "New tag" form via prompt.
+        let existing = Set(t.tags)
+        // Known tags = union across all tunnels (so users can apply
+        // already-used ones quickly).
+        let known = Array(Set(appState.tunnels.flatMap { $0.tags })).sorted()
+        if known.isEmpty {
+            Text("No tags yet — add one from CLI or tunnels.json.")
+        } else {
+            ForEach(known, id: \.self) { tag in
+                Button {
+                    var next = Array(existing)
+                    if existing.contains(tag) {
+                        next.removeAll { $0 == tag }
+                    } else {
+                        next.append(tag)
+                    }
+                    Task { await appState.setTags(for: t, tags: next) }
+                } label: {
+                    Label(tag, systemImage: existing.contains(tag) ? "checkmark" : "circle")
+                }
+            }
+        }
+        Divider()
+        Button("Clear all tags") {
+            Task { await appState.setTags(for: t, tags: []) }
+        }
+        .disabled(t.tags.isEmpty)
     }
 
     private func copyURL(_ url: String) {

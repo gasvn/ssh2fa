@@ -174,6 +174,7 @@ class Auto2FADaemon:
             "last_user": ts.last_user,
             "auto_start": ts.auto_start,
             "post_connect_cmd": ts.post_connect_cmd,
+            "tags": list(ts.tags),
             "active_jump": ts.active_jump,
             "status": ts.status,
             "last_msg": ts.last_msg,
@@ -309,6 +310,73 @@ class Auto2FADaemon:
                         for j in jobs
                     ],
                 )
+
+            if method == ipc.Method.TUNNEL_SET_TAGS:
+                # Replace the tag list for a tunnel. Empty list clears tags.
+                name = params["name"]
+                tags = params.get("tags") or []
+                if not isinstance(tags, list):
+                    return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS,
+                                          "tags must be a list of strings")
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                ts.tags = [str(t).strip() for t in tags if str(t).strip()]
+                self.tunnel_mgr.save()
+                return ipc.make_response(req_id, self._tunnel_snapshot(name))
+
+            if method == ipc.Method.TUNNEL_RENAME:
+                # Rename a tunnel. Stops it first if alive (since the ssh
+                # child references the old name in last_msg etc.), renames,
+                # then restarts it.
+                old = params["old"]
+                new = params["new"]
+                if not new or not isinstance(new, str):
+                    return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS, "new name required")
+                new = new.strip()
+                if new == old:
+                    return ipc.make_response(req_id, self._tunnel_snapshot(old))
+                if new in self.tunnel_mgr.tunnels:
+                    return ipc.make_error(req_id, ipc.ErrCode.DUPLICATE,
+                                          f"tunnel '{new}' already exists")
+                ts = self.tunnel_mgr.tunnels.get(old)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, old)
+                was_alive = ts.status == "alive"
+                if was_alive:
+                    await asyncio.to_thread(self.tunnel_mgr.stop, old)
+                # Reseat under the new key.
+                ts.name = new
+                self.tunnel_mgr.tunnels[new] = ts
+                del self.tunnel_mgr.tunnels[old]
+                self.tunnel_mgr.save()
+                if was_alive:
+                    await asyncio.to_thread(self.tunnel_mgr.start, new)
+                return ipc.make_response(req_id, self._tunnel_snapshot(new))
+
+            if method == ipc.Method.TUNNELS_BATCH:
+                # Apply an action (start/stop) to a set of tunnel names.
+                # Returns {results: [{name, ok, error}]}. Errors per item
+                # don't abort the batch — best-effort.
+                action = params.get("action", "")
+                names = params.get("names") or []
+                if action not in ("start", "stop"):
+                    return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS,
+                                          "action must be 'start' or 'stop'")
+                results = []
+                for name in names:
+                    if name not in self.tunnel_mgr.tunnels:
+                        results.append({"name": name, "ok": False, "error": "not found"})
+                        continue
+                    try:
+                        if action == "start":
+                            await asyncio.to_thread(self.tunnel_mgr.start, name)
+                        else:
+                            await asyncio.to_thread(self.tunnel_mgr.stop, name)
+                        results.append({"name": name, "ok": True})
+                    except Exception as e:
+                        results.append({"name": name, "ok": False, "error": str(e)})
+                return ipc.make_response(req_id, {"results": results})
 
             if method == ipc.Method.TUNNEL_EVENTS:
                 # Return the per-tunnel activity ring buffer for debugging.

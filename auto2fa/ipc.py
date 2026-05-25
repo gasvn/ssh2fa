@@ -41,6 +41,9 @@ class Method:
     LOG_TAIL = "log_tail"
     TUNNEL_EVENTS = "tunnel_events"
     TUNNEL_SET_POST_CONNECT = "tunnel_set_post_connect"
+    TUNNEL_SET_TAGS = "tunnel_set_tags"
+    TUNNEL_RENAME = "tunnel_rename"
+    TUNNELS_BATCH = "tunnels_batch"
     RESET_ALL = "reset_all"
 
 
