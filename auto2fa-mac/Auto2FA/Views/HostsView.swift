@@ -13,11 +13,15 @@ struct HostsView: View {
 
             TableColumn("Status") { host in
                 HStack(spacing: 6) {
-                    if appState.inFlightHosts.contains(host.host) {
+                    if isBusy(host) {
+                        // Spinner covers both the brief RPC round-trip AND
+                        // the long server-side login (the toggle RPC returns
+                        // almost instantly, but the daemon may then spend
+                        // 20-40s authenticating). Either source = spinning.
                         ProgressView()
                             .controlSize(.small)
                             .scaleEffect(0.7)
-                        Text("Working…")
+                        Text(busyLabel(host))
                             .foregroundStyle(.orange)
                     } else {
                         Circle()
@@ -47,7 +51,7 @@ struct HostsView: View {
             }
 
             TableColumn("") { host in
-                let busy = appState.inFlightHosts.contains(host.host)
+                let busy = isBusy(host)
                 HStack(spacing: 4) {
                     Button {
                         Task { await appState.toggleHost(host) }
@@ -80,6 +84,23 @@ struct HostsView: View {
             }
             .width(min: 100, ideal: 110, max: 140)
         }
+    }
+
+    /// Treat both the click-feedback flag AND the daemon-reported
+    /// "connecting" state as "busy". This avoids the spinner flickering
+    /// for ~50ms only — the actual login takes ~20s after the toggle RPC
+    /// returns, and during that whole window we want to show progress.
+    private func isBusy(_ host: SSHHost) -> Bool {
+        if appState.inFlightHosts.contains(host.host) { return true }
+        return host.displayState == .connecting
+    }
+
+    private func busyLabel(_ host: SSHHost) -> String {
+        // last_msg is whatever the daemon last set ("Init Spawn #0...",
+        // "Spawning #0...", etc.) — usually more useful than a generic
+        // "Connecting…" because it tells the user how far they are.
+        let msg = host.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
+        return msg.isEmpty ? "Working…" : msg
     }
 
     private func color(for state: SSHHost.DisplayState) -> Color {

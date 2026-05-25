@@ -55,11 +55,11 @@ struct TunnelsView: View {
 
                 TableColumn("Status") { t in
                     HStack(spacing: 6) {
-                        if appState.inFlightTunnels.contains(t.name) {
+                        if isBusy(t) {
                             ProgressView()
                                 .controlSize(.small)
                                 .scaleEffect(0.7)
-                            Text("Working…")
+                            Text(busyLabel(t))
                                 .fontWeight(.medium)
                                 .foregroundStyle(.orange)
                         } else {
@@ -78,7 +78,7 @@ struct TunnelsView: View {
                 .width(min: 200)
 
                 TableColumn("") { t in
-                    let busy = appState.inFlightTunnels.contains(t.name)
+                    let busy = isBusy(t)
                     HStack(spacing: 4) {
                         Button {
                             Task { await appState.toggleTunnel(t) }
@@ -149,6 +149,21 @@ struct TunnelsView: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(url, forType: .string)
+    }
+
+    /// Busy = we just clicked something (inFlightTunnels) OR the daemon is
+    /// reporting starting. tunnel_toggle's RPC is slow (awaits the 10s probe)
+    /// so inFlightTunnels usually overlaps with .starting, but the pick_node
+    /// path can take longer than the RPC and only .starting catches that
+    /// tail end.
+    private func isBusy(_ t: Tunnel) -> Bool {
+        if appState.inFlightTunnels.contains(t.name) { return true }
+        return t.displayState == .starting
+    }
+
+    private func busyLabel(_ t: Tunnel) -> String {
+        let msg = t.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
+        return msg.isEmpty ? "Working…" : msg
     }
 
     private func openInBrowser(_ t: Tunnel) {
