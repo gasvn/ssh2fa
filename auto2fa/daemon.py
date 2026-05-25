@@ -412,6 +412,11 @@ class Auto2FADaemon:
         # Teardown
         self._tick_stop = True
         poll_task.cancel()
+        # Tell each host manager thread to exit. They will run cleanup_all()
+        # on the way out (final block in SSHHostManager.run). We then join
+        # them with a generous deadline so the SSH master mux processes don't
+        # outlive the daemon — daemon threads die immediately when the main
+        # thread exits, and cleanup_all would be cut off mid-flight.
         for mgr in self.managers:
             mgr.running = False
             mgr.active = False
@@ -419,6 +424,12 @@ class Auto2FADaemon:
             self.tunnel_mgr.shutdown()
         except Exception:
             logger.exception("tunnel_mgr.shutdown failed")
+        deadline = time.time() + 5.0
+        for mgr in self.managers:
+            remaining = max(0.0, deadline - time.time())
+            mgr.join(timeout=remaining)
+            if mgr.is_alive():
+                logger.warning(f"[{mgr.host}] manager thread didn't exit within shutdown window")
         try:
             os.remove(ipc.SOCKET_PATH)
         except OSError:
