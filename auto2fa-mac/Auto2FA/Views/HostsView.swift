@@ -13,14 +13,22 @@ struct HostsView: View {
 
             TableColumn("Status") { host in
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(color(for: host.displayState))
-                        .frame(width: 8, height: 8)
-                    Text(displayName(for: host.displayState))
-                    if host.poolAlive > 0 {
-                        Text("(\(host.poolIndex)/\(host.poolAlive))")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
+                    if appState.inFlightHosts.contains(host.host) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                        Text("Working…")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Circle()
+                            .fill(color(for: host.displayState))
+                            .frame(width: 8, height: 8)
+                        Text(displayName(for: host.displayState))
+                        if host.poolAlive > 0 {
+                            Text("(\(host.poolIndex)/\(host.poolAlive))")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
                     }
                 }
             }
@@ -39,34 +47,33 @@ struct HostsView: View {
             }
 
             TableColumn("") { host in
+                let busy = appState.inFlightHosts.contains(host.host)
                 HStack(spacing: 4) {
                     Button {
                         Task { await appState.toggleHost(host) }
                     } label: {
-                        Image(systemName: host.active ? "stop.fill" : "play.fill")
+                        if busy {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                                .frame(width: 14, height: 14)
+                        } else {
+                            Image(systemName: host.active ? "stop.fill" : "play.fill")
+                        }
                     }
                     .help(host.active ? "Stop / disconnect" : "Start / connect")
+                    .disabled(busy)
                     Button {
-                        Task {
-                            do { try await appState.client.toggleMount(host.host) }
-                            catch { appState.connectionError = error.localizedDescription }
-                            await appState.reloadAll()
-                        }
+                        Task { await appState.toggleMount(host) }
                     } label: {
                         Image(systemName: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
                     }
-                    .disabled(!host.isMasterReady && !host.isMounted)
+                    .disabled(busy || (!host.isMasterReady && !host.isMounted))
                     .help(host.isMounted ? "Unmount remote filesystem" : "Mount remote filesystem (sshfs)")
                     Button {
-                        Task {
-                            do { try await appState.client.rotateHost(host.host) }
-                            catch { appState.connectionError = error.localizedDescription }
-                            await appState.reloadAll()
-                        }
+                        Task { await appState.rotateHost(host) }
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                     }
-                    .disabled(!host.active)
+                    .disabled(busy || !host.active)
                     .help("Rotate connection pool slot")
                 }
                 .buttonStyle(.borderless)

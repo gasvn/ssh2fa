@@ -55,11 +55,20 @@ struct TunnelsView: View {
 
                 TableColumn("Status") { t in
                     HStack(spacing: 6) {
-                        Circle()
-                            .fill(color(for: t.displayState))
-                            .frame(width: 8, height: 8)
-                        Text(displayName(for: t.displayState))
-                            .fontWeight(.medium)
+                        if appState.inFlightTunnels.contains(t.name) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                            Text("Working…")
+                                .fontWeight(.medium)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Circle()
+                                .fill(color(for: t.displayState))
+                                .frame(width: 8, height: 8)
+                            Text(displayName(for: t.displayState))
+                                .fontWeight(.medium)
+                        }
                         Text(t.lastMsg)
                             .foregroundStyle(.secondary)
                             .font(.caption)
@@ -69,26 +78,34 @@ struct TunnelsView: View {
                 .width(min: 200)
 
                 TableColumn("") { t in
+                    let busy = appState.inFlightTunnels.contains(t.name)
                     HStack(spacing: 4) {
                         Button {
                             Task { await appState.toggleTunnel(t) }
                         } label: {
-                            Image(systemName: t.displayState == .alive ? "stop.fill" : "play.fill")
+                            if busy {
+                                ProgressView().controlSize(.small).scaleEffect(0.6)
+                                    .frame(width: 14, height: 14)
+                            } else {
+                                Image(systemName: t.displayState == .alive ? "stop.fill" : "play.fill")
+                            }
                         }
                         .help(t.displayState == .alive ? "Stop" : "Start")
+                        .disabled(busy)
                         Button {
                             appState.presentNodePicker(for: t)
                         } label: {
                             Image(systemName: "list.bullet.rectangle")
                         }
                         .help("Pick a node from squeue")
+                        .disabled(busy)
                         Button {
                             openInBrowser(t)
                         } label: {
                             Image(systemName: "safari")
                         }
                         .help("Open localhost:\(t.localPort) in browser")
-                        .disabled(t.displayState != .alive)
+                        .disabled(busy || t.displayState != .alive)
                         Button {
                             copyURL(t.url)
                         } label: {
@@ -101,6 +118,7 @@ struct TunnelsView: View {
                             Image(systemName: "trash")
                         }
                         .help("Delete tunnel")
+                        .disabled(busy)
                     }
                     .buttonStyle(.borderless)
                 }

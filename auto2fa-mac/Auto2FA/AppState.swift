@@ -30,6 +30,13 @@ final class AppState: ObservableObject {
     @Published var connectionError: String?
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
     @Published var activeSheet: ActiveSheet?
+    /// Names of hosts/tunnels with an action currently in flight (toggle,
+    /// pick_node, delete). UI uses this to swap the action button for a
+    /// spinner and overlay a "Working…" status so the user sees that their
+    /// click was received — daemon-side operations can take 10-30s while
+    /// they probe the local port / wait for SSH to settle.
+    @Published var inFlightHosts: Set<String> = []
+    @Published var inFlightTunnels: Set<String> = []
 
     let client = BackendClient()
     private var eventTask: Task<Void, Never>?
@@ -144,19 +151,54 @@ final class AppState: ObservableObject {
     // MARK: - User actions (thin wrappers that report errors via connectionError)
 
     func toggleHost(_ host: SSHHost) async {
+        inFlightHosts.insert(host.host)
+        defer { inFlightHosts.remove(host.host) }
+        // Immediate notch so the user sees their click landed.
+        notchPresenter.show(
+            systemImage: host.displayState == .connected ? "stop.fill" : "arrow.triangle.2.circlepath",
+            title: host.displayState == .connected ? "Stopping" : "Starting",
+            description: host.host,
+            tint: .yellow
+        )
         do { try await client.toggleHost(host.host) }
         catch { connectionError = error.localizedDescription }
         await reloadAll()
     }
 
     func toggleTunnel(_ tunnel: Tunnel) async {
+        inFlightTunnels.insert(tunnel.name)
+        defer { inFlightTunnels.remove(tunnel.name) }
+        notchPresenter.show(
+            systemImage: tunnel.displayState == .alive ? "stop.fill" : "arrow.triangle.2.circlepath",
+            title: tunnel.displayState == .alive ? "Stopping" : "Starting",
+            description: tunnel.name,
+            tint: .yellow
+        )
         do { try await client.toggleTunnel(tunnel.name) }
         catch { connectionError = error.localizedDescription }
         await reloadAll()
     }
 
     func deleteTunnel(_ tunnel: Tunnel) async {
+        inFlightTunnels.insert(tunnel.name)
+        defer { inFlightTunnels.remove(tunnel.name) }
         do { try await client.removeTunnel(tunnel.name) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    func rotateHost(_ host: SSHHost) async {
+        inFlightHosts.insert(host.host)
+        defer { inFlightHosts.remove(host.host) }
+        do { try await client.rotateHost(host.host) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    func toggleMount(_ host: SSHHost) async {
+        inFlightHosts.insert(host.host)
+        defer { inFlightHosts.remove(host.host) }
+        do { try await client.toggleMount(host.host) }
         catch { connectionError = error.localizedDescription }
         await reloadAll()
     }
@@ -173,6 +215,8 @@ final class AppState: ObservableObject {
     /// message on failure (so the sheet can show it inline rather than
     /// duplicating it as a global banner).
     func createTunnel(name: String, localPort: Int) async -> String? {
+        inFlightTunnels.insert(name)
+        defer { inFlightTunnels.remove(name) }
         do {
             _ = try await client.addTunnel(name: name, localPort: localPort)
             dismissSheet()
@@ -188,6 +232,8 @@ final class AppState: ObservableObject {
     /// daemon side). Returns nil on success or an error message on failure.
     @discardableResult
     func pickNode(for tunnelName: String, node: String, user: String) async -> String? {
+        inFlightTunnels.insert(tunnelName)
+        defer { inFlightTunnels.remove(tunnelName) }
         do {
             try await client.setTunnelNode(tunnelName, node: node, user: user)
             dismissSheet()
