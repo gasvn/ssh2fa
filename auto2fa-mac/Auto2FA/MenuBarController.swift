@@ -9,8 +9,11 @@ final class MenuBarController: NSObject, ObservableObject {
     private var statusItem: NSStatusItem!
     private weak var appState: AppState?
     private weak var window: NSWindow?
+    private(set) var isInstalled = false
 
     func install(appState: AppState, window: NSWindow?) {
+        guard !isInstalled else { return }
+        isInstalled = true
         self.appState = appState
         self.window = window
 

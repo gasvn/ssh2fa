@@ -1,38 +1,48 @@
 import Foundation
 import SwiftUI
 // DynamicNotchKit must be added via Swift Package Manager:
-//   https://github.com/MrKai77/DynamicNotchKit
+//   https://github.com/MrKai77/DynamicNotchKit  (pinned to >= 1.0.0)
 // See auto2fa-mac/README.md.
 import DynamicNotchKit
 
 /// Wraps DynamicNotchKit so the rest of the app calls one async method.
 ///
-/// On notched MacBooks the toast animates out of the notch; on Macs without
-/// a notch (Air, Intel) DynamicNotchKit automatically falls back to a
-/// floating panel.
+/// On notched MacBooks the toast animates from the notch; on Macs without
+/// a notch (Air, Intel, external display) DynamicNotchKit's `.auto` style
+/// automatically falls back to a floating panel.
+///
+/// API contract verified against tag 1.0.0 (and current main) of DynamicNotchKit:
+///   - DynamicNotchInfo.init(icon: Label?, title: LocalizedStringKey, ...)
+///   - Label has .init(systemName:color:)
+///   - .expand(), .hide() are the show/dismiss pair (compact() shrinks but
+///     stays in the notch as a small island; for a transient toast we want
+///     expand → hide)
 @MainActor
 final class NotchPresenter: ObservableObject {
     private var inFlight: Task<Void, Never>?
+    private var current: DynamicNotchInfo?
 
-    /// `tint` is kept on the API for callers, but the most version-portable
-    /// way to use DynamicNotchInfo is to pass just a system-image name. We
-    /// pick semantically-different SF Symbols per call site to convey
-    /// success/warn/error rather than applying foregroundStyle to a generic
-    /// icon — different versions of DynamicNotchInfo wrap the icon
-    /// differently (Image vs. View vs. IconStyle), and passing a styled
-    /// `some View` breaks the type. Leaving `tint` unused is intentional.
     func show(systemImage: String, title: String, description: String, tint: Color = .primary) {
-        _ = tint  // see note above; reserved for a future bespoke DynamicNotch view
+        // If a previous notch is still on screen, hide it so we don't pile up
+        // overlapping animations.
         inFlight?.cancel()
+        if let existing = current {
+            Task { @MainActor in await existing.hide() }
+        }
+
+        let info = DynamicNotchInfo(
+            icon: .init(systemName: systemImage, color: tint),
+            title: LocalizedStringKey(stringLiteral: title),
+            description: LocalizedStringKey(stringLiteral: description)
+        )
+        current = info
+
         inFlight = Task { @MainActor in
-            let info = DynamicNotchInfo(
-                icon: Image(systemName: systemImage),
-                title: title,
-                description: description
-            )
             await info.expand()
             try? await Task.sleep(nanoseconds: 3_500_000_000)
-            await info.compact()
+            if !Task.isCancelled {
+                await info.hide()
+            }
         }
     }
 }

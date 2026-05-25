@@ -27,7 +27,10 @@ struct ContentView: View {
                 } label: {
                     Label("New Tunnel", systemImage: "plus.circle.fill")
                 }
-                .keyboardShortcut("n", modifiers: [.command])
+                // No .keyboardShortcut here — the same ⌘N is wired up on
+                // the File → New Tunnel… menu in Auto2FAApp.commands. Having
+                // two competing shortcuts to the same action makes one win
+                // unpredictably depending on focus.
                 .help("Create a new tunnel (⌘N)")
             }
         }
@@ -42,7 +45,10 @@ struct ContentView: View {
                     .onTapGesture { appState.connectionError = nil }
             }
         }
-        .sheet(item: $appState.activeSheet) { sheet in
+        // Sheets — bind to a derived value that's nil for .confirmDelete so the
+        // sheet machinery doesn't flash an empty sheet alongside the
+        // confirmation dialog below.
+        .sheet(item: sheetBinding()) { sheet in
             switch sheet {
             case .newTunnel:
                 NewTunnelSheet()
@@ -54,7 +60,7 @@ struct ContentView: View {
                 CustomNodeSheet(tunnelName: name)
                     .environmentObject(appState)
             case .confirmDelete:
-                EmptyView()  // confirmDelete uses .confirmationDialog instead — see below
+                EmptyView()  // unreachable — filtered out in sheetBinding()
             }
         }
         .confirmationDialog(
@@ -87,6 +93,21 @@ struct ContentView: View {
         Binding(
             get: { if case .confirmDelete = appState.activeSheet { return true }; return false },
             set: { newValue in if !newValue { appState.dismissSheet() } }
+        )
+    }
+
+    /// Sheet binding that filters out `.confirmDelete` — that case is shown
+    /// via `.confirmationDialog`, not a real sheet, and SwiftUI would
+    /// otherwise flash an empty sheet for it.
+    private func sheetBinding() -> Binding<ActiveSheet?> {
+        Binding(
+            get: {
+                switch appState.activeSheet {
+                case .confirmDelete, nil: return nil
+                case .newTunnel, .nodePicker, .customNode: return appState.activeSheet
+                }
+            },
+            set: { newValue in if newValue == nil { appState.dismissSheet() } }
         )
     }
 

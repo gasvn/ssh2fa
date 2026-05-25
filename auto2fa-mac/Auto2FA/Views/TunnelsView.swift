@@ -6,15 +6,22 @@ struct TunnelsView: View {
 
     var body: some View {
         if appState.tunnels.isEmpty {
-            VStack(spacing: 8) {
+            VStack(spacing: 12) {
                 Image(systemName: "sparkles")
                     .font(.largeTitle)
                     .foregroundStyle(.yellow)
                 Text("No tunnels yet")
                     .font(.title3)
-                Text("Click + to create one. (Modal sheets coming in next session.)")
+                Text("Click  +  in the toolbar (or press ⌘N) to create one.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                Button {
+                    appState.presentNewTunnel()
+                } label: {
+                    Label("New tunnel", systemImage: "plus")
+                }
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()

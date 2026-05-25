@@ -39,14 +39,39 @@ struct HostsView: View {
             }
 
             TableColumn("") { host in
-                HStack {
-                    Button(host.active ? "Stop" : "Start") {
+                HStack(spacing: 4) {
+                    Button {
                         Task { await appState.toggleHost(host) }
+                    } label: {
+                        Image(systemName: host.active ? "stop.fill" : "play.fill")
                     }
-                    .controlSize(.small)
+                    .help(host.active ? "Stop / disconnect" : "Start / connect")
+                    Button {
+                        Task {
+                            do { try await appState.client.toggleMount(host.host) }
+                            catch { appState.connectionError = error.localizedDescription }
+                            await appState.reloadAll()
+                        }
+                    } label: {
+                        Image(systemName: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
+                    }
+                    .disabled(!host.isMasterReady && !host.isMounted)
+                    .help(host.isMounted ? "Unmount remote filesystem" : "Mount remote filesystem (sshfs)")
+                    Button {
+                        Task {
+                            do { try await appState.client.rotateHost(host.host) }
+                            catch { appState.connectionError = error.localizedDescription }
+                            await appState.reloadAll()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(!host.active)
+                    .help("Rotate connection pool slot")
                 }
+                .buttonStyle(.borderless)
             }
-            .width(min: 70, ideal: 80, max: 100)
+            .width(min: 100, ideal: 110, max: 140)
         }
     }
 

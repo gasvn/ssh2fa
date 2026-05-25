@@ -77,9 +77,14 @@ struct CustomNodeSheet: View {
         submitting = true
         error = nil
         Task {
-            await appState.pickNode(for: tunnelName,
-                                    node: trimmedNode,
-                                    user: trimmedUser.isEmpty ? NSUserName() : trimmedUser)
+            if let errMsg = await appState.pickNode(
+                for: tunnelName,
+                node: trimmedNode,
+                user: trimmedUser.isEmpty ? NSUserName() : trimmedUser
+            ) {
+                error = errMsg
+                submitting = false
+            }
         }
     }
 }

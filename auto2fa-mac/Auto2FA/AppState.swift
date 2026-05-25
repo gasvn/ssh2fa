@@ -156,28 +156,33 @@ final class AppState: ObservableObject {
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
     func dismissSheet() { activeSheet = nil }
 
-    /// Create a tunnel, dismiss the sheet on success, surface the error if not.
-    func createTunnel(name: String, localPort: Int) async -> Bool {
+    /// Create a tunnel. Returns nil on success, or a user-displayable error
+    /// message on failure (so the sheet can show it inline rather than
+    /// duplicating it as a global banner).
+    func createTunnel(name: String, localPort: Int) async -> String? {
         do {
             _ = try await client.addTunnel(name: name, localPort: localPort)
             dismissSheet()
             await reloadAll()
-            return true
+            return nil
         } catch {
-            connectionError = (error as? BackendClient.ClientError)?.errorDescription
-                           ?? error.localizedDescription
-            return false
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 
-    /// Set a node on a tunnel (also kicks off start via set_node on the daemon side).
-    func pickNode(for tunnelName: String, node: String, user: String) async {
+    /// Set a node on a tunnel (also kicks off start via set_node on the
+    /// daemon side). Returns nil on success or an error message on failure.
+    @discardableResult
+    func pickNode(for tunnelName: String, node: String, user: String) async -> String? {
         do {
             try await client.setTunnelNode(tunnelName, node: node, user: user)
             dismissSheet()
             await reloadAll()
+            return nil
         } catch {
-            connectionError = error.localizedDescription
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 }

@@ -139,7 +139,11 @@ struct NodePickerSheet: View {
         guard let id = selection, let job = jobs.first(where: { $0.id == id }) else { return }
         let user = appState.tunnels.first(where: { $0.name == tunnelName })?.lastUser ?? NSUserName()
         Task {
-            await appState.pickNode(for: tunnelName, node: job.node, user: user)
+            if let errMsg = await appState.pickNode(
+                for: tunnelName, node: job.node, user: user
+            ) {
+                error = errMsg  // surface in the picker; don't dismiss
+            }
         }
     }
 }

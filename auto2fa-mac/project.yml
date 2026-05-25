@@ -26,6 +26,10 @@ settings:
 packages:
   DynamicNotchKit:
     url: https://github.com/MrKai77/DynamicNotchKit
+    # Pin to a tag we've verified the API against. NotchPresenter.swift
+    # depends on DynamicNotchInfo.Label(systemName:color:) and on the
+    # expand()/hide() pair. Both exist in 1.0.0 (June 2025) and 1.1.0
+    # (Feb 2026). If you want fancier animations, bump the `from`.
     from: 1.0.0
 
 targets:

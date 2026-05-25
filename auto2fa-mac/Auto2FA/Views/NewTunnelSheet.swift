@@ -77,9 +77,8 @@ struct NewTunnelSheet: View {
         submitting = true
         error = nil
         Task {
-            let ok = await appState.createTunnel(name: trimmedName, localPort: port)
-            if !ok {
-                error = appState.connectionError ?? "Could not create tunnel."
+            if let errMsg = await appState.createTunnel(name: trimmedName, localPort: port) {
+                error = errMsg
                 submitting = false
             }
         }
