@@ -87,13 +87,14 @@ struct ContentView: View {
     @ViewBuilder
     private var errorBanner: some View {
         if let err = appState.connectionError {
-            Text(err)
+            Text(FriendlyText.friendlyError(err))
                 .font(.callout.weight(.medium))
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.red.opacity(0.85), in: Capsule())
                 .foregroundStyle(.white)
                 .padding(.top, 8)
                 .onTapGesture { appState.connectionError = nil }
+                .help(err)  // hover for the raw underlying message
         }
     }
 

@@ -131,7 +131,17 @@ class SSHHostManager(threading.Thread):
         self.pool = {}        # {index: pexpect_child}
         self.pool_status = {} # {index: "Init/Ready/Dead"}
         self.active_index = 0
-        
+
+        # OTP rate-limit cool-down: when start_master sees the "server
+        # looped back to Password prompt" pattern repeatedly, the server
+        # is rate-limiting us (we hit this for real — 17 failed logins
+        # in a row pushed the user's account into slow-response mode).
+        # Hammering harder just makes it worse, so we sit out for 5 min.
+        self.consecutive_login_failures = 0
+        self.cooldown_until_ts = 0.0
+        self.OTP_FAILURE_THRESHOLD = 3
+        self.OTP_COOLDOWN_SEC = 300
+
         # Paths
         self.target_control_path = self.get_ssh_control_path(host)
         self.pool_control_paths = {
@@ -380,6 +390,9 @@ class SSHHostManager(threading.Thread):
             if is_success:
                 self.pool_status[index] = "Ready"
                 logger.info(f"[{self.host}] Master #{index} Ready")
+                # Successful login resets the OTP rate-limit counter.
+                self.consecutive_login_failures = 0
+                self.cooldown_until_ts = 0.0
                 return True
             else:
                 # First-expect index layout: 0=Password, 1=Verification[c]ode,
@@ -390,6 +403,18 @@ class SSHHostManager(threading.Thread):
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Timed out waiting for any prompt (host unreachable?).")
                 elif idx == 4:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Server looped back to Password prompt (Wrong Creds/OTP?). FinalIdx={idx}")
+                    # "Loop back to Password" is the canonical server-side
+                    # rejection. Track it for rate-limit cool-down.
+                    self.consecutive_login_failures += 1
+                    if self.consecutive_login_failures >= self.OTP_FAILURE_THRESHOLD:
+                        self.cooldown_until_ts = time.time() + self.OTP_COOLDOWN_SEC
+                        mins = self.OTP_COOLDOWN_SEC // 60
+                        self.last_msg = f"Cool-down {mins}m (server rate-limited)"
+                        logger.warning(
+                            f"[{self.host}] {self.consecutive_login_failures} consecutive "
+                            f"login failures — entering {mins}-minute cool-down to avoid "
+                            "deepening the server-side rate limit."
+                        )
                 else:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Steps: Pwd={password_sent}, OTP={should_send_otp}, FinalIdx={idx}")
 
@@ -414,13 +439,24 @@ class SSHHostManager(threading.Thread):
 
     def manage_pool_loop(self):
         try:
+            # OTP rate-limit cool-down: if recent logins triggered the
+            # server's slow-response mode, sit out for OTP_COOLDOWN_SEC
+            # before trying again. Retrying immediately would just deepen
+            # the rate limit.
+            if time.time() < self.cooldown_until_ts:
+                remaining = int(self.cooldown_until_ts - time.time())
+                self.status = f"[yellow]Cool-down {remaining}s[/yellow]"
+                self.last_msg = f"Rate-limit cool-down ({remaining}s left)"
+                time.sleep(min(5.0, max(0.5, remaining)))
+                return
+
             self.status = "[yellow]Initializing Pool...[/yellow]"
-            
+
             # 1. Initial Cleanup (Global) - Only here do we kill zombies
             # We dummy a control path since we are killing globally
             dummy_path = self.target_control_path
             cleanup_stale_connection(dummy_path, self.host, kill_zombies=True)
-            
+
             # 2. Start Master 0
             if not self.start_master(0):
                 self.status = "[red]Master 0 Failed[/red]"

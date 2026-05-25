@@ -237,8 +237,12 @@ struct TunnelsView: View {
                             .foregroundStyle(.secondary)
                             .font(.caption)
                             .lineLimit(1)
-                            .help(t.lastMsg)  // hover for full raw message
+                            .help(t.lastMsg)
                     }
+                    // Flash yellow briefly whenever the tunnel's status
+                    // string changes — helps the eye catch quick
+                    // transitions like starting → alive on a busy table.
+                    .changeHighlight(t.status)
                 }
                 .width(min: 200)
 
@@ -512,18 +516,15 @@ struct TunnelsView: View {
     }
 
     private func openInBrowser(_ t: Tunnel) {
-        // Tunnel `url` may be just "localhost:8888"; NSWorkspace.open needs
-        // a real URL with scheme. Default to http if no scheme is present.
-        var raw = t.url
-        if !raw.hasPrefix("http://") && !raw.hasPrefix("https://") {
-            raw = "http://" + raw
-        }
-        guard let url = URL(string: raw) else { return }
+        // browserURL prepends http:// + appends per-tunnel url_path
+        // (e.g. "/?token=abc123" for jupyter), so the user lands on the
+        // actual usable page rather than a generic localhost:N.
+        guard let url = URL(string: t.browserURL) else { return }
         NSWorkspace.shared.open(url)
         appState.notchPresenter.show(
             systemImage: "safari.fill",
             title: t.name,
-            description: "opening \(t.url)",
+            description: "opening \(t.browserURL)",
             tint: .blue
         )
     }

@@ -20,6 +20,30 @@ final class DaemonProcess {
     private var ownedProcess: Process?
     private var logFileHandle: FileHandle?
 
+    /// True iff the daemon process we spawned at launch is still running.
+    /// Distinguishes "we own a running daemon" from "the daemon we
+    /// spawned has crashed and a new socket-reconnect attempt is
+    /// pointless until we respawn it."
+    var ownedDaemonIsAlive: Bool {
+        guard let p = ownedProcess else { return false }
+        return p.isRunning
+    }
+
+    /// Re-spawn the daemon if (a) we spawned the original one AND (b) it's
+    /// now dead. Returns the new SpawnResult or .alreadyRunning if the
+    /// socket somehow came back without our intervention.
+    func respawnIfOwnedDaemonCrashed() async -> SpawnResult? {
+        // If we never owned the daemon, the user manages it externally
+        // (LaunchAgent, manual launch) — don't touch it.
+        guard ownedProcess != nil else { return nil }
+        if ownedDaemonIsAlive {
+            return nil  // still alive — let the regular reconnect try
+        }
+        NSLog("[Auto2FA] owned daemon died — respawning")
+        ownedProcess = nil
+        return await ensureRunning()
+    }
+
     /// Returns true if a daemon is already responding on the socket. Used to
     /// short-circuit spawning a duplicate.
     static func socketResponds() -> Bool {

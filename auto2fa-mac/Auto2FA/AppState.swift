@@ -114,7 +114,27 @@ final class AppState: ObservableObject {
                     // pulling state changes from the stream.
                     self.reconnectTask?.cancel()
                     self.reconnectTask = Task { [weak self] in
-                        await self?.client.reconnectWithBackoff()
+                        guard let self else { return }
+                        // First: if we OWNED the daemon process and it's
+                        // dead (not just the socket), respawn before
+                        // hammering the socket with retries that can
+                        // never succeed.
+                        if let respawn = await DaemonProcess.shared.respawnIfOwnedDaemonCrashed() {
+                            switch respawn {
+                            case .alreadyRunning, .spawned:
+                                NSLog("[Auto2FA] daemon respawned after crash")
+                                // Bootstrap fresh — the new daemon won't
+                                // remember our subscriptions.
+                                await self.bootstrap()
+                                return
+                            case .failed(let reason):
+                                await MainActor.run {
+                                    self.connectionError = "Daemon respawn failed: \(reason)"
+                                }
+                                return
+                            }
+                        }
+                        await self.client.reconnectWithBackoff()
                     }
                 }
             }
@@ -246,13 +266,11 @@ final class AppState: ObservableObject {
 
     /// Honour the "Open URL in browser on tunnel up" setting. Fires from
     /// apply(event:) once per idle/starting → alive transition.
+    /// Uses browserURL so per-tunnel url_path suffix (e.g. jupyter token)
+    /// is appended automatically.
     private func maybeAutoOpenBrowser(for t: Tunnel) {
         guard UserDefaults.standard.bool(forKey: "auto2fa.autoOpenBrowser") else { return }
-        var raw = t.url
-        if !raw.hasPrefix("http://") && !raw.hasPrefix("https://") {
-            raw = "http://" + raw
-        }
-        if let url = URL(string: raw) {
+        if let url = URL(string: t.browserURL) {
             NSWorkspace.shared.open(url)
         }
     }
@@ -522,6 +540,12 @@ final class AppState: ObservableObject {
 
     func setTags(for tunnel: Tunnel, tags: [String]) async {
         do { try await client.setTunnelTags(tunnel.name, tags: tags) }
+        catch { connectionError = error.localizedDescription }
+        await reloadTunnelsOnly()
+    }
+
+    func setUrlPath(for tunnel: Tunnel, path: String?) async {
+        do { try await client.setTunnelUrlPath(tunnel.name, path: path) }
         catch { connectionError = error.localizedDescription }
         await reloadTunnelsOnly()
     }

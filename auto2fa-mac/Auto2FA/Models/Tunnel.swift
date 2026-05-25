@@ -11,6 +11,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let autoStart: Bool
     let postConnectCmd: String?
     let tags: [String]
+    let urlPath: String?
     let activeJump: String?
     let status: String
     let lastMsg: String
@@ -22,6 +23,14 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     var id: String { name }
     var url: String { "localhost:\(localPort)" }
 
+    /// Full browser URL: prepends http:// + appends user-defined urlPath
+    /// (e.g. "/?token=abc") if set. Used by "Open in browser" and ⌘O.
+    var browserURL: String {
+        let p = urlPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let suffix = p.isEmpty ? "" : (p.hasPrefix("/") || p.hasPrefix("?") ? p : "/" + p)
+        return "http://localhost:\(localPort)\(suffix)"
+    }
+
     enum CodingKeys: String, CodingKey {
         case name, status, tags
         case localPort = "local_port"
@@ -31,6 +40,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case lastUser = "last_user"
         case autoStart = "auto_start"
         case postConnectCmd = "post_connect_cmd"
+        case urlPath = "url_path"
         case activeJump = "active_jump"
         case lastMsg = "last_msg"
         case lastAliveAt = "last_alive_at"
@@ -52,6 +62,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         self.autoStart = try c.decode(Bool.self, forKey: .autoStart)
         self.postConnectCmd = try c.decodeIfPresent(String.self, forKey: .postConnectCmd)
         self.tags = (try? c.decode([String].self, forKey: .tags)) ?? []
+        self.urlPath = try? c.decodeIfPresent(String.self, forKey: .urlPath)
         self.activeJump = try c.decodeIfPresent(String.self, forKey: .activeJump)
         self.lastMsg = try c.decode(String.self, forKey: .lastMsg)
         self.lastAliveAt = (try? c.decode(Double.self, forKey: .lastAliveAt)) ?? 0

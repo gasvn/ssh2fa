@@ -62,6 +62,7 @@ struct HostsView: View {
                         }
                     }
                 }
+                .changeHighlight(host.status)
             }
             .width(min: 140, ideal: 200)
 

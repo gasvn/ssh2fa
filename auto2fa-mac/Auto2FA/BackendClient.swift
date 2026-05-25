@@ -374,6 +374,12 @@ actor BackendClient {
                               params: ["name": name, "tags": tags])
     }
 
+    func setTunnelUrlPath(_ name: String, path: String?) async throws {
+        var params: [String: Any] = ["name": name]
+        params["path"] = path as Any? ?? NSNull()
+        _ = try await sendRaw(method: "tunnel_set_url_path", params: params)
+    }
+
     func renameTunnel(old: String, new: String) async throws {
         _ = try await sendRaw(method: "tunnel_rename",
                               params: ["old": old, "new": new])

@@ -13,6 +13,7 @@ struct TunnelDetailsPopover: View {
     @State private var events: [BackendClient.TunnelEvent] = []
     @State private var pollTask: Task<Void, Never>?
     @State private var postConnectDraft: String = ""
+    @State private var urlPathDraft: String = ""
     @State private var saveStatus: String?
 
     var body: some View {
@@ -86,6 +87,31 @@ struct TunnelDetailsPopover: View {
 
             Divider()
 
+            sectionHeader("Browser URL suffix")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Appended after `http://localhost:\(tunnel.localPort)` when you click 🧭 or auto-open fires. Use this for jupyter `?token=…`, tensorboard `/#scalars`, etc.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    TextField("/?token=abc123", text: $urlPathDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospaced())
+                    Button("Save") {
+                        Task {
+                            let trimmed = urlPathDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            await appState.setUrlPath(for: tunnel,
+                                path: trimmed.isEmpty ? nil : trimmed)
+                            saveStatus = "Saved"
+                        }
+                    }
+                    .disabled(urlPathDraft == (tunnel.urlPath ?? ""))
+                }
+                Text("Preview: ").font(.caption).foregroundStyle(.secondary) +
+                Text(previewURL()).font(.caption.monospaced())
+            }
+            .padding(12)
+
+            Divider()
+
             sectionHeader("Run on connect")
             VStack(alignment: .leading, spacing: 6) {
                 Text("Runs each time this tunnel transitions to alive. Env: AUTO2FA_TUNNEL_NAME, AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.")
@@ -125,10 +151,18 @@ struct TunnelDetailsPopover: View {
         .frame(width: 480)
         .task {
             postConnectDraft = tunnel.postConnectCmd ?? ""
+            urlPathDraft = tunnel.urlPath ?? ""
             await refresh()
             startPolling()
         }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    private func previewURL() -> String {
+        let trimmed = urlPathDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = trimmed.isEmpty ? "" :
+            (trimmed.hasPrefix("/") || trimmed.hasPrefix("?") ? trimmed : "/" + trimmed)
+        return "http://localhost:\(tunnel.localPort)\(suffix)"
     }
 
     @ViewBuilder

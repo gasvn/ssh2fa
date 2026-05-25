@@ -59,7 +59,9 @@ enum FriendlyText {
         case .portBusy:
             return "Port \(t.localPort) already in use"
         case .failed:
-            return t.lastMsg.isEmpty ? "Failed — see activity log" : t.lastMsg
+            return t.lastMsg.isEmpty
+                ? "Failed — see activity log"
+                : friendlyError(t.lastMsg)
         case .unknown:
             return t.lastMsg
         }
@@ -70,5 +72,40 @@ enum FriendlyText {
     static func haptic() {
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment,
                                                           performanceTime: .now)
+    }
+
+    /// Translate common ssh / network errors into actionable plain English.
+    /// Used in the connection-error banner + per-tunnel "failed" subtext —
+    /// users shouldn't have to grok cryptic ssh stderr to know what to do
+    /// next.
+    static func friendlyError(_ raw: String) -> String {
+        let lc = raw.lowercased()
+        if lc.contains("connection refused") {
+            return "Server not accepting connections — sshd is down or wrong port."
+        }
+        if lc.contains("no route to host") {
+            return "Can't reach the server — check Wi-Fi or VPN."
+        }
+        if lc.contains("connection reset") || lc.contains("broken pipe") {
+            return "Connection dropped — server restarted or network changed."
+        }
+        if lc.contains("operation timed out") || lc.contains("connect timed out") {
+            return "Server didn't respond — network is slow, or server is unreachable."
+        }
+        if lc.contains("permission denied") {
+            return "Login rejected — password or OTP is wrong. Re-add the host to fix."
+        }
+        if lc.contains("host key verification failed") {
+            return "Server identity changed — see daemon log; may be a MITM or a server rebuild."
+        }
+        if lc.contains("rate-limit") || lc.contains("rate limit") || lc.contains("cool-down") {
+            return "Server is rate-limiting too many failed logins — sitting out for a few minutes."
+        }
+        if lc.contains("daemon unreachable") || lc.contains("not connected") {
+            return "Background helper isn't running — restart Auto2FA to fix."
+        }
+        // Pass-through: caller's message was already user-friendly enough,
+        // or we didn't have a translation. Avoid lying about what happened.
+        return raw
     }
 }

@@ -190,6 +190,7 @@ class Auto2FADaemon:
             "auto_start": ts.auto_start,
             "post_connect_cmd": ts.post_connect_cmd,
             "tags": list(ts.tags),
+            "url_path": ts.url_path,
             "active_jump": ts.active_jump,
             "status": ts.status,
             "last_msg": ts.last_msg,
@@ -356,6 +357,20 @@ class Auto2FADaemon:
                         for j in jobs
                     ],
                 )
+
+            if method == ipc.Method.TUNNEL_SET_URL_PATH:
+                # Save the URL path/query suffix used when "Open in browser"
+                # fires. Empty / null clears it.
+                name = params["name"]
+                path = params.get("path")
+                if isinstance(path, str) and not path.strip():
+                    path = None
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                ts.url_path = path
+                self.tunnel_mgr.save()
+                return ipc.make_response(req_id, self._tunnel_snapshot(name))
 
             if method == ipc.Method.TUNNEL_SET_TAGS:
                 # Replace the tag list for a tunnel. Empty list clears tags.
@@ -852,6 +867,9 @@ class Auto2FADaemon:
 
     # ---- Event emitter (polls state, pushes deltas) ----------------------
 
+    _LOG_ROTATE_CHECK_EVERY = 600  # seconds
+    _last_log_rotate_check: float = 0.0
+
     async def _state_poll_loop(self) -> None:
         """Snapshot state every 0.5s; emit events for changes."""
         while not self._tick_stop:
@@ -862,6 +880,18 @@ class Auto2FADaemon:
                 await asyncio.to_thread(self.tunnel_mgr.tick)
             except Exception:
                 logger.exception("tunnel_mgr.tick failed")
+
+            # Periodic runtime log rotation — startup-only rotation can't
+            # protect against the daemon spamming for a day straight and
+            # filling /tmp. Cheap to check (one os.stat per 10 min).
+            now = time.time()
+            if now - self._last_log_rotate_check > self._LOG_ROTATE_CHECK_EVERY:
+                self._last_log_rotate_check = now
+                try:
+                    await asyncio.to_thread(_rotate_log_if_huge,
+                                            "/tmp/auto2fa_daemon.log")
+                except Exception:
+                    logger.exception("runtime log rotation failed")
 
             try:
                 # Host transitions

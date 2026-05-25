@@ -76,6 +76,10 @@ class TunnelState:
     # ("start all `jupyter`-tagged tunnels"). Free-form strings; lowercased
     # in the UI but stored verbatim.
     tags: List[str] = field(default_factory=list)
+    # Optional URL path/query suffix appended when "Open in browser" fires.
+    # Use cases: jupyter `?token=xxx`, tensorboard `/#scalars`, etc.
+    # Stored verbatim; UI prepends "http://localhost:<port>".
+    url_path: Optional[str] = None
 
     # Runtime-only fields
     status: str = "idle"                   # idle | starting | alive | stale | port_busy | failed
@@ -160,7 +164,7 @@ class TunnelManager:
 
     PERSISTED_FIELDS = ("local_port", "remote_port", "jump_candidates",
                         "last_node", "last_user", "auto_start",
-                        "post_connect_cmd", "tags")
+                        "post_connect_cmd", "tags", "url_path")
     EVENT_BUFFER_LIMIT = 200
 
     def __init__(self, host_managers: Dict[str, object], config_path: str):
@@ -226,6 +230,7 @@ class TunnelManager:
                 auto_start=bool(cfg.get("auto_start", False)),
                 post_connect_cmd=cfg.get("post_connect_cmd"),
                 tags=list(cfg.get("tags", []) or []),
+                url_path=cfg.get("url_path"),
             )
         self.tunnels = loaded
 

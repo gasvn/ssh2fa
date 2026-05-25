@@ -6,8 +6,9 @@ import UserNotifications
 struct Auto2FAApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var menuBar = MenuBarController()
-    // Kept as an instance var so it isn't deallocated and unsubscribes.
+    // Kept as instance vars so they aren't deallocated + unsubscribed.
     @State private var sleepWakeMonitor: SleepWakeMonitor?
+    @State private var networkMonitor: NetworkMonitor?
 
     var body: some Scene {
         WindowGroup("Auto2FA") {
@@ -17,6 +18,7 @@ struct Auto2FAApp: App {
                     SingleInstance.enforceOrExit()
                     installMenuBarOnce()
                     installSleepWakeMonitor()
+                    installNetworkMonitor()
                     installNotificationHandling()
                 }
                 .task {
@@ -116,6 +118,31 @@ struct Auto2FAApp: App {
     /// Also hook applicationWillTerminate so we can shut down the daemon we
     /// spawned (using NotificationCenter avoids @NSApplicationDelegateAdaptor,
     /// which in some macOS releases prevents the SwiftUI window from showing).
+    /// Fire wake_recover whenever the network interface changes (Wi-Fi
+    /// switch, VPN up/down, ethernet plug). Sibling to SleepWakeMonitor —
+    /// SSH masters die silently on network switch too, not just sleep.
+    private func installNetworkMonitor() {
+        guard networkMonitor == nil else { return }
+        let mon = NetworkMonitor {
+            // Respect the same setting that gates wake recovery.
+            let recover = UserDefaults.standard
+                .object(forKey: SettingsKey.autoRecoverOnWake) as? Bool ?? true
+            guard recover else { return }
+            appState.notchPresenter.show(
+                systemImage: "network",
+                title: "Network changed",
+                description: "Probing tunnels…",
+                tint: .yellow
+            )
+            Task {
+                try? await appState.client.wakeRecover()
+                await appState.reloadAll()
+            }
+        }
+        mon.start()
+        networkMonitor = mon
+    }
+
     /// Hook the notification action buttons (Restart / Show Activity) up
     /// to AppState so clicking them does the right thing.
     private func installNotificationHandling() {
