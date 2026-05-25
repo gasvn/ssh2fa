@@ -238,12 +238,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Names+statuses we last toasted, to avoid spamming the notch when a
+    /// daemon-side change-detector mistakenly fires the same status over and
+    /// over. (Belt-and-suspenders — the daemon's _tunnel_change_key handles
+    /// the real fix, this just prevents any future regression from drowning
+    /// the user in notches.)
+    private var lastNotchSignature: [String: String] = [:]
+
     private func maybeShowNotch(name: String, status: String, lastMsg: String) {
-        // Settings opt-out — user can mute toasts entirely.
         if UserDefaults.standard.object(forKey: "auto2fa.notch.enabled") != nil,
            UserDefaults.standard.bool(forKey: "auto2fa.notch.enabled") == false {
             return
         }
+        // Dedup: if the last notch we showed for this tunnel had the same
+        // status string, skip. This makes "Connected" fire only on a real
+        // idle/starting → alive transition, never on repeat snapshots.
+        if lastNotchSignature[name] == status { return }
+        lastNotchSignature[name] = status
         switch status {
         case "alive":
             notchPresenter.show(

@@ -570,6 +570,26 @@ class Auto2FADaemon:
                 pass
             logger.info(f"client disconnected: {peer}")
 
+    # ---- Change-detection key ------------------------------------------
+
+    # Snapshot fields whose mutation should trigger a TUNNEL_STATUS_CHANGED
+    # event. Excludes total_uptime_sec (advances every tick), connect_count
+    # and fail_count (advance on real transitions which other fields already
+    # capture). Including just these keeps the UI quiet while a tunnel is
+    # steady-state alive.
+    _TUNNEL_STABLE_FIELDS = (
+        "name", "local_port", "remote_port", "jump_candidates",
+        "last_node", "last_user", "auto_start", "post_connect_cmd",
+        "tags", "active_jump", "status", "last_msg", "last_alive_at",
+    )
+
+    def _tunnel_change_key(self, snap: dict | None) -> tuple | None:
+        if snap is None:
+            return None
+        return tuple(snap.get(k) if not isinstance(snap.get(k), list)
+                     else tuple(snap.get(k) or [])
+                     for k in self._TUNNEL_STABLE_FIELDS)
+
     # ---- Helpers used by new client methods ------------------------------
 
     def _find_free_port(self, base: int, taken: set[int]) -> int:
@@ -801,7 +821,11 @@ class Auto2FADaemon:
                         self._last_host_snapshot[mgr.host] = snap
                         await self._emit(ipc.Event.HOST_STATUS_CHANGED, snap)
 
-                # Tunnel transitions (add / remove / status)
+                # Tunnel transitions (add / remove / status). We compare
+                # on a STABLE subset of fields — total_uptime_sec is
+                # computed live every poll (time.time() - _alive_since),
+                # so the raw snapshot dict changes every 0.5s while alive
+                # and would otherwise fire a "Connected" event forever.
                 seen = set()
                 for name in list(self.tunnel_mgr.tunnels.keys()):
                     seen.add(name)
@@ -809,9 +833,13 @@ class Auto2FADaemon:
                     if snap is None:
                         continue
                     prev = self._last_tunnel_snapshot.get(name)
-                    if prev != snap:
+                    if self._tunnel_change_key(prev) != self._tunnel_change_key(snap):
                         self._last_tunnel_snapshot[name] = snap
                         await self._emit(ipc.Event.TUNNEL_STATUS_CHANGED, snap)
+                    else:
+                        # Still record the latest stats so list_tunnels
+                        # callers see fresh uptime, but DON'T emit.
+                        self._last_tunnel_snapshot[name] = snap
                 # Cleanup snapshots for removed tunnels
                 for n in list(self._last_tunnel_snapshot.keys()):
                     if n not in seen:
