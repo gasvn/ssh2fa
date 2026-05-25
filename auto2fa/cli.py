@@ -112,12 +112,19 @@ def cmd_tunnels(args):
 
 
 def cmd_start(args):
-    res = _rpc("tunnel_toggle", {"name": args.name})
-    print(f"toggle({args.name}): OK")
+    # Use the idempotent tunnel_start RPC, not tunnel_toggle (which would
+    # STOP an already-alive tunnel — confusing in shutdown scripts).
+    _rpc("tunnel_start", {"name": args.name})
+    print(f"start({args.name}): OK")
 
 
 def cmd_stop(args):
-    res = _rpc("tunnel_toggle", {"name": args.name})
+    _rpc("tunnel_stop", {"name": args.name})
+    print(f"stop({args.name}): OK")
+
+
+def cmd_toggle(args):
+    _rpc("tunnel_toggle", {"name": args.name})
     print(f"toggle({args.name}): OK")
 
 
@@ -154,13 +161,17 @@ def main():
     sub.add_parser("hosts", help="list hosts").set_defaults(func=cmd_hosts)
     sub.add_parser("tunnels", help="list tunnels").set_defaults(func=cmd_tunnels)
 
-    sp = sub.add_parser("start", help="start (toggle on) a tunnel")
+    sp = sub.add_parser("start", help="start a tunnel (idempotent — no-op if already alive)")
     sp.add_argument("name")
     sp.set_defaults(func=cmd_start)
 
-    sp = sub.add_parser("stop", help="stop (toggle off) a tunnel")
+    sp = sub.add_parser("stop", help="stop a tunnel (idempotent — no-op if already stopped)")
     sp.add_argument("name")
     sp.set_defaults(func=cmd_stop)
+
+    sp = sub.add_parser("toggle", help="flip a tunnel between alive and stopped")
+    sp.add_argument("name")
+    sp.set_defaults(func=cmd_toggle)
 
     sp = sub.add_parser("node", help="set node for tunnel (starts it)")
     sp.add_argument("name")

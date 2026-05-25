@@ -112,10 +112,23 @@ def load_config() -> dict:
     if not isinstance(data, dict):
         raise RuntimeError(f"passwords.json must be an object, got {type(data).__name__}")
 
-    # Detect and migrate the v1 plaintext format.
-    if data.get("schema") != SCHEMA_VERSION:
-        migrated = _migrate_v1_to_v2(data, path)
-        data = migrated
+    # Detect and migrate the v1 plaintext format. Refuse to touch a file
+    # whose schema is NEWER than what we understand — would silently
+    # downgrade and lose data if the user is briefly running an older
+    # build (e.g. while testing a downgrade).
+    file_schema = data.get("schema")
+    if file_schema is None:
+        # Legacy v1: top-level keys are hostnames.
+        data = _migrate_v1_to_v2(data, path)
+    elif file_schema == SCHEMA_VERSION:
+        pass  # current schema, nothing to do
+    else:
+        raise RuntimeError(
+            f"passwords.json schema is v{file_schema}, this build only "
+            f"understands v{SCHEMA_VERSION}. Refusing to load to avoid "
+            f"data loss. Run a newer build, or restore the backup at "
+            f"{path}.pre-keychain-backup."
+        )
 
     out: dict = {}
     for host, meta in (data.get("hosts") or {}).items():
@@ -137,13 +150,20 @@ def load_config() -> dict:
 
 def save_host_metadata(host: str, auto_connect: bool) -> None:
     """Write/update the (cred-less) metadata entry for `host`. Atomic
-    via tmpfile + rename — interrupted write doesn't corrupt the JSON."""
+    via tmpfile + rename — interrupted write doesn't corrupt the JSON.
+    Refuses to write if the on-disk schema is newer than ours."""
     path = _passwords_path()
     try:
         with open(path) as f:
             data = json.load(f)
-        if data.get("schema") != SCHEMA_VERSION:
+        file_schema = data.get("schema")
+        if file_schema is None:
             data = _migrate_v1_to_v2(data, path)
+        elif file_schema != SCHEMA_VERSION:
+            raise RuntimeError(
+                f"passwords.json schema v{file_schema} not understood by "
+                f"this build (expects v{SCHEMA_VERSION}); refusing to write."
+            )
     except FileNotFoundError:
         data = {"schema": SCHEMA_VERSION, "hosts": {}}
     data.setdefault("hosts", {})[host] = {"autoConnect": auto_connect}
@@ -187,10 +207,15 @@ def _migrate_v1_to_v2(legacy: dict, path: str) -> dict:
             logger.error(f"[credentials] backup failed (refusing to migrate): {e}")
             raise
 
+    # Two-pass: validate every legacy entry FIRST, then write Keychain in
+    # an all-or-nothing batch. If any Keychain write fails, roll back the
+    # ones we did write and leave passwords.json untouched — so the user
+    # can re-try once the Keychain is unlocked / accessible.
     new_hosts: dict = {}
+    legacy_creds: list[tuple[str, str, str]] = []
     for host, cfg in legacy.items():
         if host in ("schema", "hosts"):
-            continue  # safety: should never trigger on a true v1 file
+            continue  # safety: shouldn't hit on a true v1 file
         if not isinstance(cfg, dict):
             continue
         password = cfg.get("password", "")
@@ -198,19 +223,36 @@ def _migrate_v1_to_v2(legacy: dict, path: str) -> dict:
         if not password or not otpauth:
             logger.warning(f"[credentials] {host} legacy entry missing creds — skipped")
             continue
-        try:
-            set_credentials(host, password, otpauth)
-            new_hosts[host] = {
-                "autoConnect": bool(cfg.get("autoConnect", cfg.get("auto_connect", False)))
-            }
-            logger.info(f"[credentials] migrated {host} into Keychain")
-        except Exception as e:
-            logger.error(f"[credentials] {host} migration failed (kept in legacy file): {e}")
+        legacy_creds.append((host, password, otpauth))
+        new_hosts[host] = {
+            "autoConnect": bool(cfg.get("autoConnect", cfg.get("auto_connect", False)))
+        }
 
     if not new_hosts:
-        logger.warning("[credentials] no hosts migrated — refusing to overwrite passwords.json")
+        logger.warning("[credentials] no hosts to migrate — leaving passwords.json untouched")
         return legacy
 
+    written: list[str] = []
+    try:
+        for host, pw, otp in legacy_creds:
+            set_credentials(host, pw, otp)
+            written.append(host)
+        logger.info(f"[credentials] wrote {len(written)} hosts to Keychain")
+    except Exception as e:
+        # Roll back Keychain entries we just wrote, leave file as v1 so a
+        # retry on next launch can attempt the whole migration again.
+        logger.error(f"[credentials] migration aborted at host {len(written) + 1}: {e} — rolling back Keychain writes")
+        for host in written:
+            try:
+                delete_credentials(host)
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"Keychain migration failed: {e}. "
+            f"passwords.json kept as v1; check Keychain access and restart."
+        ) from e
+
+    # All-or-nothing succeeded — now rewrite passwords.json as v2.
     new_data = {"schema": SCHEMA_VERSION, "hosts": new_hosts}
     tmp = path + ".tmp"
     with open(tmp, "w") as f:

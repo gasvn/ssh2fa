@@ -29,6 +29,8 @@ class Method:
     TUNNEL_ADD = "tunnel_add"
     TUNNEL_REMOVE = "tunnel_remove"
     TUNNEL_TOGGLE = "tunnel_toggle"
+    TUNNEL_START = "tunnel_start"
+    TUNNEL_STOP = "tunnel_stop"
     TUNNEL_SET_NODE = "tunnel_set_node"
     TUNNEL_SET_AUTOSTART = "tunnel_set_autostart"
     TUNNEL_SET_JUMP_CANDIDATES = "tunnel_set_jump_candidates"

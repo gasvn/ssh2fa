@@ -177,6 +177,10 @@ class TunnelManager:
         # Serialises save() — without this, two concurrent worker threads
         # could both write to the same .tmp file and produce corrupt JSON.
         self._save_lock = threading.Lock()
+        # Track in-flight post_connect threads so a flapping tunnel doesn't
+        # spawn duplicate hooks (which would e.g. double-fire webhooks).
+        self._post_connect_running: set[str] = set()
+        self._post_connect_lock = threading.Lock()
 
     def _lock_for(self, name: str) -> threading.Lock:
         """Return (and lazily create) the lock for one tunnel."""
@@ -413,11 +417,20 @@ class TunnelManager:
                 # Run the per-tunnel post-connect hook if any. Threaded so a
                 # slow hook can't block us — we capture stderr to the event
                 # log so the user can debug from the popover.
+                # Refuse to spawn a second hook for the same tunnel if one
+                # is still running (a flapping tunnel could otherwise stack
+                # 30-second hook processes, doubling webhooks / browsers).
                 if ts.post_connect_cmd:
-                    threading.Thread(
-                        target=self._run_post_connect, args=(name,),
-                        daemon=True
-                    ).start()
+                    with self._post_connect_lock:
+                        if name in self._post_connect_running:
+                            self._record(ts,
+                                "post_connect: previous hook still running, skipping")
+                        else:
+                            self._post_connect_running.add(name)
+                            threading.Thread(
+                                target=self._run_post_connect, args=(name,),
+                                daemon=True
+                            ).start()
             else:
                 try:
                     child.terminate(force=True)
@@ -483,18 +496,33 @@ class TunnelManager:
 
     def _run_post_connect(self, name: str) -> None:
         """Run the user-supplied post-connect shell command. We deliberately
-        DON'T do any sandboxing here — the user supplied the command, it
-        runs with the daemon's privileges. We do capture stdout+stderr to
-        the event log so they can see what happened."""
+        DON'T do any sandboxing — the user supplied the command, it runs
+        with the daemon's privileges. We DO sanitize env-var values: a
+        malicious node name like `; rm -rf ~` could otherwise execute as
+        part of `sh -c "echo $AUTO2FA_NODE"` after env expansion. We strip
+        anything that isn't a safe identifier/hostname char from the
+        externally-controlled values — paranoia, but cheap."""
         ts = self.tunnels.get(name)
         if ts is None or not ts.post_connect_cmd:
+            with self._post_connect_lock:
+                self._post_connect_running.discard(name)
             return
+
+        def _sanitize(s: str) -> str:
+            # Allow word chars, dot, dash, colon, slash, @, %  — anything
+            # that legitimately appears in hostnames / paths / URLs.
+            # Refuse anything with shell metachars; the user's hook can
+            # always read the raw value via ts.events / log if it really
+            # needs to.
+            import re as _re
+            return _re.sub(r"[^A-Za-z0-9._:/@%-]", "", s or "")
+
         env = os.environ.copy()
         env.update({
-            "AUTO2FA_TUNNEL_NAME": ts.name,
+            "AUTO2FA_TUNNEL_NAME": _sanitize(ts.name),
             "AUTO2FA_LOCAL_PORT": str(ts.local_port),
-            "AUTO2FA_NODE": ts.last_node or "",
-            "AUTO2FA_JUMP": ts.active_jump or "",
+            "AUTO2FA_NODE": _sanitize(ts.last_node or ""),
+            "AUTO2FA_JUMP": _sanitize(ts.active_jump or ""),
             "AUTO2FA_URL": f"http://localhost:{ts.local_port}",
         })
         self._record(ts, f"post_connect: running `{ts.post_connect_cmd[:60]}`")
@@ -514,6 +542,9 @@ class TunnelManager:
             self._record(ts, "post_connect: TIMEOUT after 30s")
         except Exception as e:
             self._record(ts, f"post_connect: error {e}")
+        finally:
+            with self._post_connect_lock:
+                self._post_connect_running.discard(name)
 
     def stop(self, name: str) -> None:
         """Terminate the tunnel's child process and mark idle.
@@ -669,11 +700,18 @@ class TunnelManager:
     def cleanup_orphans(self) -> None:
         """Reap stray `ssh -N -J ... -L <our_port>:...` processes left from a prior run.
 
-        For each tunnel, pgrep -f for the unique '-L <port>:localhost:' fragment and
-        SIGTERM whatever we find. Called once on dashboard startup.
+        For each tunnel, pgrep -f for the unique '-N -J' (auto2fa style — the
+        user's own `ssh -L 8888:...` won't have `-J`) AND '-L <port>:localhost:'
+        and SIGTERM whatever we find. Called once on dashboard startup.
+
+        Scoping by BOTH `-N -J` and our local port stops us from killing
+        unrelated user ssh tunnels that happen to share a local port
+        (e.g. the user's own `ssh -L 8888:...` to a different host).
         """
         for ts in self.tunnels.values():
-            pattern = f"-L {ts.local_port}:localhost:"
+            # Match auto2fa's distinctive pattern. start() always uses
+            # "-N", "-J", "<jump>", "-L", "<lp>:localhost:<rp>", "user@node".
+            pattern = f"-N.*-L {ts.local_port}:localhost:"
             try:
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],
@@ -688,6 +726,20 @@ class TunnelManager:
                 try:
                     pid = int(pid_str)
                 except ValueError:
+                    continue
+                # Second guard: confirm via /proc-style cmdline (via ps)
+                # that this is a `ssh -N -J` process, not a shell pipeline.
+                try:
+                    cmd = subprocess.run(["ps", "-o", "args=", "-p", pid_str],
+                                         capture_output=True, text=True, timeout=2)
+                    if cmd.returncode != 0:
+                        continue
+                    args = cmd.stdout.strip()
+                    if not args.startswith("ssh"):
+                        continue
+                    if "-J" not in args.split():
+                        continue
+                except Exception:
                     continue
                 try:
                     os.kill(pid, 15)

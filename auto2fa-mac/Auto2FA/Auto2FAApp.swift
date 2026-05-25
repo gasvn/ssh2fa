@@ -24,15 +24,25 @@ struct Auto2FAApp: App {
                     // AppState.bootstrap. Doing this serially in a single
                     // .task avoids the race where ContentView's own .task
                     // would fire bootstrap before we've started the daemon.
-                    let result = await DaemonProcess.shared.ensureRunning()
-                    switch result {
-                    case .alreadyRunning:
-                        NSLog("[Auto2FA] daemon was already running")
-                    case .spawned(let pid):
-                        NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
-                    case .failed(let reason):
-                        appState.connectionError = reason
-                        return  // don't try to bootstrap against nothing
+                    //
+                    // Honor the spawnDaemonOnLaunch user preference — if
+                    // off, we just try to connect to an externally-managed
+                    // daemon (LaunchAgent, manual launch, etc).
+                    let spawnAllowed = UserDefaults.standard
+                        .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
+                    if spawnAllowed {
+                        let result = await DaemonProcess.shared.ensureRunning()
+                        switch result {
+                        case .alreadyRunning:
+                            NSLog("[Auto2FA] daemon was already running")
+                        case .spawned(let pid):
+                            NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
+                        case .failed(let reason):
+                            appState.connectionError = reason
+                            return
+                        }
+                    } else {
+                        NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
                     }
                     await appState.bootstrap()
                 }
@@ -126,6 +136,13 @@ struct Auto2FAApp: App {
                 )
             },
             onWake: {
+                // Honor the autoRecoverOnWake setting. Default is true.
+                let recover = UserDefaults.standard
+                    .object(forKey: SettingsKey.autoRecoverOnWake) as? Bool ?? true
+                guard recover else {
+                    NSLog("[Auto2FA] wake observed; autoRecoverOnWake=off, skipping")
+                    return
+                }
                 appState.notchPresenter.show(
                     systemImage: "arrow.triangle.2.circlepath",
                     title: "Recovering tunnels…",

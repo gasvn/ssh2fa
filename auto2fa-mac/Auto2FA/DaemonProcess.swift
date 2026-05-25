@@ -121,14 +121,17 @@ final class DaemonProcess {
             self.ownedProcess = p
             NSLog("[Auto2FA] spawned daemon PID=\(p.processIdentifier) from \(projectDir)")
 
-            // Wait up to 5s for the socket to appear and respond.
-            for _ in 0..<25 {
+            // Wait up to 15s for the socket to appear and respond.
+            // Cold-start Python via pyenv + zsh -lc + asyncio init can
+            // routinely take 5-10s; the old 5s window made first-launch
+            // brittle on slower machines.
+            for _ in 0..<75 {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if DaemonProcess.socketResponds() {
                     return .spawned(pid: p.processIdentifier)
                 }
             }
-            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 5s. See /tmp/auto2fa-daemon-mac.log.")
+            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 15s. See /tmp/auto2fa-daemon-mac.log.")
         } catch {
             return .failed(reason: "Could not launch daemon: \(error.localizedDescription)")
         }
@@ -136,19 +139,21 @@ final class DaemonProcess {
 
     /// Kill the daemon if we spawned it. No-op if it was already running when
     /// we started.
+    ///
+    /// Called from NSApplication.willTerminateNotification on the main thread.
+    /// macOS gives the app ~5s after willTerminate before SIGKILL, so we
+    /// SIGTERM and return immediately — the daemon's own signal handler
+    /// owns its cleanup. Previously we Thread.sleep'd for up to 6s on main,
+    /// which both blocked the UI and could be cut short by macOS anyway.
     func terminateOwnedDaemon() {
         guard let p = ownedProcess, p.isRunning else { return }
-        NSLog("[Auto2FA] terminating owned daemon PID=\(p.processIdentifier)")
+        NSLog("[Auto2FA] sending SIGTERM to daemon PID=\(p.processIdentifier)")
         p.terminate()
-        // Give it a moment to clean up SSH masters before going harder
-        let start = Date()
-        while p.isRunning && Date().timeIntervalSince(start) < 6.0 {
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        if p.isRunning {
-            NSLog("[Auto2FA] daemon didn't exit gracefully; sending SIGKILL")
-            kill(p.processIdentifier, SIGKILL)
-        }
+        // Don't wait here. The daemon's SIGINT/SIGTERM handler triggers
+        // its asyncio shutdown which joins host threads (best-effort) and
+        // removes the socket. If macOS SIGKILLs us before that finishes,
+        // ssh ControlMaster cleanup will be picked up by cleanup_orphans
+        // on the next daemon start.
     }
 
     private func shellQuote(_ s: String) -> String {

@@ -76,10 +76,12 @@ final class AppState: ObservableObject {
     }
 
     /// Listen for daemon disconnect / reconnect cycles. On disconnect we
-    /// surface a banner + show a notch toast and kick off a backoff retry.
-    /// On reconnect we clear the banner and re-bootstrap state (since the
-    /// daemon may have restarted with new state).
+    /// surface a banner + show a notch toast and kick off a backoff retry
+    /// in a SEPARATE Task — otherwise the watcher loop blocks for the
+    /// full backoff window (up to ~2 minutes) and the `true` yielded on
+    /// reconnect arrives but isn't consumed until then.
     private var connWatcherTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     private func startConnectionWatcher() {
         connWatcherTask?.cancel()
         let stream = client.connectionStates
@@ -108,7 +110,12 @@ final class AppState: ObservableObject {
                             tint: .orange
                         )
                     }
-                    await self.client.reconnectWithBackoff()
+                    // Run reconnect detached so the watcher loop keeps
+                    // pulling state changes from the stream.
+                    self.reconnectTask?.cancel()
+                    self.reconnectTask = Task { [weak self] in
+                        await self?.client.reconnectWithBackoff()
+                    }
                 }
             }
         }
@@ -135,6 +142,11 @@ final class AppState: ObservableObject {
         do {
             self.tunnels = try await client.listTunnels()
             updateDockBadge()
+            // Clean stale dedup entries for tunnels that no longer exist
+            // (renamed, deleted) so the dict doesn't grow forever AND so
+            // a future tunnel re-using an old name gets a real first notch.
+            let liveNames = Set(self.tunnels.map(\.name))
+            self.lastNotchSignature = self.lastNotchSignature.filter { liveNames.contains($0.key) }
         } catch { connectionError = error.localizedDescription }
     }
 
@@ -179,7 +191,14 @@ final class AppState: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s safety net
-                await self?.reloadAll()
+                guard let self else { return }
+                // Don't spam the daemon with reloadAll while we know it's
+                // disconnected — reconnectWithBackoff is already retrying
+                // and reloadAll's failure would just overwrite the
+                // connectionError banner with the same message each tick.
+                if self.connectionError == nil {
+                    await self.reloadAll()
+                }
             }
         }
     }
@@ -336,6 +355,14 @@ final class AppState: ObservableObject {
     /// Re-create a tunnel from a snapshot. Used by the Undo snackbar after
     /// a delete. We re-issue the addTunnel + restore the persistent fields
     /// (auto_start, post_connect_cmd, tags, jump_candidates, last_node).
+    ///
+    /// IMPORTANT: tunnel_set_node has a side effect of STARTING the tunnel
+    /// on the daemon side. So we only call it if the tunnel was alive at
+    /// delete time — restoring an idle tunnel that just happens to have a
+    /// `lastNode` from a previous run would otherwise unexpectedly start
+    /// it. If you want a faithful restore that doesn't kick the tunnel,
+    /// the daemon would need a `set_node_no_start` flavor; for now the
+    /// approximation is "was alive → keep it alive; was idle → leave idle".
     func undoDelete() async {
         guard let t = undoableDelete else { return }
         undoableDelete = nil
@@ -354,7 +381,10 @@ final class AppState: ObservableObject {
             if let jc = t.jumpCandidates {
                 try? await client.setTunnelJumpCandidates(t.name, candidates: jc)
             }
-            if let node = t.lastNode, !node.isEmpty {
+            // Only re-set the node (and thus restart the tunnel) if it was
+            // alive at delete time. Idle tunnels stay idle.
+            if t.displayState == .alive,
+               let node = t.lastNode, !node.isEmpty {
                 try? await client.setTunnelNode(t.name, node: node,
                                                 user: t.lastUser ?? NSUserName())
             }

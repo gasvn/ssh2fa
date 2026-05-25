@@ -96,16 +96,29 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         let name = userInfo["tunnel"] as? String
         Task { @MainActor in
-            guard let name, let state = self.appState,
-                  let tunnel = state.tunnels.first(where: { $0.name == name }) else {
+            guard let name, let state = self.appState else {
                 completionHandler()
                 return
             }
             if id == "auto2fa.restart" {
-                await state.toggleTunnel(tunnel)  // stop if alive, start if not — close enough
-                if tunnel.displayState != .alive {
-                    // Was already stopped — start it now.
-                    await state.toggleTunnel(tunnel)
+                // We must NOT rely on a stale snapshot of displayState
+                // here — the old impl read tunnel.displayState captured
+                // at notification-fire time, which meant Restart was
+                // either a no-op or a stop, never a real restart.
+                // Drive directly: stop if currently alive (refetched),
+                // then unconditionally start.
+                guard let fresh = state.tunnels.first(where: { $0.name == name }) else {
+                    completionHandler(); return
+                }
+                if fresh.displayState == .alive {
+                    await state.toggleTunnel(fresh)
+                    // Refetch so we know it's stopped now
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                // Use the up-to-date snapshot for the start
+                if let nowFresh = state.tunnels.first(where: { $0.name == name }),
+                   nowFresh.displayState != .alive {
+                    await state.toggleTunnel(nowFresh)
                 }
             } else if id == "auto2fa.showActivity" {
                 // Bring main window forward + signal TunnelsView to open

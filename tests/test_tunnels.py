@@ -750,16 +750,53 @@ class TestOrphansAndShutdown(unittest.TestCase):
         tm = TunnelManager(host_managers={}, config_path=self.cfg)
         tm.add("a", 8888)
         tm.add("b", 8889)
-        # pgrep returns two PIDs
-        completed = MagicMock(returncode=0, stdout="12345\n12346\n", stderr="")
-        with unittest.mock.patch.object(t.subprocess, "run", return_value=completed) as p_run, \
+        # cleanup_orphans now does TWO subprocess calls per match: pgrep
+        # to find candidates, then ps per-pid to confirm the cmdline
+        # starts with ssh AND has -J (our characteristic auto2fa pattern).
+        # This prevents killing user's own `ssh -L` tunnels that share a
+        # local port. Side-effect: this test now has to mock ps too.
+        def _run_side_effect(argv, **kwargs):
+            if argv[0] == "pgrep":
+                return MagicMock(returncode=0, stdout="12345\n12346\n", stderr="")
+            if argv[0] == "ps":
+                # Simulate `ps -o args= -p <pid>` for an auto2fa-style ssh
+                return MagicMock(returncode=0,
+                                 stdout="ssh -N -J k6 -L 8888:localhost:8888 user@node",
+                                 stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with unittest.mock.patch.object(t.subprocess, "run", side_effect=_run_side_effect) as p_run, \
              unittest.mock.patch.object(t.os, "kill") as p_kill:
             tm.cleanup_orphans()
-        # We expect at least one pgrep call and kill called for both PIDs
         self.assertTrue(p_run.called)
         kill_pids = [args[0] for args, _ in p_kill.call_args_list]
         self.assertIn(12345, kill_pids)
         self.assertIn(12346, kill_pids)
+
+    def test_cleanup_orphans_skips_user_ssh_l_tunnels(self):
+        """Bug fix: don't kill user-launched `ssh -L 8888:localhost:5000 host`
+        that happens to share a local port. We require -J (jump) to confirm
+        it's our process."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", 8888)
+
+        def _run_side_effect(argv, **kwargs):
+            if argv[0] == "pgrep":
+                return MagicMock(returncode=0, stdout="99999\n", stderr="")
+            if argv[0] == "ps":
+                # User's own tunnel without -J — must NOT be killed
+                return MagicMock(returncode=0,
+                                 stdout="ssh -L 8888:localhost:5000 dev",
+                                 stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with unittest.mock.patch.object(t.subprocess, "run", side_effect=_run_side_effect), \
+             unittest.mock.patch.object(t.os, "kill") as p_kill:
+            tm.cleanup_orphans()
+        # Critical: did NOT kill the user's PID
+        self.assertEqual([args[0] for args, _ in p_kill.call_args_list], [])
 
     def test_cleanup_orphans_no_match_is_noop(self):
         from tunnels import TunnelManager

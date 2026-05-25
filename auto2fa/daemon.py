@@ -270,6 +270,27 @@ class Auto2FADaemon:
                 await asyncio.to_thread(_do)
                 return ipc.make_response(req_id, None)
 
+            if method == ipc.Method.TUNNEL_START:
+                # Idempotent start. Safe to use from scripts that don't
+                # know the current state.
+                name = params["name"]
+                if name not in self.tunnel_mgr.tunnels:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                if self.tunnel_mgr.tunnels[name].status == "alive":
+                    return ipc.make_response(req_id, None)
+                await asyncio.to_thread(self.tunnel_mgr.start, name)
+                return ipc.make_response(req_id, None)
+
+            if method == ipc.Method.TUNNEL_STOP:
+                # Idempotent stop. Safe to use from scripts.
+                name = params["name"]
+                if name not in self.tunnel_mgr.tunnels:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                if self.tunnel_mgr.tunnels[name].status != "alive":
+                    return ipc.make_response(req_id, None)
+                await asyncio.to_thread(self.tunnel_mgr.stop, name)
+                return ipc.make_response(req_id, None)
+
             if method == ipc.Method.TUNNEL_TOGGLE:
                 name = params["name"]
                 if name not in self.tunnel_mgr.tunnels:
@@ -623,13 +644,24 @@ class Auto2FADaemon:
         import pexpect
         import tempfile
         from .backend import generate_passcode_from_secret
-        log_path = tempfile.mktemp(prefix=f"auto2fa-testlogin-{host}-", suffix=".log")
+        # Use mkstemp (not mktemp — deprecated, symlink-attack vulnerable).
+        # We close the fd immediately; ssh -E will reopen the path for writing.
+        # We're not racing because we own /tmp/auto2fa-* by convention.
+        fd, log_path = tempfile.mkstemp(prefix=f"auto2fa-testlogin-{host}-",
+                                        suffix=".log")
+        os.close(fd)
         argv = [
             "-v", "-E", log_path,
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
             "-o", "PreferredAuthentications=keyboard-interactive,password",
+            # CRITICAL: disable ControlMaster reuse. Without these flags the
+            # test would silently multiplex onto the daemon's existing master
+            # for this host and return success WITHOUT actually testing the
+            # supplied password+OTP — letting bad creds into passwords.json.
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
             host,
             "echo __auto2fa_login_ok__",  # one-shot remote command
         ]
@@ -806,9 +838,10 @@ class Auto2FADaemon:
         """Snapshot state every 0.5s; emit events for changes."""
         while not self._tick_stop:
             try:
-                # Drive the tunnel manager's tick — it would normally be done
-                # by main.py's background thread, but the daemon owns lifecycle
-                self.tunnel_mgr.tick()
+                # tick() can block up to ~10s probing a port / spawning ssh -L,
+                # so we MUST run it in a thread — otherwise the asyncio loop
+                # freezes for the duration and no IPC client can be served.
+                await asyncio.to_thread(self.tunnel_mgr.tick)
             except Exception:
                 logger.exception("tunnel_mgr.tick failed")
 
