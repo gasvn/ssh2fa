@@ -378,32 +378,14 @@ class TunnelManager:
                 ts.status = "alive"
                 ts.last_msg = f"via {jump}"
                 ts.consecutive_squeue_misses = 0
-                # A working forward through this jump proves its remote TCP
-                # is alive — clear any cooldown the host may be carrying.
-                jump_mgr = self.host_managers.get(jump)
-                if jump_mgr is not None:
-                    jump_mgr.mark_remote_ok()
             else:
                 try:
                     child.terminate(force=True)
                 except Exception:
                     pass
                 reason = self._extract_failure_reason(child)
-                # If the failure pattern points at the jump (vs. the compute
-                # node), mark the jump host so pick_active_jump skips it on the
-                # next start attempt. This is the user-visible escape hatch
-                # when the local heartbeat is still optimistic.
-                # "ssh failed" is generic / could be either side, so we demote
-                # to be safe — better one extra rebuild than a wedged tunnel.
-                if reason in ("ssh failed", "jump unreachable", "auth failed",
-                              "host key verification failed"):
-                    jump_mgr = self.host_managers.get(jump)
-                    if jump_mgr is not None:
-                        logger.info("[tunnel:%s] demoting jump %s after failed start (%s)",
-                                    name, jump, reason)
-                        jump_mgr.mark_remote_failure()
                 ts.status = "failed"
-                ts.last_msg = f"{reason} (via {jump})"
+                ts.last_msg = reason
                 ts.child = None
                 ts.active_jump = None
 
@@ -436,13 +418,7 @@ class TunnelManager:
             return "auth failed"
         if "host key" in text:
             return "host key verification failed"
-        # Jump-side TCP/connection issues — ssh -J failed to reach jump itself.
-        # Caller treats these as a signal to demote the jump.
-        if "connection refused" in text or "connection reset" in text \
-                or "broken pipe" in text or "connection closed by remote" in text \
-                or "operation timed out" in text or "no route to host" in text:
-            return "jump unreachable"
-        if "open failed" in text:
+        if "no route" in text or "open failed" in text:
             return "node unreachable"
         if "bind:" in text or "forward failed" in text:
             return "remote bind failed"
