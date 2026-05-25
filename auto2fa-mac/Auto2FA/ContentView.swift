@@ -23,14 +23,18 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
+                    appState.presentAddHost()
+                } label: {
+                    Label("Add Host", systemImage: "server.rack")
+                }
+                .help("Register a new SSH host (with 2FA)")
+                Button {
                     appState.presentNewTunnel()
                 } label: {
                     Label("New Tunnel", systemImage: "plus.circle.fill")
                 }
-                // No .keyboardShortcut here — the same ⌘N is wired up on
-                // the File → New Tunnel… menu in Auto2FAApp.commands. Having
-                // two competing shortcuts to the same action makes one win
-                // unpredictably depending on focus.
+                // ⌘N is wired on File → New Tunnel… (Auto2FAApp.commands)
+                // — keeping it off the toolbar to avoid duplicate shortcuts.
                 .help("Create a new tunnel (⌘N)")
             }
         }
@@ -58,6 +62,9 @@ struct ContentView: View {
                     .environmentObject(appState)
             case .customNode(let name):
                 CustomNodeSheet(tunnelName: name)
+                    .environmentObject(appState)
+            case .addHost:
+                AddHostSheet()
                     .environmentObject(appState)
             case .confirmDelete:
                 EmptyView()  // unreachable — filtered out in sheetBinding()
@@ -105,7 +112,7 @@ struct ContentView: View {
             get: {
                 switch appState.activeSheet {
                 case .confirmDelete, nil: return nil
-                case .newTunnel, .nodePicker, .customNode: return appState.activeSheet
+                case .newTunnel, .nodePicker, .customNode, .addHost: return appState.activeSheet
                 }
             },
             set: { newValue in if newValue == nil { appState.dismissSheet() } }

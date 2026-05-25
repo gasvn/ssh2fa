@@ -18,41 +18,26 @@ final class MenuBarController: NSObject, ObservableObject {
         self.window = window
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // autosaveName makes macOS remember the user's preferred position for
-        // this item across launches — once they ⌘-drag it somewhere visible,
-        // it stays there. Without this, every launch the item picks the
-        // leftmost free slot (which on a notched MBP often ends up behind
-        // the notch when there's a lot of menu-bar competition).
         statusItem.autosaveName = "com.auto2fa.menubar"
-        statusItem.behavior = .removalAllowed   // user can ⌘-drag it off entirely if they want
+        statusItem.behavior = .removalAllowed
+
         if let button = statusItem.button {
-            // SF Symbol on macOS 14+. If the symbol fails to resolve (e.g. it's
-            // been renamed in a newer SDK), fall back to a visible text label
-            // so the user can still find the menu — an invisible status item
-            // is worse than an ugly one.
-            let image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
-                                accessibilityDescription: "Auto2FA")
-                     ?? NSImage(systemSymbolName: "network",
-                                accessibilityDescription: "Auto2FA")
-            if let image {
-                button.image = image
-                button.imagePosition = .imageLeading
-            } else {
-                button.title = "A2F"
-            }
-            // Always set a title prefix so the button never collapses to 0 width
-            // if the image+title state ever lands in an awkward combination.
-            // We don't show this title in the normal case (image takes priority)
-            // but the framework guarantees the item isn't culled.
-            button.toolTip = "Auto2FA"
-            NSLog("[Auto2FA] MenuBar status item installed (image=\(image != nil))")
+            button.toolTip = "Auto2FA — left-click to show window, right-click for menu"
+            // Custom click handler so we get BOTH left and right clicks.
+            // We deliberately do NOT set statusItem.menu — if menu is set,
+            // macOS swallows clicks and pops the menu, losing left-vs-right
+            // distinction. Instead we present the menu manually on right-click.
+            button.action = #selector(buttonClicked(_:))
+            button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            // Initial image with neutral tint; refresh() recolors as state changes.
+            renderButton()
+            NSLog("[Auto2FA] MenuBar status item installed")
         } else {
             NSLog("[Auto2FA] MenuBar statusItem.button is nil — system denied a slot")
         }
 
-        statusItem.menu = buildMenu()
-
-        // Rebuild the menu when state changes (polling 1s is fine here)
+        // Refresh the icon tint + count badge once a second. Cheap.
         Task { @MainActor [weak self] in
             while true {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -62,11 +47,84 @@ final class MenuBarController: NSObject, ObservableObject {
     }
 
     private func refresh() {
-        statusItem?.menu = buildMenu()
-        // Update the title with the alive-tunnel count
+        renderButton()
+    }
+
+    /// Pick a tint based on aggregate state across hosts + tunnels:
+    ///   - red   if anything is failed
+    ///   - yellow if anything is connecting/starting
+    ///   - green if all enabled things are healthy
+    ///   - grey  if nothing is enabled / idle
+    private func aggregateTint() -> NSColor {
+        guard let appState else { return .secondaryLabelColor }
+        let hosts = appState.hosts
+        let tunnels = appState.tunnels
+        let hostFailed = hosts.contains { $0.displayState == .failed }
+        let tunnelFailed = tunnels.contains {
+            $0.displayState == .failed || $0.displayState == .portBusy
+        }
+        if hostFailed || tunnelFailed { return .systemRed }
+        let hostBusy = hosts.contains { $0.displayState == .connecting }
+        let tunnelBusy = tunnels.contains { $0.displayState == .starting }
+        if hostBusy || tunnelBusy { return .systemYellow }
+        let anyAlive = hosts.contains { $0.displayState == .connected }
+                    || tunnels.contains { $0.displayState == .alive }
+        return anyAlive ? .systemGreen : .secondaryLabelColor
+    }
+
+    private func renderButton() {
+        guard let button = statusItem?.button else { return }
+        let tint = aggregateTint()
+        var image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
+                            accessibilityDescription: "Auto2FA")
+                ?? NSImage(systemSymbolName: "network", accessibilityDescription: "Auto2FA")
+        if let img = image {
+            // .palette renders the symbol in our chosen color (and respects
+            // dark/light mode automatically because we're working in NSColor).
+            let cfg = NSImage.SymbolConfiguration(paletteColors: [tint])
+            image = img.withSymbolConfiguration(cfg)
+            button.image = image
+            button.imagePosition = .imageLeading
+        } else {
+            button.title = "A2F"
+        }
+        // Always show a small alive/total count to the right of the icon so
+        // the user can see at a glance how many tunnels are up.
         let alive = appState?.tunnels.filter { $0.displayState == .alive }.count ?? 0
         let total = appState?.tunnels.count ?? 0
-        statusItem?.button?.title = total > 0 ? "\(alive)/\(total)" : ""
+        button.title = total > 0 ? " \(alive)/\(total)" : ""
+    }
+
+    @objc private func buttonClicked(_ sender: Any?) {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp
+                        || (event?.modifierFlags.contains(.control) ?? false)
+        if isRightClick {
+            // Present the menu manually at the button's location.
+            if let menu = buildMenuOptional(), let button = statusItem?.button {
+                statusItem.menu = menu                      // attach so it positions correctly
+                button.performClick(nil)                    // pops the menu
+                // Detach right after so the next click is a left-click again.
+                DispatchQueue.main.async { [weak self] in
+                    self?.statusItem?.menu = nil
+                }
+            }
+        } else {
+            // Left click → bring the main window forward (or open one if
+            // user previously closed it).
+            NSApp.activate(ignoringOtherApps: true)
+            if let win = window {
+                win.makeKeyAndOrderFront(nil)
+            } else if let any = NSApp.windows.first(where: { $0.title == "Auto2FA" }) {
+                any.makeKeyAndOrderFront(nil)
+                self.window = any
+            }
+        }
+    }
+
+    /// Wrapper so we can fail-soft when appState isn't ready yet.
+    private func buildMenuOptional() -> NSMenu? {
+        return buildMenu()
     }
 
     private func buildMenu() -> NSMenu {
@@ -134,6 +192,19 @@ final class MenuBarController: NSObject, ObservableObject {
         open.target = self
         menu.addItem(open)
 
+        let logs = NSMenuItem(title: "Show Daemon Logs…",
+                              action: #selector(openLogs(_:)), keyEquivalent: "l")
+        logs.keyEquivalentModifierMask = [.command, .shift]
+        logs.target = self
+        menu.addItem(logs)
+
+        let prefs = NSMenuItem(title: "Settings…",
+                               action: #selector(openSettings(_:)), keyEquivalent: ",")
+        prefs.target = self
+        menu.addItem(prefs)
+
+        menu.addItem(.separator())
+
         let quit = NSMenuItem(title: "Quit Auto2FA", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -190,8 +261,39 @@ final class MenuBarController: NSObject, ObservableObject {
     }
 
     @objc private func openMainWindow(_ sender: NSMenuItem) {
-        window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if let win = window {
+            win.makeKeyAndOrderFront(nil)
+        } else if let any = NSApp.windows.first(where: { $0.title == "Auto2FA" }) {
+            any.makeKeyAndOrderFront(nil)
+            self.window = any
+        }
+    }
+
+    @objc private func openLogs(_ sender: Any?) {
+        // SwiftUI registers our second WindowGroup (id: "logs") as a standard
+        // window. The Window menu has a "New Auto2FA Logs Window" entry; we
+        // trigger it programmatically by sending its selector to the
+        // first responder.
+        NSApp.activate(ignoringOtherApps: true)
+        // Look for an existing logs window first.
+        if let win = NSApp.windows.first(where: { $0.title == "Auto2FA Logs" }) {
+            win.makeKeyAndOrderFront(nil)
+            return
+        }
+        // Otherwise ask AppKit's "New <window>" command for the logs group.
+        // The menu item is created by SwiftUI under Window → New Auto2FA…
+        NSApp.sendAction(Selector(("newWindowForTab:")), to: nil, from: nil)
+    }
+
+    @objc private func openSettings(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        // macOS 14+: SwiftUI Settings scene is exposed via this selector.
+        if #available(macOS 14, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
     }
 
     @objc private func quit(_ sender: NSMenuItem) {

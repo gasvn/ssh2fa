@@ -44,6 +44,32 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
 
+def _tail_file(path: str, n: int) -> list[str]:
+    """Return the last n lines of `path`, or [] if it doesn't exist.
+    Uses a backwards block read so it's cheap even for multi-MB logs."""
+    if not os.path.exists(path):
+        return []
+    block_size = 4096
+    lines: list[bytes] = []
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        offset = size
+        carry = b""
+        while offset > 0 and len(lines) <= n:
+            read = min(block_size, offset)
+            offset -= read
+            f.seek(offset)
+            chunk = f.read(read) + carry
+            parts = chunk.split(b"\n")
+            carry = parts[0]
+            lines = parts[1:] + lines
+        if offset == 0 and carry:
+            lines = [carry] + lines
+    decoded = [l.decode("utf-8", errors="replace") for l in lines if l]
+    return decoded[-n:]
+
+
 def load_hosts() -> dict:
     config_path = os.environ.get("SSH_CONFIG_PATH")
     if not config_path:
@@ -259,6 +285,53 @@ class Auto2FADaemon:
                     ],
                 )
 
+            if method == ipc.Method.TUNNEL_SET_AUTOSTART:
+                name = params["name"]
+                value = bool(params.get("value", False))
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                ts.auto_start = value
+                self.tunnel_mgr.save()
+                return ipc.make_response(req_id, self._tunnel_snapshot(name))
+
+            if method == ipc.Method.PORT_SUGGEST:
+                # Find next free local port starting from 8888 that isn't
+                # used by any existing tunnel and isn't currently in use.
+                taken = {ts.local_port for ts in self.tunnel_mgr.tunnels.values()}
+                base = int(params.get("base", 8888))
+                free = await asyncio.to_thread(self._find_free_port, base, taken)
+                return ipc.make_response(req_id, {"port": free})
+
+            if method == ipc.Method.HOST_ADD:
+                # Add a host to passwords.json AND start a manager for it.
+                host = params["host"]
+                password = params.get("password", "")
+                otpauth_url = params.get("otpauth_url", "")
+                auto_connect = bool(params.get("auto_connect", False))
+                try:
+                    secret = extract_secret_from_url(otpauth_url)
+                except Exception as e:
+                    return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS,
+                                          f"invalid otpauth URL: {e}")
+                added = await asyncio.to_thread(
+                    self._add_host_persistent,
+                    host, password, otpauth_url, auto_connect, secret
+                )
+                if not added:
+                    return ipc.make_error(req_id, ipc.ErrCode.DUPLICATE,
+                                          f"host {host} already exists")
+                return ipc.make_response(req_id, self._host_snapshot(self.host_map[host]))
+
+            if method == ipc.Method.LOG_TAIL:
+                # Return the last N lines of the daemon log file.
+                n = int(params.get("lines", 200))
+                try:
+                    lines = await asyncio.to_thread(_tail_file, "/tmp/auto2fa_daemon.log", n)
+                except Exception as e:
+                    return ipc.make_error(req_id, ipc.ErrCode.INTERNAL, str(e))
+                return ipc.make_response(req_id, {"lines": lines})
+
             if method == ipc.Method.WAKE_RECOVER:
                 # Mac woke from sleep — every SSH master's underlying TCP is
                 # almost certainly dead. Rebuild masters + restart tunnels
@@ -322,6 +395,70 @@ class Auto2FADaemon:
             except Exception:
                 pass
             logger.info(f"client disconnected: {peer}")
+
+    # ---- Helpers used by new client methods ------------------------------
+
+    def _find_free_port(self, base: int, taken: set[int]) -> int:
+        """Return the lowest port >= base that isn't in `taken` AND isn't
+        currently bound on 127.0.0.1. Falls back to base+1000 if nothing's
+        free, which would indicate a broken system."""
+        import socket as _s
+        for port in range(max(base, 1024), min(base + 1000, 65535)):
+            if port in taken:
+                continue
+            sk = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+            sk.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+            try:
+                sk.bind(("127.0.0.1", port))
+                sk.close()
+                return port
+            except OSError:
+                continue
+            finally:
+                try: sk.close()
+                except Exception: pass
+        return base
+
+    def _add_host_persistent(self, host: str, password: str,
+                             otpauth_url: str, auto_connect: bool,
+                             secret: str) -> bool:
+        """Append the new host to passwords.json and spin up a manager.
+        Returns False if a host with that name already exists."""
+        if host in self.host_map:
+            return False
+        config_path = os.environ.get("SSH_CONFIG_PATH")
+        if not config_path:
+            raise RuntimeError("SSH_CONFIG_PATH not set")
+        pw_file = os.path.join(config_path, "passwords.json")
+        try:
+            with open(pw_file) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        if host in data:
+            return False
+        data[host] = {
+            "password": password,
+            "otpauthUrl": otpauth_url,
+            "autoConnect": auto_connect,
+        }
+        # Atomic write: tmpfile + replace so an interrupted write doesn't
+        # corrupt the credentials file.
+        tmp = pw_file + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, pw_file)
+
+        mgr = SSHHostManager(host, password, secret)
+        mgr.daemon = True
+        mgr.active = auto_connect
+        mgr.start()
+        self.managers.append(mgr)
+        self.host_map[host] = mgr
+        logger.info(f"host_add: registered {host} (autoConnect={auto_connect})")
+        return True
 
     # ---- Wake recovery (called by clients from a Mac wake notification) --
 

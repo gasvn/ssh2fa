@@ -12,6 +12,7 @@ enum ActiveSheet: Identifiable, Equatable {
     case nodePicker(tunnelName: String)
     case customNode(tunnelName: String)
     case confirmDelete(tunnelName: String)
+    case addHost
 
     var id: String {
         switch self {
@@ -19,6 +20,7 @@ enum ActiveSheet: Identifiable, Equatable {
         case .nodePicker(let n): return "nodePicker:\(n)"
         case .customNode(let n): return "customNode:\(n)"
         case .confirmDelete(let n): return "confirmDelete:\(n)"
+        case .addHost: return "addHost"
         }
     }
 }
@@ -104,8 +106,18 @@ final class AppState: ObservableObject {
         case .hostChanged:
             await reloadAll()
         case .tunnelChanged(let name, let status, let lastMsg, _):
+            // Snapshot previous state BEFORE reloading so we can detect
+            // idle/starting → alive transitions even though reloadAll
+            // mutates self.tunnels.
+            let prev = tunnels.first(where: { $0.name == name })
+            let wasAlive: Bool = (prev?.displayState == Tunnel.DisplayState.alive)
             await reloadAll()
             maybeShowNotch(name: name, status: status, lastMsg: lastMsg)
+            if status == "alive" && !wasAlive {
+                if let t = tunnels.first(where: { $0.name == name }) {
+                    maybeAutoOpenBrowser(for: t)
+                }
+            }
         case .notification(let severity, let title, let message):
             notchPresenter.show(
                 systemImage: severity == "error" ? "exclamationmark.octagon.fill"
@@ -120,7 +132,25 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Honour the "Open URL in browser on tunnel up" setting. Fires from
+    /// apply(event:) once per idle/starting → alive transition.
+    private func maybeAutoOpenBrowser(for t: Tunnel) {
+        guard UserDefaults.standard.bool(forKey: "auto2fa.autoOpenBrowser") else { return }
+        var raw = t.url
+        if !raw.hasPrefix("http://") && !raw.hasPrefix("https://") {
+            raw = "http://" + raw
+        }
+        if let url = URL(string: raw) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private func maybeShowNotch(name: String, status: String, lastMsg: String) {
+        // Settings opt-out — user can mute toasts entirely.
+        if UserDefaults.standard.object(forKey: "auto2fa.notch.enabled") != nil,
+           UserDefaults.standard.bool(forKey: "auto2fa.notch.enabled") == false {
+            return
+        }
         switch status {
         case "alive":
             notchPresenter.show(
@@ -209,17 +239,44 @@ final class AppState: ObservableObject {
     func presentNodePicker(for tunnel: Tunnel) { activeSheet = .nodePicker(tunnelName: tunnel.name) }
     func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
+    func presentAddHost() { activeSheet = .addHost }
     func dismissSheet() { activeSheet = nil }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error
     /// message on failure (so the sheet can show it inline rather than
     /// duplicating it as a global banner).
-    func createTunnel(name: String, localPort: Int) async -> String? {
+    func createTunnel(name: String, localPort: Int, autoStart: Bool = false) async -> String? {
         inFlightTunnels.insert(name)
         defer { inFlightTunnels.remove(name) }
         do {
             _ = try await client.addTunnel(name: name, localPort: localPort)
+            if autoStart {
+                try? await client.setTunnelAutostart(name, value: true)
+            }
             dismissSheet()
+            await reloadAll()
+            return nil
+        } catch {
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
+    /// Flip a tunnel's auto-start flag. Persistent across daemon restarts.
+    func setTunnelAutostart(_ tunnel: Tunnel, value: Bool) async {
+        do { try await client.setTunnelAutostart(tunnel.name, value: value) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    /// Add a new host via daemon. Returns nil on success, error message on failure.
+    @discardableResult
+    func addHost(host: String, password: String, otpauthURL: String,
+                 autoConnect: Bool) async -> String? {
+        do {
+            _ = try await client.addHost(host: host, password: password,
+                                         otpauthURL: otpauthURL,
+                                         autoConnect: autoConnect)
             await reloadAll()
             return nil
         } catch {

@@ -22,6 +22,7 @@ settings:
     GENERATE_INFOPLIST_FILE: NO
     INFOPLIST_FILE: Auto2FA/Resources/Info.plist
     SWIFT_STRICT_CONCURRENCY: minimal  # avoid the Swift 6 strict-concurrency wall in this scaffold
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 packages:
   DynamicNotchKit:

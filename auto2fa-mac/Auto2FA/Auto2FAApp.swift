@@ -38,20 +38,32 @@ struct Auto2FAApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             // Replace the standard File → New so ⌘N opens our New Tunnel sheet.
-            // The toolbar button in ContentView calls the same action without
-            // a keyboard shortcut to avoid clashing with this one.
             CommandGroup(replacing: .newItem) {
                 Button("New Tunnel…") {
                     appState.presentNewTunnel()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }
-            // Help → Auto2FA on GitHub
             CommandGroup(replacing: .help) {
                 Link("Auto2FA on GitHub",
                      destination: URL(string: "https://github.com/gasvn/auto2fa")!)
             }
         }
+
+        // ⌘, opens this automatically.
+        Settings {
+            SettingsView()
+        }
+
+        // A separate WindowGroup for the log viewer. SwiftUI auto-adds a
+        // "New Auto2FA Logs Window" item to the Window menu since this is a
+        // second WindowGroup. The menu-bar status item also offers a quick
+        // way to open it via MenuBarController.
+        WindowGroup("Auto2FA Logs", id: "logs") {
+            LogViewerView()
+                .environmentObject(appState)
+        }
+        .defaultSize(width: 900, height: 600)
     }
 
     /// Install the menu-bar status item exactly once per app launch. Done

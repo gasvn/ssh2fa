@@ -30,9 +30,13 @@ class Method:
     TUNNEL_REMOVE = "tunnel_remove"
     TUNNEL_TOGGLE = "tunnel_toggle"
     TUNNEL_SET_NODE = "tunnel_set_node"
+    TUNNEL_SET_AUTOSTART = "tunnel_set_autostart"
     DISCOVER_NODES = "discover_nodes"
     SUBSCRIBE_EVENTS = "subscribe_events"
     WAKE_RECOVER = "wake_recover"
+    HOST_ADD = "host_add"
+    PORT_SUGGEST = "port_suggest"
+    LOG_TAIL = "log_tail"
 
 
 class Event:

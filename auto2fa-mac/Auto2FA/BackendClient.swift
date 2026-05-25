@@ -275,6 +275,35 @@ actor BackendClient {
     func wakeRecover() async throws {
         _ = try await sendRaw(method: "wake_recover", params: [:])
     }
+
+    func setTunnelAutostart(_ name: String, value: Bool) async throws {
+        _ = try await sendRaw(method: "tunnel_set_autostart",
+                              params: ["name": name, "value": value])
+    }
+
+    /// Ask the daemon for the next free local port, starting at `base`.
+    func suggestPort(base: Int = 8888) async throws -> Int {
+        let data = try await sendRaw(method: "port_suggest", params: ["base": base])
+        struct R: Decodable { let port: Int }
+        return try JSONDecoder().decode(R.self, from: data).port
+    }
+
+    func addHost(host: String, password: String, otpauthURL: String,
+                 autoConnect: Bool) async throws -> SSHHost {
+        let data = try await sendRaw(method: "host_add", params: [
+            "host": host,
+            "password": password,
+            "otpauth_url": otpauthURL,
+            "auto_connect": autoConnect,
+        ])
+        return try JSONDecoder().decode(SSHHost.self, from: data)
+    }
+
+    func logTail(lines: Int = 200) async throws -> [String] {
+        let data = try await sendRaw(method: "log_tail", params: ["lines": lines])
+        struct R: Decodable { let lines: [String] }
+        return try JSONDecoder().decode(R.self, from: data).lines
+    }
 }
 
 // MARK: - Event types

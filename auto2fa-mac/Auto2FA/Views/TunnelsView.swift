@@ -133,9 +133,20 @@ struct TunnelsView: View {
                     Button("Pick node…") {
                         appState.presentNodePicker(for: t)
                     }
+                    Button("Open in browser") {
+                        openInBrowser(t)
+                    }
+                    .disabled(t.displayState != .alive)
                     Button("Copy localhost:\(t.localPort)") {
                         copyURL(t.url)
                     }
+                    Divider()
+                    Toggle("Start on daemon launch", isOn: Binding(
+                        get: { t.autoStart },
+                        set: { newValue in
+                            Task { await appState.setTunnelAutostart(t, value: newValue) }
+                        }
+                    ))
                     Divider()
                     Button("Delete tunnel", role: .destructive) {
                         appState.presentConfirmDelete(for: t)
