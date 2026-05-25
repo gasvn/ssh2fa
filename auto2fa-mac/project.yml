@@ -13,7 +13,10 @@ settings:
     SWIFT_VERSION: "5.10"
     PRODUCT_NAME: "Auto2FA"
     PRODUCT_BUNDLE_IDENTIFIER: "com.auto2fa.app"
-    ENABLE_HARDENED_RUNTIME: YES
+    # Hardened runtime OFF for local ad-hoc builds — turning it on without
+    # proper entitlements + a real Developer ID signing identity tends to
+    # refuse to launch. Easy to flip back on once you sign the release.
+    ENABLE_HARDENED_RUNTIME: NO
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "-"            # ad-hoc signing for local dev
     GENERATE_INFOPLIST_FILE: NO
