@@ -36,15 +36,28 @@ final class AppState: ObservableObject {
     private var pollTask: Task<Void, Never>?
 
     func bootstrap() async {
+        NSLog("[Auto2FA] bootstrap: connecting to daemon")
         do {
             try await client.connect()
             connectionError = nil
+            NSLog("[Auto2FA] bootstrap: connected OK")
+            // Confirm to the user that the notch is alive — this also serves
+            // as a "hello world" so they can see Dynamic Notch working
+            // without first having to start a tunnel.
+            notchPresenter.show(
+                systemImage: "bolt.fill",
+                title: "Auto2FA ready",
+                description: "Connected to daemon",
+                tint: .green
+            )
         } catch {
+            NSLog("[Auto2FA] bootstrap: connect failed: \(error.localizedDescription)")
             connectionError = "Daemon unreachable: \(error.localizedDescription). " +
                               "Is auto2fa-daemon running?"
             return
         }
         await reloadAll()
+        NSLog("[Auto2FA] bootstrap: loaded \(hosts.count) hosts, \(tunnels.count) tunnels")
         startEventTask()
         startPollFallback()
     }

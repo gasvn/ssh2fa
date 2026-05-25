@@ -259,6 +259,13 @@ class Auto2FADaemon:
                     ],
                 )
 
+            if method == ipc.Method.WAKE_RECOVER:
+                # Mac woke from sleep — every SSH master's underlying TCP is
+                # almost certainly dead. Rebuild masters + restart tunnels
+                # that were alive at sleep time.
+                affected = await asyncio.to_thread(self._wake_recover)
+                return ipc.make_response(req_id, {"tunnels_restarting": affected})
+
             # SUBSCRIBE_EVENTS is handled in the connection loop directly
             # (it needs the writer to add to self._subscribers).
             return ipc.make_error(
@@ -315,6 +322,49 @@ class Auto2FADaemon:
             except Exception:
                 pass
             logger.info(f"client disconnected: {peer}")
+
+    # ---- Wake recovery (called by clients from a Mac wake notification) --
+
+    def _wake_recover(self) -> list[str]:
+        """Force-rebuild every enabled host's master pool and restart any
+        tunnel that was previously alive/starting/stale. Returns the names of
+        tunnels we scheduled for restart."""
+        previously_active = [
+            name for name, ts in self.tunnel_mgr.tunnels.items()
+            if ts.status in ("alive", "starting", "stale")
+        ]
+        logger.info(f"wake_recover: rebuilding masters + restarting {len(previously_active)} tunnels")
+
+        # First stop the tunnels — their TCP is dead, no point keeping the
+        # pexpect child wired to a closed connection.
+        for name in previously_active:
+            try:
+                self.tunnel_mgr.stop(name)
+            except Exception:
+                logger.exception(f"wake_recover stop({name}) failed")
+
+        # Rebuild masters of every enabled host.
+        for mgr in self.managers:
+            if mgr.active:
+                try:
+                    mgr.force_master_rebuild()
+                except Exception:
+                    logger.exception(f"wake_recover rebuild on {mgr.host} failed")
+
+        # Schedule a delayed restart on the asyncio loop — masters need
+        # ~15-30s to log back in.
+        loop = self._loop
+        if loop is not None and previously_active:
+            async def _delayed_restart():
+                await asyncio.sleep(20)
+                for name in previously_active:
+                    try:
+                        await asyncio.to_thread(self.tunnel_mgr.start, name)
+                        logger.info(f"wake_recover restarted tunnel {name}")
+                    except Exception:
+                        logger.exception(f"wake_recover restart({name}) failed")
+            asyncio.run_coroutine_threadsafe(_delayed_restart(), loop)
+        return previously_active
 
     # ---- Event emitter (polls state, pushes deltas) ----------------------
 

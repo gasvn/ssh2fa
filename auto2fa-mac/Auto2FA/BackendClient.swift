@@ -267,6 +267,14 @@ actor BackendClient {
         let data = try await sendRaw(method: "discover_nodes", params: ["host": host])
         return try JSONDecoder().decode([SqueueJob].self, from: data)
     }
+
+    /// Notify daemon that the Mac just woke from sleep. Daemon will tear down
+    /// every SSH master (their TCP is dead after suspend) and restart any
+    /// tunnel that was alive at sleep time, after a ~20s grace window so the
+    /// fresh masters have time to log back in.
+    func wakeRecover() async throws {
+        _ = try await sendRaw(method: "wake_recover", params: [:])
+    }
 }
 
 // MARK: - Event types

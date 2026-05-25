@@ -83,6 +83,13 @@ struct TunnelsView: View {
                         }
                         .help("Pick a node from squeue")
                         Button {
+                            openInBrowser(t)
+                        } label: {
+                            Image(systemName: "safari")
+                        }
+                        .help("Open localhost:\(t.localPort) in browser")
+                        .disabled(t.displayState != .alive)
+                        Button {
                             copyURL(t.url)
                         } label: {
                             Image(systemName: "doc.on.doc")
@@ -97,7 +104,7 @@ struct TunnelsView: View {
                     }
                     .buttonStyle(.borderless)
                 }
-                .width(min: 120, ideal: 140)
+                .width(min: 150, ideal: 170)
             }
             .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
                 if let id = ids.first,
@@ -124,6 +131,23 @@ struct TunnelsView: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(url, forType: .string)
+    }
+
+    private func openInBrowser(_ t: Tunnel) {
+        // Tunnel `url` may be just "localhost:8888"; NSWorkspace.open needs
+        // a real URL with scheme. Default to http if no scheme is present.
+        var raw = t.url
+        if !raw.hasPrefix("http://") && !raw.hasPrefix("https://") {
+            raw = "http://" + raw
+        }
+        guard let url = URL(string: raw) else { return }
+        NSWorkspace.shared.open(url)
+        appState.notchPresenter.show(
+            systemImage: "safari.fill",
+            title: t.name,
+            description: "opening \(t.url)",
+            tint: .blue
+        )
     }
 
     private func color(for state: Tunnel.DisplayState) -> Color {

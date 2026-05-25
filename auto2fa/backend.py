@@ -143,6 +143,29 @@ class SSHHostManager(threading.Thread):
         Used by TunnelManager to pick a jump host."""
         return self.active and self.pool_status.get(self.active_index) == "Ready"
 
+    def force_master_rebuild(self):
+        """Tear down both pool entries so manage_pool_loop's heartbeat rebuilds
+        them on the next iteration. Only called by explicit external triggers
+        (e.g. Mac wake-from-sleep recovery) — NEVER from the heartbeat itself,
+        because this sends `ssh -O exit` which kills any multiplexed user
+        sessions. After wake the user's session TCP is already dead anyway, so
+        we lose nothing by killing the master."""
+        for i in range(POOL_SIZE):
+            child = self.pool.pop(i, None)
+            if child is not None:
+                try:
+                    if child.isalive():
+                        child.close(force=True)
+                except Exception:
+                    pass
+            self.pool_status[i] = "Dead"
+            try:
+                cleanup_stale_connection(self.pool_control_paths[i],
+                                         self.host, kill_zombies=False)
+            except Exception:
+                pass
+        self.last_msg = "Wake recovery — rebuilding masters"
+
     def get_ssh_control_path(self, host):
         """Resolves the ControlPath that ssh expects to use for this host"""
         try:

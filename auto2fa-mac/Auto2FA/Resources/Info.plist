@@ -1,41 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDisplayName</key>
-    <string>Auto2FA</string>
-    <key>CFBundleName</key>
-    <string>Auto2FA</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.auto2fa.app</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.3.0</string>
-    <key>CFBundleExecutable</key>
-    <string>Auto2FA</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-
-    <!-- Show in Dock AND menu bar. Set LSUIElement=true to hide from Dock
-         (menu-bar-only mode). The user asked for both, so we leave this false. -->
-    <key>LSUIElement</key>
-    <false/>
-
-    <!-- We don't need full file-system access from the app — the Python
-         daemon owns the actual SSH connections. -->
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsLocalNetworking</key>
-        <true/>
-    </dict>
-
-    <!-- Apple wants high-level usage descriptions even if we don't ask for
-         these permissions ourselves; the linked daemon does the work. -->
-    <key>NSDesktopFolderUsageDescription</key>
-    <string>Auto2FA does not access the Desktop directly.</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
 </dict>
 </plist>

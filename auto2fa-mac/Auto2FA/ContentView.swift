@@ -79,7 +79,8 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { appState.dismissSheet() }
         }
-        .task { await appState.bootstrap() }
+        // bootstrap() is called from Auto2FAApp's WindowGroup .task, AFTER
+        // it ensures the daemon is running. Doing it here too would race.
     }
 
     private func confirmDeleteTitle() -> String {

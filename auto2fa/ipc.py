@@ -32,6 +32,7 @@ class Method:
     TUNNEL_SET_NODE = "tunnel_set_node"
     DISCOVER_NODES = "discover_nodes"
     SUBSCRIBE_EVENTS = "subscribe_events"
+    WAKE_RECOVER = "wake_recover"
 
 
 class Event:

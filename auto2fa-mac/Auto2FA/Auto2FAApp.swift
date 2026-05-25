@@ -5,12 +5,34 @@ import AppKit
 struct Auto2FAApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var menuBar = MenuBarController()
+    // Kept as an instance var so it isn't deallocated and unsubscribes.
+    @State private var sleepWakeMonitor: SleepWakeMonitor?
 
     var body: some Scene {
         WindowGroup("Auto2FA") {
             ContentView()
                 .environmentObject(appState)
-                .onAppear { installMenuBarOnce() }
+                .onAppear {
+                    installMenuBarOnce()
+                    installSleepWakeMonitor()
+                }
+                .task {
+                    // Spawn daemon first (or detect existing one), THEN run
+                    // AppState.bootstrap. Doing this serially in a single
+                    // .task avoids the race where ContentView's own .task
+                    // would fire bootstrap before we've started the daemon.
+                    let result = await DaemonProcess.shared.ensureRunning()
+                    switch result {
+                    case .alreadyRunning:
+                        NSLog("[Auto2FA] daemon was already running")
+                    case .spawned(let pid):
+                        NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
+                    case .failed(let reason):
+                        appState.connectionError = reason
+                        return  // don't try to bootstrap against nothing
+                    }
+                    await appState.bootstrap()
+                }
         }
         .defaultSize(width: 820, height: 540)
         .windowToolbarStyle(.unifiedCompact)
@@ -43,5 +65,53 @@ struct Auto2FAApp: App {
         let window = NSApp.windows.first { $0.isVisible && $0.title == "Auto2FA" }
             ?? NSApp.windows.first
         menuBar.install(appState: appState, window: window)
+    }
+
+    /// On Mac wake-from-sleep, every SSH master's TCP is dead. Tell the
+    /// daemon to rebuild masters and restart previously-alive tunnels. Also
+    /// surface a small notch toast so the user sees we're doing something.
+    /// Also hook applicationWillTerminate so we can shut down the daemon we
+    /// spawned (using NotificationCenter avoids @NSApplicationDelegateAdaptor,
+    /// which in some macOS releases prevents the SwiftUI window from showing).
+    private func installSleepWakeMonitor() {
+        guard sleepWakeMonitor == nil else { return }
+        let monitor = SleepWakeMonitor(
+            onSleep: {
+                appState.notchPresenter.show(
+                    systemImage: "moon.zzz.fill",
+                    title: "Sleeping",
+                    description: "tunnels will auto-recover on wake",
+                    tint: .secondary
+                )
+            },
+            onWake: {
+                appState.notchPresenter.show(
+                    systemImage: "arrow.triangle.2.circlepath",
+                    title: "Recovering tunnels…",
+                    description: "rebuilding SSH masters",
+                    tint: .yellow
+                )
+                Task {
+                    do {
+                        try await appState.client.wakeRecover()
+                        NSLog("[Auto2FA] wake_recover dispatched")
+                    } catch {
+                        NSLog("[Auto2FA] wake_recover failed: \(error.localizedDescription)")
+                    }
+                    await appState.reloadAll()
+                }
+            }
+        )
+        monitor.start()
+        sleepWakeMonitor = monitor
+
+        // Shut down the daemon we spawned when the app quits.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            DaemonProcess.shared.terminateOwnedDaemon()
+        }
     }
 }
