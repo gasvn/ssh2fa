@@ -5,6 +5,7 @@ import SwiftUI
 /// `appState.activeSheet`.
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @State private var confirmingReset = false
     @State private var showingWelcome = false
     @State private var showingPalette = false
@@ -143,6 +144,9 @@ struct ContentView: View {
         .onAppear { maybeShowWelcome() }
         .onReceive(NotificationCenter.default.publisher(for: .a2fShowPalette)) { _ in
             showingPalette = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .a2fShowLogs)) { _ in
+            openWindow(id: "logs")
         }
         // bootstrap() is called from Auto2FAApp's WindowGroup .task, AFTER
         // it ensures the daemon is running. Doing it here too would race.

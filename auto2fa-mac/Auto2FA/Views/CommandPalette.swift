@@ -11,6 +11,11 @@ import SwiftUI
 struct CommandPalette: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    // Native SwiftUI window opener — works for any registered WindowGroup id.
+    // Previously we tried `NSApp.sendAction(Selector(("openLogsWindow:")))`
+    // which doesn't exist anywhere → "Show daemon logs" silently no-op'd
+    // unless a logs window happened to already be open.
+    @Environment(\.openWindow) private var openWindow
     @State private var query: String = ""
     @State private var selectedIdx: Int = 0
     @FocusState private var focused: Bool
@@ -103,15 +108,17 @@ struct CommandPalette: View {
             ) { Task { await appState.resetAll() } },
             .init(icon: "doc.text.magnifyingglass",
                   title: "Show daemon logs…",
-                  subtitle: "live tail with filter (⌘⇧L)",
+                  subtitle: "live tail with filter",
                   keywords: ["logs", "log", "daemon", "debug"]
             ) {
-                NSApp.sendAction(Selector(("openLogsWindow:")), to: nil, from: nil)
-                // Fallback: try to find an existing logs window
+                NSApp.activate(ignoringOtherApps: true)
+                // First check if a logs window is already open and focus it.
                 if let w = NSApp.windows.first(where: { $0.title == "Auto2FA Logs" }) {
                     w.makeKeyAndOrderFront(nil)
-                    NSApp.activate(ignoringOtherApps: true)
+                    return
                 }
+                // Otherwise actually open the registered "logs" WindowGroup.
+                openWindow(id: "logs")
             },
             .init(icon: "gear",
                   title: "Settings…",

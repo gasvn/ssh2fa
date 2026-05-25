@@ -189,13 +189,23 @@ class SSHHostManager(threading.Thread):
         return os.path.join(home, ".ssh", f"cm-auto2fa-{host}")
 
     def run(self):
+        was_active = False
         while self.running:
             if self.active:
+                was_active = True
                 self.manage_pool_loop()
             else:
                 self.status = "[dim]Stopped[/dim]"
                 self.last_msg = "Inactive"
-                self.cleanup_all()
+                # Only run cleanup_all on the active → inactive EDGE.
+                # Previously this fired every 0.5s for every disabled host,
+                # spamming the log with "Cleaning up prior connections..."
+                # (twice per iteration since POOL_SIZE=2) — 2 disabled
+                # hosts produced ~8 log lines per second, ballooning the
+                # daemon log to multi-MB within hours.
+                if was_active:
+                    self.cleanup_all()
+                    was_active = False
                 time.sleep(0.5)
         # Final cleanup on thread exit (e.g. app shutdown while host was active):
         # manage_pool_loop returns when running flips False, leaving the pool
@@ -441,16 +451,25 @@ class SSHHostManager(threading.Thread):
                 # Check Health
                 for i in range(POOL_SIZE):
                     should_restart = False
-                    
-                    # Case 1: Missing from pool (Failed spawn or not started)
-                    if i not in self.pool:
+
+                    # Snapshot the pool entry once. Previously we did
+                    # `if i not in self.pool` then `self.pool[i].isalive()`
+                    # in separate statements — _wake_recover's
+                    # force_master_rebuild on the asyncio thread can pop
+                    # the entry between those two reads, raising KeyError
+                    # and CRASHING the entire manage_pool_loop (host then
+                    # stuck in "Pool Crashed" until manual toggle).
+                    child = self.pool.get(i)
+
+                    # Case 1: Missing from pool (Failed spawn / popped)
+                    if child is None:
                         should_restart = True
-                        
+
                     # Case 2: Dead process
-                    elif not self.pool[i].isalive():
+                    elif not child.isalive():
                         logger.warning(f"[{self.host}] Master #{i} died. Restarting...")
                         should_restart = True
-                        
+
                     # Case 3: Process alive but Socket dead/hung (Heartbeat Check)
                     elif current_time - last_heartbeat > HEARTBEAT_INTERVAL:
                         path = self.pool_control_paths[i]

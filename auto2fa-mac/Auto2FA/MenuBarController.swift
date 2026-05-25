@@ -271,19 +271,17 @@ final class MenuBarController: NSObject, ObservableObject {
     }
 
     @objc private func openLogs(_ sender: Any?) {
-        // SwiftUI registers our second WindowGroup (id: "logs") as a standard
-        // window. The Window menu has a "New Auto2FA Logs Window" entry; we
-        // trigger it programmatically by sending its selector to the
-        // first responder.
+        // Bring main window forward + signal the ContentView to open the
+        // logs WindowGroup via the SwiftUI Environment(\.openWindow) API.
+        // Previously we tried `newWindowForTab:` (a Safari-style selector
+        // that doesn't apply to non-tabbed SwiftUI windows) — silently
+        // no-op'd on macOS 14+.
         NSApp.activate(ignoringOtherApps: true)
-        // Look for an existing logs window first.
         if let win = NSApp.windows.first(where: { $0.title == "Auto2FA Logs" }) {
             win.makeKeyAndOrderFront(nil)
             return
         }
-        // Otherwise ask AppKit's "New <window>" command for the logs group.
-        // The menu item is created by SwiftUI under Window → New Auto2FA…
-        NSApp.sendAction(Selector(("newWindowForTab:")), to: nil, from: nil)
+        NotificationCenter.default.post(name: .a2fShowLogs, object: nil)
     }
 
     @objc private func openSettings(_ sender: Any?) {
