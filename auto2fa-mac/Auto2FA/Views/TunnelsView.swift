@@ -28,7 +28,15 @@ struct TunnelsView: View {
         } else {
             Table(appState.tunnels, selection: $selection) {
                 TableColumn("Name") { t in
-                    Text(t.name).fontDesign(.monospaced)
+                    HStack(spacing: 4) {
+                        Text(t.name).fontDesign(.monospaced)
+                        if t.autoStart {
+                            Image(systemName: "bolt.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.yellow)
+                                .help("Starts automatically when the daemon boots")
+                        }
+                    }
                 }
                 .width(min: 80, ideal: 110)
 

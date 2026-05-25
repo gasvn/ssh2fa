@@ -79,10 +79,17 @@ struct HostsView: View {
                     }
                     .disabled(busy || !host.active)
                     .help("Rotate connection pool slot")
+                    Button {
+                        openTerminal(for: host)
+                    } label: {
+                        Image(systemName: "terminal")
+                    }
+                    .disabled(!host.isMasterReady)
+                    .help("Open an interactive ssh session in Terminal")
                 }
                 .buttonStyle(.borderless)
             }
-            .width(min: 100, ideal: 110, max: 140)
+            .width(min: 130, ideal: 140, max: 170)
         }
     }
 
@@ -101,6 +108,25 @@ struct HostsView: View {
         // "Connecting…" because it tells the user how far they are.
         let msg = host.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         return msg.isEmpty ? "Working…" : msg
+    }
+
+    /// Pop a Terminal.app window running `ssh <host>` so the user can
+    /// jump into an interactive session over the same ControlMaster the
+    /// app keeps warm. The mux makes this instantaneous — no 2FA prompt.
+    private func openTerminal(for host: SSHHost) {
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "ssh \(host.host)"
+        end tell
+        """
+        var error: NSDictionary?
+        if let scriptObj = NSAppleScript(source: script) {
+            scriptObj.executeAndReturnError(&error)
+            if let error {
+                NSLog("[Auto2FA] openTerminal AppleScript error: \(error)")
+            }
+        }
     }
 
     private func color(for state: SSHHost.DisplayState) -> Color {

@@ -13,6 +13,7 @@ struct Auto2FAApp: App {
             ContentView()
                 .environmentObject(appState)
                 .onAppear {
+                    SingleInstance.enforceOrExit()
                     installMenuBarOnce()
                     installSleepWakeMonitor()
                 }

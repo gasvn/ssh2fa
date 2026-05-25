@@ -21,6 +21,8 @@ struct AddHostSheet: View {
     @State private var autoConnect = true
     @State private var showingPassword = false
     @State private var submitting = false
+    @State private var testing = false
+    @State private var testResult: (ok: Bool, message: String)? = nil
     @State private var error: String?
     @FocusState private var focused: Field?
 
@@ -112,14 +114,19 @@ struct AddHostSheet: View {
     private var stepConfirm: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label {
-                Text("Host: ").foregroundStyle(.secondary) +
-                Text("\(user)@\(hostname)").fontDesign(.monospaced)
-            } icon: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                HStack(spacing: 0) {
+                    Text("Host: ").foregroundStyle(.secondary)
+                    Text("\(user)@\(hostname)").fontDesign(.monospaced)
+                }
+            } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
             Label {
-                Text("Password: ").foregroundStyle(.secondary) +
-                Text(String(repeating: "•", count: min(password.count, 12))).fontDesign(.monospaced)
-            } icon: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                HStack(spacing: 0) {
+                    Text("Password: ").foregroundStyle(.secondary)
+                    Text(String(repeating: "•", count: min(password.count, 12)))
+                        .fontDesign(.monospaced)
+                }
+            } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
             let otpOk = otpauthURL.lowercased().contains("secret=")
             Label {
@@ -133,9 +140,39 @@ struct AddHostSheet: View {
                     .foregroundColor(otpOk ? .green : .red)
             }
 
+            Divider().padding(.vertical, 4)
+
+            // Test-login block — refuses to enable Add Host until we've
+            // confirmed creds work. This prevents the "17 failed logins
+            // rate-limit" cascade that happened when we wrote bad creds
+            // and a manager started retrying.
+            HStack {
+                if testing {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text("Testing login…").foregroundStyle(.secondary)
+                } else if let r = testResult {
+                    Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon")
+                        .foregroundColor(r.ok ? .green : .red)
+                    Text(r.message)
+                        .foregroundColor(r.ok ? .primary : .red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                    Text("Click \"Test login\" to verify before saving.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await testLogin() }
+                } label: {
+                    Text(testing ? "Testing…" : "Test login")
+                }
+                .disabled(testing)
+            }
+            .padding(.vertical, 4)
+
             Toggle("Connect automatically on startup", isOn: $autoConnect)
                 .toggleStyle(.checkbox)
-                .padding(.top, 6)
             Text("With auto-connect on, the daemon attempts login for this host every time it starts (or every time the app launches it).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -162,7 +199,8 @@ struct AddHostSheet: View {
                 if step == 0 { advance() } else { submit() }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(submitting)
+            // On step 1, only allow Add Host after a successful test login.
+            .disabled(submitting || (step == 1 && (testResult?.ok != true)))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -187,6 +225,24 @@ struct AddHostSheet: View {
         }
         error = nil
         step = 1
+    }
+
+    private func testLogin() async {
+        guard !testing else { return }
+        testing = true
+        testResult = nil
+        error = nil
+        do {
+            let (ok, reason) = try await appState.client.testHostCredentials(
+                host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
+                password: password,
+                otpauthURL: otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            testResult = (ok, ok ? "Login succeeded — you can save now." : reason)
+        } catch {
+            testResult = (false, "Test couldn't run: \(error.localizedDescription)")
+        }
+        testing = false
     }
 
     private func submit() {

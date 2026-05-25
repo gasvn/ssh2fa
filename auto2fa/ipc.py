@@ -36,6 +36,7 @@ class Method:
     SUBSCRIBE_EVENTS = "subscribe_events"
     WAKE_RECOVER = "wake_recover"
     HOST_ADD = "host_add"
+    HOST_TEST_CREDENTIALS = "host_test_credentials"
     PORT_SUGGEST = "port_suggest"
     LOG_TAIL = "log_tail"
 

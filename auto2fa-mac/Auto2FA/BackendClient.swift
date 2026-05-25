@@ -49,11 +49,21 @@ actor BackendClient {
     nonisolated let events: AsyncStream<DaemonEvent>
     private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
 
+    // True/false connection state pushes — AppState observes this to
+    // re-bootstrap on reconnect and surface error banners on disconnect.
+    nonisolated let connectionStates: AsyncStream<Bool>
+    private let connectionStateCont: AsyncStream<Bool>.Continuation
+
     init() {
         var cont: AsyncStream<DaemonEvent>.Continuation!
         let stream = AsyncStream<DaemonEvent> { cont = $0 }
         self.events = stream
         self.eventContinuation = cont
+
+        var stateCont: AsyncStream<Bool>.Continuation!
+        let stateStream = AsyncStream<Bool> { stateCont = $0 }
+        self.connectionStates = stateStream
+        self.connectionStateCont = stateCont
     }
 
     // MARK: - Connect
@@ -186,6 +196,29 @@ actor BackendClient {
             c.resume(throwing: ClientError.notConnected)
         }
         pendingRequests.removeAll()
+        // Notify subscribers we're down. AppState reacts by starting a
+        // bounded reconnect-retry loop (with backoff) until ensureConnected
+        // succeeds.
+        connectionStateCont.yield(false)
+    }
+
+    /// Best-effort retry: tries connect() up to ~2 minutes with backoff.
+    /// Yields true on success. Called by AppState on disconnect events.
+    func reconnectWithBackoff() async {
+        // 1, 2, 4, 8, 16, 30, 30, 30 …
+        let delays: [UInt64] = [1, 2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30]
+        for delay in delays {
+            // Bail if user cancelled the bootstrap task entirely.
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            do {
+                try await connect()
+                connectionStateCont.yield(true)
+                return
+            } catch {
+                // keep trying
+            }
+        }
     }
 
     private func dispatch(line: Data) {
@@ -296,6 +329,21 @@ actor BackendClient {
         let data = try await sendRaw(method: "port_suggest", params: ["base": base])
         struct R: Decodable { let port: Int }
         return try JSONDecoder().decode(R.self, from: data).port
+    }
+
+    /// Verify the supplied credentials against the real server WITHOUT
+    /// persisting them. Returns (ok, reason). Use this from the Add Host
+    /// wizard to refuse a save when password/OTP are wrong — otherwise the
+    /// daemon's auto-retry loop produces dozens of failed-login attempts
+    /// which trigger server-side rate-limiting.
+    func testHostCredentials(host: String, password: String,
+                             otpauthURL: String) async throws -> (Bool, String) {
+        let data = try await sendRaw(method: "host_test_credentials", params: [
+            "host": host, "password": password, "otpauth_url": otpauthURL,
+        ])
+        struct R: Decodable { let ok: Bool; let reason: String }
+        let r = try JSONDecoder().decode(R.self, from: data)
+        return (r.ok, r.reason)
     }
 
     func addHost(host: String, password: String, otpauthURL: String,

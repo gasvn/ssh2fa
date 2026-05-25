@@ -50,9 +50,6 @@ final class AppState: ObservableObject {
             try await client.connect()
             connectionError = nil
             NSLog("[Auto2FA] bootstrap: connected OK")
-            // Confirm to the user that the notch is alive — this also serves
-            // as a "hello world" so they can see Dynamic Notch working
-            // without first having to start a tunnel.
             notchPresenter.show(
                 systemImage: "bolt.fill",
                 title: "Auto2FA ready",
@@ -68,16 +65,93 @@ final class AppState: ObservableObject {
         await reloadAll()
         NSLog("[Auto2FA] bootstrap: loaded \(hosts.count) hosts, \(tunnels.count) tunnels")
         startEventTask()
+        startConnectionWatcher()
         startPollFallback()
+    }
+
+    /// Listen for daemon disconnect / reconnect cycles. On disconnect we
+    /// surface a banner + show a notch toast and kick off a backoff retry.
+    /// On reconnect we clear the banner and re-bootstrap state (since the
+    /// daemon may have restarted with new state).
+    private var connWatcherTask: Task<Void, Never>?
+    private func startConnectionWatcher() {
+        connWatcherTask?.cancel()
+        let stream = client.connectionStates
+        connWatcherTask = Task { [weak self] in
+            for await connected in stream {
+                guard let self else { return }
+                if connected {
+                    await MainActor.run {
+                        self.connectionError = nil
+                        self.notchPresenter.show(
+                            systemImage: "bolt.fill",
+                            title: "Daemon reconnected",
+                            description: "state restored",
+                            tint: .green
+                        )
+                    }
+                    await self.reloadAll()
+                    self.startEventTask()  // re-subscribe events on the new socket
+                } else {
+                    await MainActor.run {
+                        self.connectionError = "Daemon disconnected — retrying…"
+                        self.notchPresenter.show(
+                            systemImage: "wifi.slash",
+                            title: "Daemon lost",
+                            description: "auto-reconnecting…",
+                            tint: .orange
+                        )
+                    }
+                    await self.client.reconnectWithBackoff()
+                }
+            }
+        }
     }
 
     func reloadAll() async {
         do {
             self.hosts = try await client.listHosts()
             self.tunnels = try await client.listTunnels()
+            updateDockBadge()
         } catch {
             connectionError = error.localizedDescription
         }
+    }
+
+    func reloadHostsOnly() async {
+        do {
+            self.hosts = try await client.listHosts()
+            updateDockBadge()
+        } catch { connectionError = error.localizedDescription }
+    }
+
+    func reloadTunnelsOnly() async {
+        do {
+            self.tunnels = try await client.listTunnels()
+            updateDockBadge()
+        } catch { connectionError = error.localizedDescription }
+    }
+
+    /// Set the Dock-tile badge to the # of alive tunnels (or to the # of
+    /// failed things prefixed with "!"). Fires whenever state reloads.
+    private func updateDockBadge() {
+        var alive = 0
+        var failed = 0
+        for t in tunnels {
+            switch t.displayState {
+            case .alive: alive += 1
+            case .failed, .portBusy: failed += 1
+            default: break
+            }
+        }
+        for h in hosts where h.displayState == .failed {
+            failed += 1
+        }
+        let label: String?
+        if failed > 0 { label = "!\(failed)" }
+        else if alive > 0 { label = "\(alive)" }
+        else { label = nil }
+        NSApp.dockTile.badgeLabel = label
     }
 
     private func startEventTask() {
@@ -104,19 +178,28 @@ final class AppState: ObservableObject {
     private func apply(event: DaemonEvent) async {
         switch event {
         case .hostChanged:
-            await reloadAll()
+            // Daemon's host event doesn't carry the full snapshot, so we
+            // refetch hosts only (NOT tunnels — that used to thrash the UI
+            // on every host heartbeat tick).
+            await reloadHostsOnly()
         case .tunnelChanged(let name, let status, let lastMsg, _):
-            // Snapshot previous state BEFORE reloading so we can detect
-            // idle/starting → alive transitions even though reloadAll
-            // mutates self.tunnels.
             let prev = tunnels.first(where: { $0.name == name })
             let wasAlive: Bool = (prev?.displayState == Tunnel.DisplayState.alive)
-            await reloadAll()
+            // Only reload tunnels (not hosts) on a tunnel event.
+            await reloadTunnelsOnly()
             maybeShowNotch(name: name, status: status, lastMsg: lastMsg)
             if status == "alive" && !wasAlive {
                 if let t = tunnels.first(where: { $0.name == name }) {
                     maybeAutoOpenBrowser(for: t)
                 }
+            }
+            // Hand-off: post a macOS notification on hard failures so the
+            // user knows even if the app/notch is occluded.
+            if status == "failed" || status == "stale" {
+                MacNotifications.post(
+                    title: "Tunnel \(name) \(status)",
+                    body: lastMsg.isEmpty ? "see app for details" : lastMsg
+                )
             }
         case .notification(let severity, let title, let message):
             notchPresenter.show(

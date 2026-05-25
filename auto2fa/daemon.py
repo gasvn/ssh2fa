@@ -32,6 +32,30 @@ from .tunnels import (
 )
 from . import ipc
 
+def _rotate_log_if_huge(path: str, max_bytes: int = 10 * 1024 * 1024) -> None:
+    """If the daemon log is larger than max_bytes, gzip it aside with a
+    timestamp suffix and start fresh. Called once at daemon startup —
+    keeps logs from accumulating to 80+ MB (which we've seen in the wild)
+    without any third-party logging deps."""
+    try:
+        if not os.path.exists(path):
+            return
+        if os.path.getsize(path) < max_bytes:
+            return
+        import gzip
+        import shutil as _shutil
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        rotated = f"{path}.{stamp}.gz"
+        with open(path, "rb") as src, gzip.open(rotated, "wb") as dst:
+            _shutil.copyfileobj(src, dst)
+        os.truncate(path, 0)
+    except Exception as e:  # never let logging-init failure crash daemon
+        print(f"[daemon] log rotation failed (continuing): {e}")
+
+
+_rotate_log_if_huge("/tmp/auto2fa_daemon.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(threadName)s - %(levelname)s - %(message)s",
@@ -330,6 +354,25 @@ class Auto2FADaemon:
                 free = await asyncio.to_thread(self._find_free_port, base, taken)
                 return ipc.make_response(req_id, {"port": free})
 
+            if method == ipc.Method.HOST_TEST_CREDENTIALS:
+                # Dry-run a single ssh login with the supplied creds. Used by
+                # the Add Host wizard to refuse a save when password/OTP are
+                # wrong — which is what produced the 17 failed-login rate-
+                # limit incident before. Returns {"ok": bool, "reason": str}.
+                host = params["host"]
+                password = params.get("password", "")
+                otpauth_url = params.get("otpauth_url", "")
+                try:
+                    secret = extract_secret_from_url(otpauth_url)
+                except Exception as e:
+                    return ipc.make_response(req_id, {
+                        "ok": False, "reason": f"invalid otpauth URL: {e}"
+                    })
+                ok, reason = await asyncio.to_thread(
+                    self._test_credentials, host, password, secret
+                )
+                return ipc.make_response(req_id, {"ok": ok, "reason": reason})
+
             if method == ipc.Method.HOST_ADD:
                 # Add a host to passwords.json AND start a manager for it.
                 host = params["host"]
@@ -446,6 +489,82 @@ class Auto2FADaemon:
                 except Exception: pass
         return base
 
+    def _test_credentials(self, host: str, password: str, secret: str) -> tuple[bool, str]:
+        """Run a one-shot, isolated SSH login attempt. Returns (ok, reason).
+        On failure the reason is a short human string ("Wrong password",
+        "OTP rejected", "Host unreachable"). The point is to fail FAST
+        without (a) writing to passwords.json, (b) spawning a long-lived
+        manager, or (c) producing the cascade of retried failed-login
+        attempts that triggers server-side rate-limiting."""
+        import pexpect
+        import tempfile
+        from .backend import generate_passcode_from_secret
+        log_path = tempfile.mktemp(prefix=f"auto2fa-testlogin-{host}-", suffix=".log")
+        argv = [
+            "-v", "-E", log_path,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "PreferredAuthentications=keyboard-interactive,password",
+            host,
+            "echo __auto2fa_login_ok__",  # one-shot remote command
+        ]
+        try:
+            child = pexpect.spawn("ssh", argv, encoding="utf-8", timeout=30)
+        except Exception as e:
+            return (False, f"Could not spawn ssh: {e}")
+
+        try:
+            # Walk the login dialog. Same patterns the real start_master uses
+            # but condensed because we only need one login here.
+            password_sent = False
+            otp_sent = False
+            for _ in range(6):  # bounded loop to avoid infinite expect
+                idx = child.expect([
+                    r"[Pp]assword:",              # 0
+                    r"[Vv]erification[Cc]ode:",   # 1
+                    r"[Tt]oken:",                 # 2
+                    r"Verification code:",        # 3
+                    r"__auto2fa_login_ok__",      # 4 = success!
+                    r"Permission denied",         # 5
+                    r"Connection refused",        # 6
+                    r"No route to host",          # 7
+                    pexpect.TIMEOUT,              # 8
+                    pexpect.EOF,                  # 9
+                ], timeout=15)
+                if idx == 4:
+                    return (True, "")
+                if idx == 5:
+                    return (False, "Permission denied — wrong password or OTP")
+                if idx == 6:
+                    return (False, "Connection refused — sshd down or wrong port")
+                if idx == 7:
+                    return (False, "No route to host — wrong hostname or network")
+                if idx in (8, 9):
+                    return (False, "Timeout / EOF before any recognizable prompt — host unreachable?")
+                if idx == 0:  # Password
+                    if password_sent:
+                        return (False, "Server looped back to Password — wrong password or OTP")
+                    child.sendline(password)
+                    password_sent = True
+                    continue
+                if idx in (1, 2, 3):
+                    if otp_sent:
+                        return (False, "Server asked for OTP twice — rejected")
+                    child.sendline(generate_passcode_from_secret(secret))
+                    otp_sent = True
+                    continue
+            return (False, "Login dialog stuck after 6 turns")
+        finally:
+            try:
+                child.close(force=True)
+            except Exception:
+                pass
+            try:
+                os.remove(log_path)
+            except Exception:
+                pass
+
     def _add_host_persistent(self, host: str, password: str,
                              otpauth_url: str, auto_connect: bool,
                              secret: str) -> bool:
@@ -490,30 +609,50 @@ class Auto2FADaemon:
     # ---- Wake recovery (called by clients from a Mac wake notification) --
 
     def _wake_recover(self) -> list[str]:
-        """Force-rebuild every enabled host's master pool and restart any
-        tunnel that was previously alive/starting/stale. Returns the names of
-        tunnels we scheduled for restart."""
+        """Restore connectivity after Mac wake. Smart variant: probe each
+        active master with a fast (2s) remote round-trip. ONLY masters that
+        fail the probe get rebuilt — masters that survived sleep (short nap,
+        TCP keepalive saved them) keep their user sessions intact. Tunnels
+        that were alive/starting/stale get restarted regardless because the
+        ssh -L child itself usually dies on suspend even when masters
+        survive."""
         previously_active = [
             name for name, ts in self.tunnel_mgr.tunnels.items()
             if ts.status in ("alive", "starting", "stale")
         ]
-        logger.info(f"wake_recover: rebuilding masters + restarting {len(previously_active)} tunnels")
+        logger.info(
+            f"wake_recover: probing {len(self.managers)} masters, "
+            f"will restart {len(previously_active)} tunnels"
+        )
 
-        # First stop the tunnels — their TCP is dead, no point keeping the
-        # pexpect child wired to a closed connection.
+        # Stop tunnels first — their ssh -L process is wedged on dead TCP.
         for name in previously_active:
             try:
                 self.tunnel_mgr.stop(name)
             except Exception:
                 logger.exception(f"wake_recover stop({name}) failed")
 
-        # Rebuild masters of every enabled host.
+        # Probe each enabled master; rebuild only the dead ones.
+        import subprocess as _sp
         for mgr in self.managers:
-            if mgr.active:
-                try:
-                    mgr.force_master_rebuild()
-                except Exception:
-                    logger.exception(f"wake_recover rebuild on {mgr.host} failed")
+            if not mgr.active:
+                continue
+            path = mgr.pool_control_paths[mgr.active_index]
+            try:
+                res = _sp.run(
+                    ["ssh", "-o", f"ControlPath={path}", mgr.host, "true"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=2
+                )
+                if res.returncode == 0:
+                    logger.info(f"wake_recover: {mgr.host} survived sleep, keeping master")
+                    continue
+            except Exception:
+                pass
+            try:
+                logger.info(f"wake_recover: {mgr.host} master dead, rebuilding")
+                mgr.force_master_rebuild()
+            except Exception:
+                logger.exception(f"wake_recover rebuild on {mgr.host} failed")
 
         # Schedule a delayed restart on the asyncio loop — masters need
         # ~15-30s to log back in.
