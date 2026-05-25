@@ -177,12 +177,18 @@ class TestCheckAndRotate(unittest.TestCase):
         self.mgr.demote_master.assert_not_called()
         self.mgr.update_symlink.assert_not_called()
 
-    def test_timeout_demotes_and_stamps_cooldown(self):
-        import subprocess as real_subprocess  # for the exception type
+    def test_timeout_does_NOT_demote(self):
+        """Timeout means the master is busy (often a user-owned TUI session
+        multiplexing through it). Killing it would terminate the user's
+        session — only stamp cooldown and rotate symlink to the spare."""
+        import subprocess as real_subprocess
+        self.mgr.pool_status = {0: "Ready", 1: "Ready"}
         self._set_run(side_effect=real_subprocess.TimeoutExpired(cmd="ssh", timeout=3))
         self.mgr.check_and_rotate()
-        self.assertGreater(self.mgr.last_remote_failure_ts, 0.0)
-        self.mgr.demote_master.assert_called_once_with(0)
+        self.assertGreater(self.mgr.last_remote_failure_ts, 0.0,
+                           "cooldown must be stamped on timeout")
+        self.mgr.demote_master.assert_not_called()
+        self.mgr.update_symlink.assert_called_once_with(1)
 
     def test_maxsessions_full_only_rotates_symlink(self):
         """'administratively prohibited' = server-side MaxSessions cap, master
@@ -192,11 +198,12 @@ class TestCheckAndRotate(unittest.TestCase):
                       stderr="channel 5: open failed: administratively prohibited")
         self.mgr.check_and_rotate()
         self.mgr.demote_master.assert_not_called()
-        self.assertEqual(self.mgr.last_remote_failure_ts, 0.0)
         self.mgr.update_symlink.assert_called_once_with(1)
 
-    def test_broken_connection_demotes_and_failovers(self):
-        """Non-full failure (broken pipe, refused, etc.) demotes AND failovers."""
+    def test_tcp_dead_demotes_and_failovers(self):
+        """ONLY hard TCP-dead signals (Connection refused, Broken pipe, etc.)
+        warrant demoting — by then the user's session is already dead at the
+        TCP layer, so demote does no additional damage."""
         self.mgr.pool_status = {0: "Ready", 1: "Ready"}
         self._set_run(returncode=255,
                       stderr="ssh: connect to host failed: Connection refused")
@@ -205,14 +212,25 @@ class TestCheckAndRotate(unittest.TestCase):
         self.assertGreater(self.mgr.last_remote_failure_ts, 0.0)
         self.mgr.update_symlink.assert_called_once_with(1)
 
-    def test_broken_connection_no_other_ready_does_not_rotate(self):
-        """If the spare slot isn't Ready, we still demote but don't update_symlink
+    def test_tcp_dead_no_other_ready_demotes_but_no_rotate(self):
+        """If spare isn't Ready, still demote (TCP is dead) but don't symlink
         to a dead target."""
         self.mgr.pool_status = {0: "Ready", 1: "Failed"}
         self._set_run(returncode=255, stderr="broken pipe")
         self.mgr.check_and_rotate()
         self.mgr.demote_master.assert_called_once_with(0)
         self.mgr.update_symlink.assert_not_called()
+
+    def test_generic_nonzero_does_NOT_demote(self):
+        """Unrecognized non-zero returns (transient hiccups, weird server
+        config) should stamp cooldown and rotate but NEVER kill — could be
+        anything, the master is probably still serving user sessions."""
+        self.mgr.pool_status = {0: "Ready", 1: "Ready"}
+        self._set_run(returncode=1, stderr="some weird server message")
+        self.mgr.check_and_rotate()
+        self.mgr.demote_master.assert_not_called()
+        self.assertGreater(self.mgr.last_remote_failure_ts, 0.0)
+        self.mgr.update_symlink.assert_called_once_with(1)
 
 
 if __name__ == "__main__":
