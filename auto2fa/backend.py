@@ -533,19 +533,13 @@ class SSHHostManager(threading.Thread):
         self.start_master(index)
 
     def check_and_rotate(self):
-        """Probe the active master with a real remote round-trip and react.
-
-        CRITICAL: this master is shared with the user's own interactive
-        sessions (that's the whole point of ControlMaster). Demoting it
-        sends `ssh -O exit` which tears down EVERY multiplexed session,
-        including the user's TUI / shell / tmux. So we only demote on
-        UNAMBIGUOUS TCP-dead signals (Connection refused/reset/closed,
-        Broken pipe, etc.) — in those cases the user's session is already
-        broken at the TCP layer anyway. For ambiguous failures (timeout,
-        MaxSessions exhaustion, generic non-zero exit) we just rotate the
-        symlink to the spare slot AND stamp the cooldown so the tunnel
-        layer won't pick us, but leave the master alive so the user's
-        session can keep going."""
+        """Probe the active master with a real remote round-trip. If it fails,
+        classify the failure: 'MaxSessions full' (master is fine, just busy)
+        vs. 'actually broken' (remote TCP dead / auth gone / etc.). For the
+        former, rotate symlink to the other pool slot. For the latter, also
+        demote the failed master so the heartbeat loop rebuilds it, AND stamp
+        the host-wide remote-failure cooldown so the tunnel layer won't pick
+        us as a jump while we're in the middle of recovery."""
         active = self.active_index
         path = self.pool_control_paths[active]
 
@@ -553,59 +547,52 @@ class SSHHostManager(threading.Thread):
             cmd = ["ssh", "-o", f"ControlPath={path}", self.host, "echo ok"]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
         except subprocess.TimeoutExpired:
-            # Almost always a busy master (user has a TUI / tmux multiplexed
-            # through this master and it's saturating I/O), not a dead TCP.
-            # Stamp cooldown and rotate, but DO NOT kill — that would close
-            # the user's session.
-            logger.info(f"[{self.host}] Probe timed out — likely busy. Rotating only.")
+            # Timeout: ambiguous. Could be MaxSessions full (master is fine)
+            # OR could be a wedged/dead TCP. Be conservative — demote the
+            # active master so it gets rebuilt. The heartbeat loop will spawn
+            # a fresh one within ~3s; in the meantime is_master_ready returns
+            # False for the cooldown window.
+            logger.warning(f"[{self.host}] Probe timed out — assuming dead, demoting #{active}")
             self.mark_remote_failure()
-            self._rotate_to_spare(active, label="busy")
+            self.demote_master(active)
             return
         except Exception as e:
-            logger.warning(f"[{self.host}] Probe errored ({e}) — cooldown only.")
+            logger.warning(f"[{self.host}] Probe errored ({e}) — demoting #{active}")
             self.mark_remote_failure()
+            self.demote_master(active)
             return
 
         if res.returncode == 0:
+            # Real remote round-trip succeeded → clear any stale cooldown.
             self.mark_remote_ok()
             return
 
+        # Non-zero return code. Inspect stderr to distinguish "full" from "dead".
         stderr = (res.stderr or "").lower()
-        # Hard TCP-dead signals — the kernel told us the underlying TCP is
-        # gone. Any user session on this master is already dead, so demoting
-        # to rebuild does no additional damage.
-        tcp_dead = any(s in stderr for s in (
-            "broken pipe",
-            "connection reset by peer",
-            "connection closed by remote",
-            "connection refused",
-            "no route to host",
-        ))
-
-        if tcp_dead:
-            logger.warning(f"[{self.host}] Master #{active} TCP dead "
-                           f"({stderr.strip()[:80]}). Demoting + failover.")
-            self.mark_remote_failure()
-            self.demote_master(active)
-            self._rotate_to_spare(active, label="failover")
+        full_signal = "administratively prohibited" in stderr \
+                      or "open failed: connect failed" in stderr \
+                      or "channel" in stderr and "open failed" in stderr
+        if full_signal:
+            # MaxSessions exhaustion — master is alive, just saturated. Rotate
+            # symlink but keep the old master around to drain.
+            logger.info(f"[{self.host}] Master #{active} full. Rotating symlink only.")
+            other = (active + 1) % POOL_SIZE
+            if self.pool_status.get(other) == "Ready":
+                self.update_symlink(other)
+                self.status = f"[green]Pool Active ({other})[/green]"
+                self.last_msg = f"Rotated {active}->{other}"
             return
 
-        # Anything else — MaxSessions full, transient server hiccup, etc.
-        # Don't kill: rotate symlink + stamp short cooldown.
-        logger.info(f"[{self.host}] Master #{active} probe non-zero "
-                    f"({stderr.strip()[:80]}). Rotating only.")
+        # Looks like an actually-broken connection: demote and rebuild.
+        logger.warning(f"[{self.host}] Master #{active} broken ({stderr.strip()[:80]}). "
+                       f"Demoting + rebuilding.")
         self.mark_remote_failure()
-        self._rotate_to_spare(active, label="rotated")
-
-    def _rotate_to_spare(self, active, label):
-        """Switch the symlink to the spare pool slot if it's Ready. No-op if
-        the spare is also down. Keeps the active master alive (so any
-        in-flight user sessions on it can drain)."""
+        self.demote_master(active)
         other = (active + 1) % POOL_SIZE
         if self.pool_status.get(other) == "Ready":
             self.update_symlink(other)
-            self.status = f"[green]Pool Active ({other})[/green]"
-            self.last_msg = f"{label} {active}->{other}"
+            self.status = f"[yellow]Failover -> {other}[/yellow]"
+            self.last_msg = f"Failover {active}->{other}"
 
     def check_ssh_socket(self):
         return True # Handled by monitor loop
