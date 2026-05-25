@@ -322,12 +322,17 @@ class SSHHostManager(threading.Thread):
             if should_send_otp:
                 fresh_otp = generate_passcode_from_secret(self.otp_secret)
                 child.sendline(fresh_otp)
+                # Timeout 60s (was 20s): Cannon's MOTD is ~50 lines + slurm
+                # stats table, and the server slows down for a few minutes
+                # after a burst of failed logins. 20s timed out mid-banner
+                # and we missed the trailing $ prompt, falsely reporting
+                # "Master 0 Failed" even though ssh had actually logged in.
                 idx = child.expect([
                     r"\$", r"#",                  # 0, 1
                     r"Login incorrect", r"Permission denied", # 2, 3
                     r"[Pp]assword:",             # 4 (Loop back / Failure)
                     pexpect.TIMEOUT, pexpect.EOF  # 5, 6
-                ], timeout=20)
+                ], timeout=60)
             
             # Check Success (Shell prompt)
             is_success = False
