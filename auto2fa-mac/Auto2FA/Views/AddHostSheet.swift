@@ -100,10 +100,21 @@ struct AddHostSheet: View {
                     TextField("otpauth://totp/SiteName:user?secret=...",
                               text: $otpauthURL)
                         .focused($focused, equals: .otpauth)
-                    Text("Paste the full URL from your 2FA setup page. We extract the secret automatically — never store the URL on the server.")
+                    Text("Paste the full URL from your 2FA setup page. We extract the secret automatically.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                   })
+
+            // Reassurance line — users care about where the password ends up.
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundColor(.green)
+                Text("Password and OTP secret are stored in your macOS Keychain. Never written to disk in plaintext.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 6)
             if let error {
                 Text(error).foregroundStyle(.red).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)

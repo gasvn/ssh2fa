@@ -31,6 +31,7 @@ from .tunnels import (
     expand_first_node,
 )
 from . import ipc
+from . import credentials
 
 def _rotate_log_if_huge(path: str, max_bytes: int = 10 * 1024 * 1024) -> None:
     """If the daemon log is larger than max_bytes, gzip it aside with a
@@ -95,11 +96,10 @@ def _tail_file(path: str, n: int) -> list[str]:
 
 
 def load_hosts() -> dict:
-    config_path = os.environ.get("SSH_CONFIG_PATH")
-    if not config_path:
-        raise RuntimeError("SSH_CONFIG_PATH not set")
-    with open(f"{config_path}/passwords.json") as f:
-        return json.load(f)
+    """Thin wrapper around credentials.load_config that exists for back-
+    compat with anything still importing daemon.load_hosts. The real
+    logic (Keychain fetch + auto-migrate) lives in credentials.py."""
+    return credentials.load_config()
 
 
 class Auto2FADaemon:
@@ -672,34 +672,18 @@ class Auto2FADaemon:
     def _add_host_persistent(self, host: str, password: str,
                              otpauth_url: str, auto_connect: bool,
                              secret: str) -> bool:
-        """Append the new host to passwords.json and spin up a manager.
-        Returns False if a host with that name already exists."""
+        """Write password+otpauth to the macOS Keychain, append metadata
+        to passwords.json, spin up a manager. Returns False if a host
+        with that name already exists."""
         if host in self.host_map:
             return False
-        config_path = os.environ.get("SSH_CONFIG_PATH")
-        if not config_path:
-            raise RuntimeError("SSH_CONFIG_PATH not set")
-        pw_file = os.path.join(config_path, "passwords.json")
-        try:
-            with open(pw_file) as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            data = {}
-        if host in data:
+        # Refuse to clobber an existing JSON entry — that means user added
+        # the same host from two sides.
+        existing = credentials.load_config()
+        if host in existing:
             return False
-        data[host] = {
-            "password": password,
-            "otpauthUrl": otpauth_url,
-            "autoConnect": auto_connect,
-        }
-        # Atomic write: tmpfile + replace so an interrupted write doesn't
-        # corrupt the credentials file.
-        tmp = pw_file + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, pw_file)
+        credentials.set_credentials(host, password, otpauth_url)
+        credentials.save_host_metadata(host, auto_connect)
 
         mgr = SSHHostManager(host, password, secret)
         mgr.daemon = True
