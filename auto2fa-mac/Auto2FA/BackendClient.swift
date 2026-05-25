@@ -357,6 +357,40 @@ actor BackendClient {
         return try JSONDecoder().decode(SSHHost.self, from: data)
     }
 
+    /// Per-tunnel activity log (ring buffer, latest 200 events on daemon
+    /// side). Each event is {ts: Double (epoch s), msg: String}.
+    struct TunnelEvent: Codable, Identifiable, Hashable {
+        let ts: Double
+        let msg: String
+        var id: String { "\(ts)-\(msg)" }
+        var date: Date { Date(timeIntervalSince1970: ts) }
+    }
+    func tunnelEvents(_ name: String) async throws -> [TunnelEvent] {
+        let data = try await sendRaw(method: "tunnel_events", params: ["name": name])
+        struct R: Decodable { let events: [TunnelEvent] }
+        return try JSONDecoder().decode(R.self, from: data).events
+    }
+
+    /// Set / clear the post-connect shell command for a tunnel. Pass nil
+    /// or "" to clear.
+    func setTunnelPostConnect(_ name: String, cmd: String?) async throws {
+        var params: [String: Any] = ["name": name]
+        params["cmd"] = cmd as Any? ?? NSNull()
+        _ = try await sendRaw(method: "tunnel_set_post_connect", params: params)
+    }
+
+    /// Nuclear "reset everything" — stops every tunnel + rebuilds every
+    /// master. Returns counts so callers can toast a confirmation.
+    func resetAll() async throws -> (tunnelsStopped: Int, mastersRebuilt: Int) {
+        let data = try await sendRaw(method: "reset_all", params: [:])
+        struct R: Decodable {
+            let tunnels_stopped: Int
+            let masters_rebuilt: Int
+        }
+        let r = try JSONDecoder().decode(R.self, from: data)
+        return (r.tunnels_stopped, r.masters_rebuilt)
+    }
+
     func logTail(lines: Int = 200) async throws -> [String] {
         let data = try await sendRaw(method: "log_tail", params: ["lines": lines])
         struct R: Decodable { let lines: [String] }

@@ -15,7 +15,7 @@ import socket as _socket
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import re
@@ -68,6 +68,10 @@ class TunnelState:
     last_node: Optional[str]
     last_user: Optional[str]
     auto_start: bool
+    # Optional shell command to run when this tunnel transitions to "alive".
+    # Runs in /bin/sh -c. Environment includes AUTO2FA_TUNNEL_NAME,
+    # AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.
+    post_connect_cmd: Optional[str] = None
 
     # Runtime-only fields
     status: str = "idle"                   # idle | starting | alive | stale | port_busy | failed
@@ -76,6 +80,10 @@ class TunnelState:
     last_msg: str = "Ready"
     last_probe_ts: float = 0.0
     consecutive_squeue_misses: int = 0
+    # Ring buffer of human-readable activity events. Bounded so a long-
+    # running daemon doesn't accumulate megabytes of history per tunnel.
+    # Format: list of {"ts": epoch_seconds, "msg": str}.
+    events: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class NodeDiscovery:
@@ -135,7 +143,9 @@ class TunnelManager:
     existing SSHHostManager instances (provided as a dict)."""
 
     PERSISTED_FIELDS = ("local_port", "remote_port", "jump_candidates",
-                        "last_node", "last_user", "auto_start")
+                        "last_node", "last_user", "auto_start",
+                        "post_connect_cmd")
+    EVENT_BUFFER_LIMIT = 200
 
     def __init__(self, host_managers: Dict[str, object], config_path: str):
         self.host_managers = host_managers
@@ -378,6 +388,15 @@ class TunnelManager:
                 ts.status = "alive"
                 ts.last_msg = f"via {jump}"
                 ts.consecutive_squeue_misses = 0
+                self._record(ts, f"connected via {jump} → {ts.last_node}:{ts.remote_port}")
+                # Run the per-tunnel post-connect hook if any. Threaded so a
+                # slow hook can't block us — we capture stderr to the event
+                # log so the user can debug from the popover.
+                if ts.post_connect_cmd:
+                    threading.Thread(
+                        target=self._run_post_connect, args=(name,),
+                        daemon=True
+                    ).start()
             else:
                 try:
                     child.terminate(force=True)
@@ -423,6 +442,48 @@ class TunnelManager:
         if "bind:" in text or "forward failed" in text:
             return "remote bind failed"
         return "ssh failed"
+
+    def _record(self, ts: TunnelState, msg: str) -> None:
+        """Append a timestamped event to the per-tunnel ring buffer.
+        Caller already holds the tunnel lock (or doesn't need to —
+        appending to a list is GIL-protected enough for our needs)."""
+        ts.events.append({"ts": time.time(), "msg": msg})
+        if len(ts.events) > self.EVENT_BUFFER_LIMIT:
+            del ts.events[: len(ts.events) - self.EVENT_BUFFER_LIMIT]
+
+    def _run_post_connect(self, name: str) -> None:
+        """Run the user-supplied post-connect shell command. We deliberately
+        DON'T do any sandboxing here — the user supplied the command, it
+        runs with the daemon's privileges. We do capture stdout+stderr to
+        the event log so they can see what happened."""
+        ts = self.tunnels.get(name)
+        if ts is None or not ts.post_connect_cmd:
+            return
+        env = os.environ.copy()
+        env.update({
+            "AUTO2FA_TUNNEL_NAME": ts.name,
+            "AUTO2FA_LOCAL_PORT": str(ts.local_port),
+            "AUTO2FA_NODE": ts.last_node or "",
+            "AUTO2FA_JUMP": ts.active_jump or "",
+            "AUTO2FA_URL": f"http://localhost:{ts.local_port}",
+        })
+        self._record(ts, f"post_connect: running `{ts.post_connect_cmd[:60]}`")
+        try:
+            r = subprocess.run(
+                ["/bin/sh", "-c", ts.post_connect_cmd],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            out = (r.stdout + r.stderr).strip()
+            if r.returncode == 0:
+                tail = out[:120] if out else "ok"
+                self._record(ts, f"post_connect: exit 0  {tail}")
+            else:
+                tail = out[:120] if out else "(no output)"
+                self._record(ts, f"post_connect: exit {r.returncode}  {tail}")
+        except subprocess.TimeoutExpired:
+            self._record(ts, "post_connect: TIMEOUT after 30s")
+        except Exception as e:
+            self._record(ts, f"post_connect: error {e}")
 
     def stop(self, name: str) -> None:
         """Terminate the tunnel's child process and mark idle.

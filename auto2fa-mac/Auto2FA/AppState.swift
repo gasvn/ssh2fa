@@ -364,6 +364,26 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    func setPostConnect(for tunnel: Tunnel, cmd: String?) async {
+        do { try await client.setTunnelPostConnect(tunnel.name, cmd: cmd) }
+        catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
+    /// Nuclear reset — stop everything, rebuild every master. Use sparingly.
+    func resetAll() async {
+        do {
+            let r = try await client.resetAll()
+            notchPresenter.show(
+                systemImage: "exclamationmark.arrow.circlepath",
+                title: "Reset complete",
+                description: "\(r.tunnelsStopped) tunnels stopped, \(r.mastersRebuilt) masters rebuilding",
+                tint: .orange
+            )
+        } catch { connectionError = error.localizedDescription }
+        await reloadAll()
+    }
+
     /// Add a new host via daemon. Returns nil on success, error message on failure.
     @discardableResult
     func addHost(host: String, password: String, otpauthURL: String,

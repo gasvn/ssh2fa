@@ -173,6 +173,7 @@ class Auto2FADaemon:
             "last_node": ts.last_node,
             "last_user": ts.last_user,
             "auto_start": ts.auto_start,
+            "post_connect_cmd": ts.post_connect_cmd,
             "active_jump": ts.active_jump,
             "status": ts.status,
             "last_msg": ts.last_msg,
@@ -308,6 +309,34 @@ class Auto2FADaemon:
                         for j in jobs
                     ],
                 )
+
+            if method == ipc.Method.TUNNEL_EVENTS:
+                # Return the per-tunnel activity ring buffer for debugging.
+                name = params["name"]
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                return ipc.make_response(req_id, {"events": list(ts.events)})
+
+            if method == ipc.Method.TUNNEL_SET_POST_CONNECT:
+                # Set / clear the per-tunnel post-connect shell command.
+                # An empty string or null clears it. Persisted.
+                name = params["name"]
+                cmd = params.get("cmd")
+                if isinstance(cmd, str) and not cmd.strip():
+                    cmd = None
+                ts = self.tunnel_mgr.tunnels.get(name)
+                if ts is None:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
+                ts.post_connect_cmd = cmd
+                self.tunnel_mgr.save()
+                return ipc.make_response(req_id, self._tunnel_snapshot(name))
+
+            if method == ipc.Method.RESET_ALL:
+                # Nuclear option: stop every tunnel, force-rebuild every
+                # master. The user-visible escape hatch when things wedge.
+                affected = await asyncio.to_thread(self._reset_all)
+                return ipc.make_response(req_id, affected)
 
             if method == ipc.Method.TUNNEL_SET_JUMP_CANDIDATES:
                 # Set the per-tunnel jump-host whitelist. null/None means
@@ -607,6 +636,29 @@ class Auto2FADaemon:
         return True
 
     # ---- Wake recovery (called by clients from a Mac wake notification) --
+
+    def _reset_all(self) -> dict:
+        """User-triggered nuclear restart: stop every tunnel + force-
+        rebuild every enabled master. Returns counts so the UI can show
+        a small confirmation toast."""
+        previously_active = [
+            name for name, ts in self.tunnel_mgr.tunnels.items()
+            if ts.status in ("alive", "starting", "stale")
+        ]
+        for name in previously_active:
+            try:
+                self.tunnel_mgr.stop(name)
+            except Exception:
+                logger.exception(f"reset_all stop({name}) failed")
+        rebuilt = 0
+        for mgr in self.managers:
+            if mgr.active:
+                try:
+                    mgr.force_master_rebuild()
+                    rebuilt += 1
+                except Exception:
+                    logger.exception(f"reset_all rebuild on {mgr.host} failed")
+        return {"tunnels_stopped": len(previously_active), "masters_rebuilt": rebuilt}
 
     def _wake_recover(self) -> list[str]:
         """Restore connectivity after Mac wake. Smart variant: probe each

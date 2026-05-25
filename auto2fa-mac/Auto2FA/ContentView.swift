@@ -5,6 +5,7 @@ import SwiftUI
 /// `appState.activeSheet`.
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @State private var confirmingReset = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,10 +34,24 @@ struct ContentView: View {
                 } label: {
                     Label("New Tunnel", systemImage: "plus.circle.fill")
                 }
-                // ⌘N is wired on File → New Tunnel… (Auto2FAApp.commands)
-                // — keeping it off the toolbar to avoid duplicate shortcuts.
                 .help("Create a new tunnel (⌘N)")
+                Button {
+                    confirmingReset = true
+                } label: {
+                    Label("Reset", systemImage: "exclamationmark.arrow.circlepath")
+                }
+                .help("Stop every tunnel + rebuild every SSH master (use when things wedge)")
             }
+        }
+        .confirmationDialog("Reset everything?",
+                            isPresented: $confirmingReset,
+                            titleVisibility: .visible) {
+            Button("Reset", role: .destructive) {
+                Task { await appState.resetAll() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Stops every tunnel and rebuilds every active SSH master. Use this when tunnels are wedged in stale/failed state. Your interactive ssh sessions WILL be dropped.")
         }
         .overlay(alignment: .top) {
             if let err = appState.connectionError {

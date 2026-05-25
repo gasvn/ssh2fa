@@ -3,6 +3,7 @@ import SwiftUI
 struct TunnelsView: View {
     @EnvironmentObject var appState: AppState
     @State private var selection: Tunnel.ID?
+    @State private var detailsForTunnel: Tunnel?
 
     var body: some View {
         if appState.tunnels.isEmpty {
@@ -142,6 +143,12 @@ struct TunnelsView: View {
                         }
                         .help("Copy localhost:\(t.localPort)")
                         Button {
+                            detailsForTunnel = t
+                        } label: {
+                            Image(systemName: "info.circle")
+                        }
+                        .help("Activity log + post-connect command")
+                        Button {
                             appState.presentConfirmDelete(for: t)
                         } label: {
                             Image(systemName: "trash")
@@ -151,7 +158,11 @@ struct TunnelsView: View {
                     }
                     .buttonStyle(.borderless)
                 }
-                .width(min: 150, ideal: 170)
+                .width(min: 170, ideal: 190)
+            }
+            .sheet(item: $detailsForTunnel) { t in
+                TunnelDetailsPopover(tunnel: t)
+                    .environmentObject(appState)
             }
             .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
                 if let id = ids.first,

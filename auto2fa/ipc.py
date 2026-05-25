@@ -39,6 +39,9 @@ class Method:
     HOST_TEST_CREDENTIALS = "host_test_credentials"
     PORT_SUGGEST = "port_suggest"
     LOG_TAIL = "log_tail"
+    TUNNEL_EVENTS = "tunnel_events"
+    TUNNEL_SET_POST_CONNECT = "tunnel_set_post_connect"
+    RESET_ALL = "reset_all"
 
 
 class Event:

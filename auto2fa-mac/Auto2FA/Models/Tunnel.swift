@@ -9,6 +9,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let lastNode: String?
     let lastUser: String?
     let autoStart: Bool
+    let postConnectCmd: String?
     let activeJump: String?
     let status: String
     let lastMsg: String
@@ -24,6 +25,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case lastNode = "last_node"
         case lastUser = "last_user"
         case autoStart = "auto_start"
+        case postConnectCmd = "post_connect_cmd"
         case activeJump = "active_jump"
         case lastMsg = "last_msg"
     }
