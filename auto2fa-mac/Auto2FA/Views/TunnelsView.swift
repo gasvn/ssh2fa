@@ -70,15 +70,45 @@ struct TunnelsView: View {
                         }
                         .help(t.displayState == .alive ? "Stop" : "Start")
                         Button {
+                            appState.presentNodePicker(for: t)
+                        } label: {
+                            Image(systemName: "list.bullet.rectangle")
+                        }
+                        .help("Pick a node from squeue")
+                        Button {
                             copyURL(t.url)
                         } label: {
                             Image(systemName: "doc.on.doc")
                         }
                         .help("Copy localhost:\(t.localPort)")
+                        Button {
+                            appState.presentConfirmDelete(for: t)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .help("Delete tunnel")
                     }
                     .buttonStyle(.borderless)
                 }
-                .width(min: 60, ideal: 70)
+                .width(min: 120, ideal: 140)
+            }
+            .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
+                if let id = ids.first,
+                   let t = appState.tunnels.first(where: { $0.id == id }) {
+                    Button(t.displayState == .alive ? "Stop" : "Start") {
+                        Task { await appState.toggleTunnel(t) }
+                    }
+                    Button("Pick node…") {
+                        appState.presentNodePicker(for: t)
+                    }
+                    Button("Copy localhost:\(t.localPort)") {
+                        copyURL(t.url)
+                    }
+                    Divider()
+                    Button("Delete tunnel", role: .destructive) {
+                        appState.presentConfirmDelete(for: t)
+                    }
+                }
             }
         }
     }

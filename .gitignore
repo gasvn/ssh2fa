@@ -8,6 +8,13 @@ build/
 dist/
 *.egg-info/
 
+# Xcode-generated artifacts (build script regenerates from project.yml)
+auto2fa-mac/Auto2FA.xcodeproj/
+auto2fa-mac/Auto2FA.xcworkspace/
+auto2fa-mac/build/
+auto2fa-mac/DerivedData/
+*.xcuserstate
+
 # Virtual envs / packaging
 .env
 .venv

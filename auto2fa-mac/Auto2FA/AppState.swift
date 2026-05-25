@@ -6,14 +6,32 @@ import SwiftUI
 /// Owns one `BackendClient`. Periodically pulls full snapshots AND reacts to
 /// pushed events for instant updates. Falls back to polling if the daemon
 /// hasn't pushed an event in a while.
+/// Which modal sheet (if any) the main window is showing.
+enum ActiveSheet: Identifiable, Equatable {
+    case newTunnel
+    case nodePicker(tunnelName: String)
+    case customNode(tunnelName: String)
+    case confirmDelete(tunnelName: String)
+
+    var id: String {
+        switch self {
+        case .newTunnel: return "newTunnel"
+        case .nodePicker(let n): return "nodePicker:\(n)"
+        case .customNode(let n): return "customNode:\(n)"
+        case .confirmDelete(let n): return "confirmDelete:\(n)"
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var hosts: [SSHHost] = []
     @Published var tunnels: [Tunnel] = []
     @Published var connectionError: String?
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
+    @Published var activeSheet: ActiveSheet?
 
-    private let client = BackendClient()
+    let client = BackendClient()
     private var eventTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
@@ -128,5 +146,38 @@ final class AppState: ObservableObject {
         do { try await client.removeTunnel(tunnel.name) }
         catch { connectionError = error.localizedDescription }
         await reloadAll()
+    }
+
+    // MARK: - Sheet helpers
+
+    func presentNewTunnel() { activeSheet = .newTunnel }
+    func presentNodePicker(for tunnel: Tunnel) { activeSheet = .nodePicker(tunnelName: tunnel.name) }
+    func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
+    func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
+    func dismissSheet() { activeSheet = nil }
+
+    /// Create a tunnel, dismiss the sheet on success, surface the error if not.
+    func createTunnel(name: String, localPort: Int) async -> Bool {
+        do {
+            _ = try await client.addTunnel(name: name, localPort: localPort)
+            dismissSheet()
+            await reloadAll()
+            return true
+        } catch {
+            connectionError = (error as? BackendClient.ClientError)?.errorDescription
+                           ?? error.localizedDescription
+            return false
+        }
+    }
+
+    /// Set a node on a tunnel (also kicks off start via set_node on the daemon side).
+    func pickNode(for tunnelName: String, node: String, user: String) async {
+        do {
+            try await client.setTunnelNode(tunnelName, node: node, user: user)
+            dismissSheet()
+            await reloadAll()
+        } catch {
+            connectionError = error.localizedDescription
+        }
     }
 }

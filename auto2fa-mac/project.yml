@@ -1,0 +1,39 @@
+name: Auto2FA
+options:
+  bundleIdPrefix: com.auto2fa
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.10"
+    PRODUCT_NAME: "Auto2FA"
+    PRODUCT_BUNDLE_IDENTIFIER: "com.auto2fa.app"
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"            # ad-hoc signing for local dev
+    GENERATE_INFOPLIST_FILE: NO
+    INFOPLIST_FILE: Auto2FA/Resources/Info.plist
+    SWIFT_STRICT_CONCURRENCY: minimal  # avoid the Swift 6 strict-concurrency wall in this scaffold
+
+packages:
+  DynamicNotchKit:
+    url: https://github.com/MrKai77/DynamicNotchKit
+    from: 1.0.0
+
+targets:
+  Auto2FA:
+    type: application
+    platform: macOS
+    sources:
+      - path: Auto2FA
+        excludes:
+          - Resources/Info.plist     # referenced explicitly via INFOPLIST_FILE
+    dependencies:
+      - package: DynamicNotchKit
+    info:
+      path: Auto2FA/Resources/Info.plist  # noop because INFOPLIST_FILE wins, kept for clarity

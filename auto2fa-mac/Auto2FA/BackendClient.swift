@@ -217,9 +217,9 @@ actor BackendClient {
                               params: ["name": name, "node": node, "user": user])
     }
 
-    func discoverNodes(host: String) async throws -> [Job] {
+    func discoverNodes(host: String) async throws -> [SqueueJob] {
         let data = try await sendRaw(method: "discover_nodes", params: ["host": host])
-        return try JSONDecoder().decode([Job].self, from: data)
+        return try JSONDecoder().decode([SqueueJob].self, from: data)
     }
 }
 
