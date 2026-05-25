@@ -5,7 +5,7 @@ import SwiftUI
 /// app lifetime. Shows tunnel-count badge in the system menu bar and a
 /// dropdown menu with quick actions.
 @MainActor
-final class MenuBarController: NSObject, ObservableObject {
+final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private weak var appState: AppState?
     private weak var window: NSWindow?
@@ -57,18 +57,30 @@ final class MenuBarController: NSObject, ObservableObject {
     ///   - grey  if nothing is enabled / idle
     private func aggregateTint() -> NSColor {
         guard let appState else { return .secondaryLabelColor }
-        let hosts = appState.hosts
-        let tunnels = appState.tunnels
-        let hostFailed = hosts.contains { $0.displayState == .failed }
-        let tunnelFailed = tunnels.contains {
-            $0.displayState == .failed || $0.displayState == .portBusy
+        // Explicit loops instead of compound contains() expressions —
+        // Swift's type checker would otherwise time out on this body
+        // (it tries every overload of `==` for each variant).
+        var anyFailed = false
+        var anyBusy = false
+        var anyAlive = false
+        for h in appState.hosts {
+            switch h.displayState {
+            case .failed: anyFailed = true
+            case .connecting: anyBusy = true
+            case .connected: anyAlive = true
+            default: break
+            }
         }
-        if hostFailed || tunnelFailed { return .systemRed }
-        let hostBusy = hosts.contains { $0.displayState == .connecting }
-        let tunnelBusy = tunnels.contains { $0.displayState == .starting }
-        if hostBusy || tunnelBusy { return .systemYellow }
-        let anyAlive = hosts.contains { $0.displayState == .connected }
-                    || tunnels.contains { $0.displayState == .alive }
+        for t in appState.tunnels {
+            switch t.displayState {
+            case .failed, .portBusy: anyFailed = true
+            case .starting: anyBusy = true
+            case .alive: anyAlive = true
+            default: break
+            }
+        }
+        if anyFailed { return .systemRed }
+        if anyBusy { return .systemYellow }
         return anyAlive ? .systemGreen : .secondaryLabelColor
     }
 
@@ -100,14 +112,15 @@ final class MenuBarController: NSObject, ObservableObject {
         let isRightClick = event?.type == .rightMouseUp
                         || (event?.modifierFlags.contains(.control) ?? false)
         if isRightClick {
-            // Present the menu manually at the button's location.
+            // Present the menu manually at the button's location. Detach
+            // AFTER the menu closes (via NSMenuDelegate.menuDidClose), not
+            // on the next runloop tick — the previous async approach
+            // could detach while the user was still keyboard-navigating
+            // the menu, causing AppKit to dismiss it unexpectedly.
             if let menu = buildMenuOptional(), let button = statusItem?.button {
-                statusItem.menu = menu                      // attach so it positions correctly
-                button.performClick(nil)                    // pops the menu
-                // Detach right after so the next click is a left-click again.
-                DispatchQueue.main.async { [weak self] in
-                    self?.statusItem?.menu = nil
-                }
+                menu.delegate = self
+                statusItem.menu = menu
+                button.performClick(nil)
             }
         } else {
             // Left click → bring the main window forward (or open one if
@@ -119,6 +132,15 @@ final class MenuBarController: NSObject, ObservableObject {
                 any.makeKeyAndOrderFront(nil)
                 self.window = any
             }
+        }
+    }
+
+    /// NSMenuDelegate: clean up the attached menu only after AppKit has
+    /// fully dismissed it, so the next left-click is again treated as a
+    /// click (not a menu-pop).
+    nonisolated func menuDidClose(_ menu: NSMenu) {
+        Task { @MainActor [weak self] in
+            self?.statusItem?.menu = nil
         }
     }
 

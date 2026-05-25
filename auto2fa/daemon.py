@@ -69,6 +69,21 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------------
 
+def _live_uptime(ts) -> float:
+    """Compute total uptime including the current alive-run as of right now.
+    Snapshot both ts.total_uptime_sec and ts._alive_since into locals before
+    doing the arithmetic so another thread accumulating into the tunnel
+    can't race us into reporting a wildly wrong value.
+
+    CPython attribute reads are atomic per-attribute under the GIL, so the
+    worst observable case is a one-tick stale total."""
+    base = ts.total_uptime_sec
+    since = ts._alive_since
+    if since > 0:
+        return base + max(0.0, time.time() - since)
+    return base
+
+
 def _tail_file(path: str, n: int) -> list[str]:
     """Return the last n lines of `path`, or [] if it doesn't exist.
     Uses a backwards block read so it's cheap even for multi-MB logs."""
@@ -179,10 +194,13 @@ class Auto2FADaemon:
             "status": ts.status,
             "last_msg": ts.last_msg,
             "last_alive_at": ts.last_alive_at,
-            # Live-computed: total_uptime + current run if alive
-            "total_uptime_sec": ts.total_uptime_sec + (
-                (time.time() - ts._alive_since) if ts._alive_since > 0 else 0
-            ),
+            # Live-computed: total_uptime + current run if alive.
+            # Snapshot BOTH attrs into locals first so an interleaving
+            # _accumulate_uptime() from another thread can't zero
+            # _alive_since between the two reads (which would briefly
+            # report an underestimate). Worst case now: we use slightly
+            # stale `total_uptime_sec` for one tick — close enough.
+            "total_uptime_sec": _live_uptime(ts),
             "connect_count": ts.connect_count,
             "fail_count": ts.fail_count,
         }

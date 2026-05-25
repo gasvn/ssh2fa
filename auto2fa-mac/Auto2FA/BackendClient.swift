@@ -28,6 +28,7 @@ actor BackendClient {
         case decodeFailed(String)
         case daemonError(code: String, message: String)
         case transport(String)
+        case cancelled
 
         var errorDescription: String? {
             switch self {
@@ -35,6 +36,7 @@ actor BackendClient {
             case .decodeFailed(let s): return "Bad reply: \(s)"
             case .daemonError(_, let m): return m
             case .transport(let s): return s
+            case .cancelled: return "Request cancelled"
             }
         }
     }
@@ -141,6 +143,10 @@ actor BackendClient {
     // MARK: - Request / receive
 
     /// Send a request, return the raw `result` JSON bytes (or throw).
+    /// Cancellation-aware: if the surrounding Task is cancelled, we resume
+    /// the pending continuation with ClientError.cancelled so any
+    /// `defer { inFlightTunnels.remove(name) }` runs immediately instead
+    /// of leaking the set entry until the daemon eventually replies.
     @discardableResult
     private func sendRaw(method: String, params: [String: Any]) async throws -> Data {
         guard let conn = connection else { throw ClientError.notConnected }
@@ -149,13 +155,19 @@ actor BackendClient {
         var line = try JSONSerialization.data(withJSONObject: payload)
         line.append(0x0a)
 
-        return try await withCheckedThrowingContinuation { cont in
-            self.pendingRequests[id] = cont
-            conn.send(content: line, completion: .contentProcessed { err in
-                if let err {
-                    Task { await self.failRequest(id: id, error: ClientError.transport(err.localizedDescription)) }
-                }
-            })
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                self.pendingRequests[id] = cont
+                conn.send(content: line, completion: .contentProcessed { err in
+                    if let err {
+                        Task { await self.failRequest(id: id, error: ClientError.transport(err.localizedDescription)) }
+                    }
+                })
+            }
+        } onCancel: {
+            // onCancel runs on whatever queue cancelled the Task — must
+            // hop into the actor to mutate pendingRequests safely.
+            Task { await self.failRequest(id: id, error: ClientError.cancelled) }
         }
     }
 

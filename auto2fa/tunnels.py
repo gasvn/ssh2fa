@@ -181,6 +181,10 @@ class TunnelManager:
         # spawn duplicate hooks (which would e.g. double-fire webhooks).
         self._post_connect_running: set[str] = set()
         self._post_connect_lock = threading.Lock()
+        # Serialise add()'s check-then-insert. Two concurrent tunnel_add IPC
+        # calls with the same name could otherwise both pass the duplicate
+        # check; the second write would clobber the first's state.
+        self._add_lock = threading.Lock()
 
     def _lock_for(self, name: str) -> threading.Lock:
         """Return (and lazily create) the lock for one tunnel."""
@@ -262,35 +266,39 @@ class TunnelManager:
           - port out of range (must be 1024..65535)
           - port currently in use on 127.0.0.1
         """
-        if name in self.tunnels:
-            raise ValueError(f"Tunnel '{name}' already exists")
-        if not (1024 <= int(local_port) <= 65535):
-            raise ValueError(f"Port must be 1024..65535, got {local_port}")
-        if remote_port is not None and not (1024 <= int(remote_port) <= 65535):
-            raise ValueError(f"remote_port must be 1024..65535, got {remote_port}")
-        if not self._port_available(int(local_port)):
-            raise ValueError(f"Port {local_port} in use, try another")
+        # Hold _add_lock for the whole check-then-insert so two concurrent
+        # tunnel_add IPCs with the same name can't both pass the duplicate
+        # check (which would lose one of them on save).
+        with self._add_lock:
+            if name in self.tunnels:
+                raise ValueError(f"Tunnel '{name}' already exists")
+            if not (1024 <= int(local_port) <= 65535):
+                raise ValueError(f"Port must be 1024..65535, got {local_port}")
+            if remote_port is not None and not (1024 <= int(remote_port) <= 65535):
+                raise ValueError(f"remote_port must be 1024..65535, got {remote_port}")
+            if not self._port_available(int(local_port)):
+                raise ValueError(f"Port {local_port} in use, try another")
 
-        ts = TunnelState(
-            name=name,
-            local_port=int(local_port),
-            remote_port=int(remote_port) if remote_port is not None else int(local_port),
-            jump_candidates=jump_candidates,
-            last_node=None,
-            last_user=None,
-            auto_start=False,
-        )
-        self.tunnels[name] = ts
-        try:
-            self.save()
-        except Exception:
-            # Roll back the in-memory insertion so the failed add doesn't
-            # leave a phantom tunnel visible in the UI but absent from disk.
-            self.tunnels.pop(name, None)
-            with self._locks_meta:
-                self._tunnel_locks.pop(name, None)
-            raise
-        return ts
+            ts = TunnelState(
+                name=name,
+                local_port=int(local_port),
+                remote_port=int(remote_port) if remote_port is not None else int(local_port),
+                jump_candidates=jump_candidates,
+                last_node=None,
+                last_user=None,
+                auto_start=False,
+            )
+            self.tunnels[name] = ts
+            try:
+                self.save()
+            except Exception:
+                # Roll back the in-memory insertion so the failed add doesn't
+                # leave a phantom tunnel visible in the UI but absent from disk.
+                self.tunnels.pop(name, None)
+                with self._locks_meta:
+                    self._tunnel_locks.pop(name, None)
+                raise
+            return ts
 
     def remove(self, name: str) -> None:
         """Remove a tunnel. Caller is responsible for stopping it first."""
