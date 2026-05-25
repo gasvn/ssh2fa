@@ -1,6 +1,20 @@
 import Foundation
 import Network
 
+/// Thread-safe one-shot latch. Returns true exactly once; subsequent calls
+/// return false. Used to ensure connect-time continuations resume exactly
+/// once even though NWConnection.stateUpdateHandler can fire many times.
+final class OneShot: @unchecked Sendable {
+    private var fired = false
+    private let lock = NSLock()
+    func fire() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+}
+
 /// Async/await wrapper around the Python daemon's line-delimited JSON IPC
 /// over `~/.auto2fa/auto2fa.sock`.
 ///
@@ -51,14 +65,34 @@ actor BackendClient {
         connection = conn
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            conn.stateUpdateHandler = { state in
+            // stateUpdateHandler fires on every state change; the connect
+            // continuation must be resumed exactly once, then the handler
+            // swapped to one that only logs/handles drops post-connect.
+            let resumed = OneShot()
+            conn.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    cont.resume()
+                    if resumed.fire() {
+                        cont.resume()
+                        Task { await self?.installPostConnectHandler() }
+                    }
                 case .failed(let err):
-                    cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                    if resumed.fire() {
+                        cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                    } else {
+                        Task { await self?.handleClosed() }
+                    }
                 case .waiting(let err):
-                    cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                    // For a unix socket, .waiting usually means the socket file
+                    // doesn't exist (daemon not running). Treat as fatal at
+                    // connect time so we don't hang.
+                    if resumed.fire() {
+                        cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                    }
+                case .cancelled:
+                    if !resumed.fire() {
+                        Task { await self?.handleClosed() }
+                    }
                 default:
                     break
                 }
@@ -71,6 +105,18 @@ actor BackendClient {
         // Subscribe to event pushes — non-fatal if it fails
         do { _ = try await sendRaw(method: "subscribe_events", params: [:]) }
         catch { /* swallow */ }
+    }
+
+    /// Replace the connect-time handler with one that only reacts to drops.
+    private func installPostConnectHandler() {
+        connection?.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                Task { await self?.handleClosed() }
+            default:
+                break
+            }
+        }
     }
 
     func disconnect() {

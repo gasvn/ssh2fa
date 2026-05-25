@@ -8,6 +8,7 @@ struct NodePickerSheet: View {
 
     @State private var jobs: [SqueueJob] = []
     @State private var loading = true
+    @State private var submitting = false
     @State private var error: String?
     @State private var selection: SqueueJob.ID?
     @State private var loadedJumpName: String?
@@ -69,23 +70,28 @@ struct NodePickerSheet: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(loading)
+                .disabled(loading || submitting)
 
                 Button {
                     appState.presentCustomNode(for: tunnelName)
                 } label: {
                     Label("Custom node…", systemImage: "keyboard")
                 }
+                .disabled(submitting)
 
                 Spacer()
 
                 Button("Cancel") { appState.dismissSheet() }
                     .keyboardShortcut(.cancelAction)
-                Button("Use selected") {
+                    .disabled(submitting)
+                Button {
                     pick()
+                } label: {
+                    if submitting { ProgressView().controlSize(.small) }
+                    else { Text("Use selected") }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selection == nil)
+                .disabled(selection == nil || submitting)
             }
         }
         .padding(20)
@@ -136,14 +142,19 @@ struct NodePickerSheet: View {
     }
 
     private func pick() {
+        guard !submitting else { return }
         guard let id = selection, let job = jobs.first(where: { $0.id == id }) else { return }
         let user = appState.tunnels.first(where: { $0.name == tunnelName })?.lastUser ?? NSUserName()
+        submitting = true
+        error = nil
         Task {
             if let errMsg = await appState.pickNode(
                 for: tunnelName, node: job.node, user: user
             ) {
                 error = errMsg  // surface in the picker; don't dismiss
+                submitting = false
             }
+            // on success: appState.pickNode dismisses the sheet, no need to clear submitting
         }
     }
 }
