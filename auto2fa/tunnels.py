@@ -637,15 +637,24 @@ class TunnelManager:
                 self.start(name)
                 continue
 
-            # Case 2: jump master no longer ready → failover
+            # Case 2: jump master no longer ready → failover, but ONLY
+            # if the user explicitly disabled the host. The previous code
+            # also failed over on transient `is_master_ready=False`
+            # (cooldown after a probe blip, MaxSessions briefly full, etc.)
+            # — but the multiplexed `ssh -L` child is independent of the
+            # master's probe state: an existing forward keeps working
+            # over the live channel even if a fresh ssh -O check fails.
+            # Tearing it down on a transient blip just dropped the tunnel
+            # to idle for no reason ("动不动就 idle 了").
+            #
+            # If the child has actually broken, Case 1 already caught it
+            # above. By the time we get here, the child is alive — so the
+            # tunnel IS still working. Only stop if the user has
+            # explicitly disabled the host.
             mgr = self.host_managers.get(ts.active_jump)
-            if mgr is None or not mgr.is_master_ready():
-                logger.info("[tunnel:%s] jump %s down, failing over", name, ts.active_jump)
-                old_jump = ts.active_jump
+            if mgr is None or not mgr.active:
+                logger.info("[tunnel:%s] jump %s disabled, stopping", name, ts.active_jump)
                 self.stop(name)
-                self.start(name)
-                if ts.active_jump and ts.active_jump != old_jump:
-                    ts.last_msg = f"failover {old_jump}→{ts.active_jump}"
                 continue
 
             # Case 3: throttled squeue check

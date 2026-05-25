@@ -610,23 +610,50 @@ class TestTunnelManagerTick(unittest.TestCase):
             p_stop.assert_called_once_with("x")
             p_start.assert_called_once_with("x")
 
-    def test_tick_failover_when_jump_master_gone(self):
+    def test_tick_does_not_failover_on_transient_jump_unready(self):
+        """A multiplexed `ssh -L` child keeps working even if the master's
+        probe momentarily fails (cooldown, MaxSessions full briefly, etc.).
+        tick() must NOT tear down a working tunnel on these blips —
+        previously this caused tunnels to spam-cycle into "idle"."""
         from tunnels import TunnelManager
-        hm = {"k8": self._mgr(ready=False), "k1": self._mgr(ready=True)}
+        hm = {"k8": self._mgr(ready=False)}  # master unready but host enabled
+        hm["k8"].active = True                # user has the host enabled
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         tm.add("x", self._free_port())
         ts = tm.tunnels["x"]
         ts.status = "alive"
-        ts.active_jump = "k8"            # was using k8, now down
+        ts.active_jump = "k8"
         ts.last_node = "node1"; ts.last_user = "shgao"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
+
         with unittest.mock.patch.object(tm, "start") as p_start, \
              unittest.mock.patch.object(tm, "stop") as p_stop:
             tm.tick()
-            # Should have killed the old child and triggered restart
+            # Tunnel child is alive + host is enabled → leave alone.
+            p_stop.assert_not_called()
+            p_start.assert_not_called()
+
+    def test_tick_stops_tunnel_when_host_disabled(self):
+        """User toggled the jump host off → we should stop the tunnel
+        instead of leaving it pointing at a host that's about to go away."""
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=False)}
+        hm["k8"].active = False               # user disabled the host
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        alive = MagicMock(); alive.isalive.return_value = True
+        ts.child = alive
+
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop:
+            tm.tick()
             p_stop.assert_called_once_with("x")
-            p_start.assert_called_once_with("x")
+            p_start.assert_not_called()       # no restart when host is off
 
     def test_tick_two_squeue_misses_marks_stale(self):
         from tunnels import TunnelManager, Job
