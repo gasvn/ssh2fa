@@ -448,7 +448,20 @@ class TunnelManager:
                 # restart, cool-down, etc.) and the tunnel briefly goes
                 # idle. Without this, every master glitch dropped the
                 # tunnel forever until manual Start.
+                # Persist so the flag survives daemon restart — without
+                # the save(), wants_alive was set in memory but lost on
+                # the next daemon respawn, and the next tick saw
+                # wants_alive=False and refused to auto-recover. End
+                # result: user clicked Start once, tunnel worked until
+                # the daemon restarted, and then the tunnel sat idle
+                # forever (the symptom reported as "tunnel 又断了").
+                first_alive = not ts.wants_alive
                 ts.wants_alive = True
+                if first_alive:
+                    try:
+                        self.save()
+                    except Exception:
+                        logger.exception("[tunnel:%s] failed to persist wants_alive", name)
                 self._record(ts, f"connected via {jump} → {ts.last_node}:{ts.remote_port}")
                 # Run the per-tunnel post-connect hook if any. Threaded so a
                 # slow hook can't block us — we capture stderr to the event

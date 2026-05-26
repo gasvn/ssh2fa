@@ -456,6 +456,35 @@ class TestTunnelManagerStart(unittest.TestCase):
         self.assertIn("via k8", tm.tunnels["x"].last_msg)
         self.assertEqual(tm.tunnels["x"].consecutive_squeue_misses, 0)
 
+    def test_start_persists_wants_alive_on_first_success(self):
+        """wants_alive used to be set in memory only — daemon restart
+        loaded from disk without it, default False, tick refused to
+        auto-recover, tunnel sat idle forever. start() must persist
+        wants_alive to disk on the first successful connect."""
+        from tunnels import TunnelManager
+        import tunnels as t, json
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        tm.set_node("x", "holygpu01", "shgao")
+
+        child = MagicMock()
+        child.isalive.return_value = True
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=True):
+            tm.start("x")
+
+        # In-memory flag set
+        self.assertTrue(tm.tunnels["x"].wants_alive)
+        # AND persisted to disk so the next daemon restart picks it up
+        with open(self.cfg) as f:
+            payload = json.load(f)
+        self.assertTrue(
+            payload["tunnels"]["x"].get("wants_alive"),
+            "wants_alive must be persisted to tunnels.json after first successful start",
+        )
+
     def test_start_probe_timeout_marks_failed(self):
         from tunnels import TunnelManager
         import tunnels as t
