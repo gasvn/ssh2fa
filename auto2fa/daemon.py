@@ -819,31 +819,35 @@ class Auto2FADaemon:
         return {"tunnels_stopped": len(previously_active), "masters_rebuilt": rebuilt}
 
     def _wake_recover(self) -> list[str]:
-        """Restore connectivity after Mac wake. Smart variant: probe each
-        active master with a fast (2s) remote round-trip. ONLY masters that
-        fail the probe get rebuilt — masters that survived sleep (short nap,
-        TCP keepalive saved them) keep their user sessions intact. Tunnels
-        that were alive/starting/stale get restarted regardless because the
-        ssh -L child itself usually dies on suspend even when masters
-        survive."""
-        previously_active = [
-            name for name, ts in self.tunnel_mgr.tunnels.items()
+        """Restore connectivity after Mac wake / network change.
+
+        Per-master probe: 5s timeout (was 2s — too aggressive for the
+        post-wake network-warmup window). Masters that respond keep
+        their user sessions intact.
+
+        Per-tunnel decision: only stop the tunnel if the master it's
+        pinned to actually failed. A surviving master means the
+        multiplexed `ssh -L` channel is still live — tearing it down
+        unconditionally caused the 'tunnels keep disconnecting'
+        symptom on every Mac wake.
+
+        Delayed restart: retries with back-off (10s, 20s, 30s, 60s,
+        120s) instead of a single 20s attempt. Master logins take
+        20-30s themselves; one shot was often too early and left the
+        tunnel idle forever."""
+        # Snapshot tunnels with their current jump assignment FIRST,
+        # before we modify any state.
+        alive_tunnels = [
+            (name, ts.active_jump)
+            for name, ts in self.tunnel_mgr.tunnels.items()
             if ts.status in ("alive", "starting", "stale")
         ]
-        logger.info(
-            f"wake_recover: probing {len(self.managers)} masters, "
-            f"will restart {len(previously_active)} tunnels"
-        )
+        logger.info(f"wake_recover: probing {len(self.managers)} masters")
 
-        # Stop tunnels first — their ssh -L process is wedged on dead TCP.
-        for name in previously_active:
-            try:
-                self.tunnel_mgr.stop(name)
-            except Exception:
-                logger.exception(f"wake_recover stop({name}) failed")
-
-        # Probe each enabled master; rebuild only the dead ones.
+        # Probe each enabled master with a 5s round-trip. Build the set
+        # of hosts whose master we need to rebuild.
         import subprocess as _sp
+        masters_failed: set[str] = set()
         for mgr in self.managers:
             if not mgr.active:
                 continue
@@ -851,31 +855,73 @@ class Auto2FADaemon:
             try:
                 res = _sp.run(
                     ["ssh", "-o", f"ControlPath={path}", mgr.host, "true"],
-                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=2
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=5
                 )
                 if res.returncode == 0:
-                    logger.info(f"wake_recover: {mgr.host} survived sleep, keeping master")
+                    logger.info(f"wake_recover: {mgr.host} survived")
                     continue
             except Exception:
                 pass
+            masters_failed.add(mgr.host)
             try:
                 logger.info(f"wake_recover: {mgr.host} master dead, rebuilding")
                 mgr.force_master_rebuild()
             except Exception:
                 logger.exception(f"wake_recover rebuild on {mgr.host} failed")
 
-        # Schedule a delayed restart on the asyncio loop — masters need
-        # ~15-30s to log back in.
+        # Only restart tunnels whose jump master actually failed. Tunnels
+        # whose master survived keep their existing ssh -L child running.
+        to_restart = [name for (name, jump) in alive_tunnels if jump in masters_failed]
+        kept = len(alive_tunnels) - len(to_restart)
+        logger.info(
+            f"wake_recover: {len(to_restart)} tunnels need restart, "
+            f"{kept} kept (master survived)"
+        )
+        for name in to_restart:
+            try:
+                self.tunnel_mgr.stop(name)
+            except Exception:
+                logger.exception(f"wake_recover stop({name}) failed")
+        # Record set on self so _delayed_restart can read it
+        previously_active = to_restart
+
+        # Schedule a backoff-retried restart on the asyncio loop. Master
+        # logins can take 20-30s each; a single 20s wait was often too
+        # early — start() would find no ready jump, leave the tunnel
+        # idle, and never retry. Now we keep trying at 10/20/30/60/120s
+        # marks until the tunnel transitions to alive (or we give up
+        # after ~4 minutes).
         loop = self._loop
         if loop is not None and previously_active:
             async def _delayed_restart():
-                await asyncio.sleep(20)
-                for name in previously_active:
-                    try:
-                        await asyncio.to_thread(self.tunnel_mgr.start, name)
-                        logger.info(f"wake_recover restarted tunnel {name}")
-                    except Exception:
-                        logger.exception(f"wake_recover restart({name}) failed")
+                delays = [10, 20, 30, 60, 120]
+                remaining = list(previously_active)
+                for delay in delays:
+                    await asyncio.sleep(delay)
+                    still_idle: list[str] = []
+                    for name in remaining:
+                        ts = self.tunnel_mgr.tunnels.get(name)
+                        if ts is None:
+                            continue
+                        if ts.status == "alive":
+                            logger.info(f"wake_recover: {name} already alive")
+                            continue
+                        try:
+                            await asyncio.to_thread(self.tunnel_mgr.start, name)
+                            if ts.status == "alive":
+                                logger.info(f"wake_recover: restarted {name}")
+                            else:
+                                still_idle.append(name)
+                        except Exception:
+                            logger.exception(f"wake_recover restart({name}) failed")
+                            still_idle.append(name)
+                    remaining = still_idle
+                    if not remaining:
+                        return
+                if remaining:
+                    logger.warning(
+                        f"wake_recover gave up after retries; still idle: {remaining}"
+                    )
             asyncio.run_coroutine_threadsafe(_delayed_restart(), loop)
         return previously_active
 
