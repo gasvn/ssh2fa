@@ -405,7 +405,11 @@ class Auto2FADaemon:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, old)
                 was_alive = ts.status == "alive"
                 if was_alive:
-                    await asyncio.to_thread(self.tunnel_mgr.stop, old)
+                    # user_initiated=False — rename is structural, not the
+                    # user asking us to stop. Preserve wants_alive so the
+                    # auto-recovery path also kicks in if start() fails.
+                    await asyncio.to_thread(self.tunnel_mgr.stop, old,
+                                            user_initiated=False)
                 # Reseat under the new key.
                 ts.name = new
                 self.tunnel_mgr.tunnels[new] = ts
@@ -487,7 +491,10 @@ class Auto2FADaemon:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
                 was_alive = ts.status == "alive"
                 if was_alive:
-                    await asyncio.to_thread(self.tunnel_mgr.stop, name)
+                    # Preserve wants_alive — user changed jump prefs but
+                    # still wants tunnel running.
+                    await asyncio.to_thread(self.tunnel_mgr.stop, name,
+                                            user_initiated=False)
                 ts.jump_candidates = cands
                 self.tunnel_mgr.save()
                 if was_alive:
@@ -879,7 +886,10 @@ class Auto2FADaemon:
         )
         for name in to_restart:
             try:
-                self.tunnel_mgr.stop(name)
+                # user_initiated=False — we want auto-recovery to keep
+                # trying to bring this back up even if our scheduled
+                # restart can't get a jump on the first attempt.
+                self.tunnel_mgr.stop(name, user_initiated=False)
             except Exception:
                 logger.exception(f"wake_recover stop({name}) failed")
         # Record set on self so _delayed_restart can read it

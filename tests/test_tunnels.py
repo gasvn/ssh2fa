@@ -603,11 +603,14 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.child = dead
         # tick() must call stop() first to clear status="alive", THEN start() —
         # otherwise start() short-circuits on status check and the dead tunnel
-        # is never actually respawned.
+        # is never actually respawned. stop() is called with
+        # user_initiated=False so wants_alive survives — without that, a
+        # subsequent start() failure (no ready jump) would orphan the tunnel
+        # forever instead of letting auto-recovery retry.
         with unittest.mock.patch.object(tm, "start") as p_start, \
              unittest.mock.patch.object(tm, "stop") as p_stop:
             tm.tick()
-            p_stop.assert_called_once_with("x")
+            p_stop.assert_called_once_with("x", user_initiated=False)
             p_start.assert_called_once_with("x")
 
     def test_tick_does_not_failover_on_transient_jump_unready(self):

@@ -80,6 +80,16 @@ class TunnelState:
     # Use cases: jupyter `?token=xxx`, tensorboard `/#scalars`, etc.
     # Stored verbatim; UI prepends "http://localhost:<port>".
     url_path: Optional[str] = None
+    # "Should this tunnel be alive right now?" — distinct from `status`.
+    # Set True by start(), set False by stop() and by user delete.
+    # tick() uses this to AUTO-RECOVER tunnels that went idle because
+    # their jump master briefly disappeared (heartbeat restarts, OTP
+    # cool-down ending, etc.). Without this, a master glitch dropped
+    # the tunnel to idle forever until the user manually clicked Start.
+    wants_alive: bool = False
+    # When did we last attempt an auto-recovery? Throttle to avoid
+    # tight-looping start() when no jump is ready.
+    last_recovery_attempt_ts: float = 0.0
 
     # Runtime-only fields
     status: str = "idle"                   # idle | starting | alive | stale | port_busy | failed
@@ -164,7 +174,8 @@ class TunnelManager:
 
     PERSISTED_FIELDS = ("local_port", "remote_port", "jump_candidates",
                         "last_node", "last_user", "auto_start",
-                        "post_connect_cmd", "tags", "url_path")
+                        "post_connect_cmd", "tags", "url_path",
+                        "wants_alive")
     EVENT_BUFFER_LIMIT = 200
 
     def __init__(self, host_managers: Dict[str, object], config_path: str):
@@ -231,6 +242,7 @@ class TunnelManager:
                 post_connect_cmd=cfg.get("post_connect_cmd"),
                 tags=list(cfg.get("tags", []) or []),
                 url_path=cfg.get("url_path"),
+                wants_alive=bool(cfg.get("wants_alive", False)),
             )
         self.tunnels = loaded
 
@@ -431,6 +443,12 @@ class TunnelManager:
                 ts.last_alive_at = time.time()
                 ts._alive_since = time.time()
                 ts.connect_count += 1
+                # Mark "user wants this tunnel up" so tick() will auto-
+                # recover it if the jump master flaps later (heartbeat
+                # restart, cool-down, etc.) and the tunnel briefly goes
+                # idle. Without this, every master glitch dropped the
+                # tunnel forever until manual Start.
+                ts.wants_alive = True
                 self._record(ts, f"connected via {jump} → {ts.last_node}:{ts.remote_port}")
                 # Run the per-tunnel post-connect hook if any. Threaded so a
                 # slow hook can't block us — we capture stderr to the event
@@ -564,11 +582,17 @@ class TunnelManager:
             with self._post_connect_lock:
                 self._post_connect_running.discard(name)
 
-    def stop(self, name: str) -> None:
+    def stop(self, name: str, user_initiated: bool = True) -> None:
         """Terminate the tunnel's child process and mark idle.
 
         Safe if already stopped or removed. Per-tunnel locking — doesn't
         block other tunnels' lifecycle operations.
+
+        `user_initiated=True` (the default) clears wants_alive so tick()
+        won't try to auto-revive it. Internal callers that want to bounce
+        the tunnel (e.g. tick's child-died handler before calling start()
+        again) pass user_initiated=False to keep wants_alive set, so a
+        race between stop+start and tick doesn't lose the desired-state.
         """
         with self._lock_for(name):
             ts = self.tunnels.get(name)
@@ -586,6 +610,8 @@ class TunnelManager:
             self._accumulate_uptime(ts)
             ts.status = "idle"
             ts.last_msg = "stopped"
+            if user_initiated:
+                ts.wants_alive = False
 
     def toggle(self, name: str) -> None:
         """If alive/starting, stop. Otherwise, start.
@@ -619,26 +645,56 @@ class TunnelManager:
             # AFTER the loop so a mid-iteration crash doesn't permanently
             # skip the remaining tunnels.
             for name, ts in list(self.tunnels.items()):
-                if ts.auto_start and ts.last_node is not None:
+                # Two paths into auto-start at boot:
+                #   1) auto_start flag set by user (explicit "always on")
+                #   2) wants_alive persisted from previous daemon run —
+                #      tunnel WAS alive when the daemon shut down, so
+                #      restoring connectivity is what the user expects.
+                want = ts.auto_start or ts.wants_alive
+                if want and ts.last_node is not None:
                     self.start(name)
             self.auto_started = True
+
+        AUTO_RECOVERY_INTERVAL_SEC = 15  # don't tight-loop start() if no jump
 
         for name, ts in list(self.tunnels.items()):
             # Re-check existence — another thread may have called remove()
             # between snapshotting and reaching this iteration.
             if name not in self.tunnels:
                 continue
+
+            # Case 0: tunnel wants to be alive but is currently idle/failed.
+            # This happens when:
+            #   - master heartbeat killed and restarted the jump master →
+            #     ssh -L child died → tick saw it dead → restarted but
+            #     start() found no ready jump (master still re-logging) →
+            #     tunnel went to idle
+            #   - OTP cool-down on the jump host cleared → master came
+            #     back → we should reconnect the tunnel
+            # Without this case, a single master flap dropped the tunnel
+            # to idle FOREVER until the user manually clicked Start —
+            # which the user perceived as "tunnels keep disconnecting".
+            if ts.wants_alive and ts.status in ("idle", "failed"):
+                if now - ts.last_recovery_attempt_ts < AUTO_RECOVERY_INTERVAL_SEC:
+                    continue
+                ts.last_recovery_attempt_ts = now
+                logger.info("[tunnel:%s] auto-recover attempt (status=%s)",
+                            name, ts.status)
+                self.start(name)
+                continue
+
             if ts.status in ("idle", "stale", "port_busy", "failed", "starting"):
                 continue
             # status == "alive"
 
             # Case 1: child died → must clear status first so start() proceeds.
-            # start() short-circuits on status in ("alive", "starting"), so
-            # calling it directly would be a permanent no-op.
+            # Pass user_initiated=False so wants_alive stays set; we want
+            # auto-recovery to keep trying if start() can't get a jump
+            # right away.
             child = ts.child
             if child is None or not child.isalive():
                 logger.warning("[tunnel:%s] child died, respawning", name)
-                self.stop(name)
+                self.stop(name, user_initiated=False)
                 self.start(name)
                 continue
 
