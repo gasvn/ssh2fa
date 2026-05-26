@@ -730,14 +730,23 @@ class SSHHostManager(threading.Thread):
                 self.last_rotate_ts = now
 
         try:
+            # 10s (was 3s): 3s was way too aggressive for Cannon's loaded
+            # login nodes — a slow round-trip ≠ dead master. We saw 257
+            # probe timeouts in 2 hours doing zero useful work and
+            # flapping the active-pool symlink endlessly.
             cmd = ["ssh", "-o", f"ControlPath={path}", self.host, "echo ok"]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if res.returncode != 0:
+                # Explicit refusal (master genuinely broken, not just
+                # slow) — rotate to the spare.
                 logger.warning(f"[{self.host}] Active Master #{active} refused/failed. Rotating...")
                 _do_rotate("refused")
         except Exception:
-            logger.warning(f"[{self.host}] Probe timed out. Rotating...")
-            _do_rotate("timeout")
+            # Timeout: server is slow, master is *probably* fine. Don't
+            # rotate — the local `ssh -O check` in the heartbeat is the
+            # canonical dead-master detector. Just record and move on.
+            logger.info(f"[{self.host}] Probe slow (>10s round-trip); not rotating")
+            self.last_msg = f"probe slow (>10s) — server load"
 
     def check_ssh_socket(self):
         return True # Handled by monitor loop

@@ -876,9 +876,33 @@ class Auto2FADaemon:
             except Exception:
                 logger.exception(f"wake_recover rebuild on {mgr.host} failed")
 
-        # Only restart tunnels whose jump master actually failed. Tunnels
-        # whose master survived keep their existing ssh -L child running.
-        to_restart = [name for (name, jump) in alive_tunnels if jump in masters_failed]
+        # Restart a tunnel if EITHER (a) its jump master failed, OR
+        # (b) the ssh -L child itself is dead. Previously we only checked
+        # (a) and trusted "master survived → tunnel survived" — but the
+        # ssh -L child can die independently of the master (probe-driven
+        # rotation, MaxSessions briefly full, network EOF). When that
+        # happened, _wake_recover marked the tunnel "kept" and the
+        # regular tick loop sometimes missed the dead child too, leaving
+        # the tunnel status stuck at "alive" with no listener bound on
+        # the local port. End result: daemon reports tunnel alive,
+        # browser sees Connection Refused.
+        to_restart: list[str] = []
+        for (name, jump) in alive_tunnels:
+            if jump in masters_failed:
+                to_restart.append(name)
+                continue
+            ts = self.tunnel_mgr.tunnels.get(name)
+            child = getattr(ts, "child", None) if ts else None
+            child_alive = False
+            try:
+                child_alive = child is not None and child.isalive()
+            except Exception:
+                child_alive = False
+            if not child_alive:
+                logger.info(
+                    f"wake_recover: {name} master survived but ssh -L child is dead — restart"
+                )
+                to_restart.append(name)
         kept = len(alive_tunnels) - len(to_restart)
         logger.info(
             f"wake_recover: {len(to_restart)} tunnels need restart, "

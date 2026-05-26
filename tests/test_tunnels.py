@@ -630,12 +630,66 @@ class TestTunnelManagerTick(unittest.TestCase):
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
 
+        # Mock _port_available -> False (port IS bound by the live ssh -L).
+        # Without this, the new ghost-alive defense would fire and ask us
+        # to respawn — but the *point* of this test is the transient-master
+        # blip path, not the ghost defense.
         with unittest.mock.patch.object(tm, "start") as p_start, \
-             unittest.mock.patch.object(tm, "stop") as p_stop:
+             unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()
-            # Tunnel child is alive + host is enabled → leave alone.
+            # Tunnel child is alive + port is bound + host is enabled → leave alone.
             p_stop.assert_not_called()
             p_start.assert_not_called()
+
+    def test_tick_respawns_ghost_alive_tunnel(self):
+        """Defense-in-depth: pexpect.isalive() can report True for an
+        ssh -L child that has actually exited (we observed this in the
+        wild — daemon reported tunnel alive via k6, ps showed no ssh -L
+        process, browser saw Connection Refused). If the local forward
+        port is not bound, the tunnel is broken regardless of what
+        pexpect thinks — respawn it."""
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        hm["k8"].active = True
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        # pexpect says alive (lying / stale)
+        alive_liar = MagicMock(); alive_liar.isalive.return_value = True
+        ts.child = alive_liar
+        # Port is NOT bound (real-world: ssh -L exited, listener gone)
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "_port_available", return_value=True):
+            tm.tick()
+            p_stop.assert_called_once_with("x", user_initiated=False)
+            p_start.assert_called_once_with("x")
+
+    def test_tick_respawns_when_isalive_raises(self):
+        """pexpect can raise PtyProcessError (ECHILD etc.) from isalive().
+        That must NOT propagate; treat as dead and respawn."""
+        from tunnels import TunnelManager
+        hm = {"k8": self._mgr(ready=True)}
+        hm["k8"].active = True
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"
+        ts.active_jump = "k8"
+        ts.last_node = "node1"; ts.last_user = "shgao"
+        bad = MagicMock()
+        bad.isalive.side_effect = RuntimeError("ECHILD or similar")
+        ts.child = bad
+        with unittest.mock.patch.object(tm, "start") as p_start, \
+             unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
+            tm.tick()
+            p_stop.assert_called_once_with("x", user_initiated=False)
+            p_start.assert_called_once_with("x")
 
     def test_tick_stops_tunnel_when_host_disabled(self):
         """User toggled the jump host off → we should stop the tunnel
@@ -653,7 +707,8 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.child = alive
 
         with unittest.mock.patch.object(tm, "start") as p_start, \
-             unittest.mock.patch.object(tm, "stop") as p_stop:
+             unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()
             p_stop.assert_called_once_with("x")
             p_start.assert_not_called()       # no restart when host is off
@@ -674,7 +729,8 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.last_probe_ts = 0.0
 
         with unittest.mock.patch.object(t.NodeDiscovery, "discover",
-                                        return_value=[Job("1","p","n","RUNNING","1","other_node")]):
+                                        return_value=[Job("1","p","n","RUNNING","1","other_node")]), \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()   # miss 1
             self.assertEqual(ts.status, "alive")
             self.assertEqual(ts.consecutive_squeue_misses, 1)
@@ -699,7 +755,8 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.consecutive_squeue_misses = 0
 
         with unittest.mock.patch.object(t.NodeDiscovery, "discover",
-                                        side_effect=DiscoveryError("boom")):
+                                        side_effect=DiscoveryError("boom")), \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()
             self.assertEqual(ts.consecutive_squeue_misses, 0)
             self.assertEqual(ts.status, "alive")
@@ -719,7 +776,8 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts.consecutive_squeue_misses = 1
 
         with unittest.mock.patch.object(t.NodeDiscovery, "discover",
-                                        return_value=[Job("1","p","n","RUNNING","1","node1")]):
+                                        return_value=[Job("1","p","n","RUNNING","1","node1")]), \
+             unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()
             self.assertEqual(ts.consecutive_squeue_misses, 0)
 

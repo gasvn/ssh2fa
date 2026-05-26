@@ -691,9 +691,26 @@ class TunnelManager:
             # Pass user_initiated=False so wants_alive stays set; we want
             # auto-recovery to keep trying if start() can't get a jump
             # right away.
+            #
+            # Defense in depth: also treat as "dead" if the local forward
+            # port is no longer bound. We have seen pexpect.isalive() return
+            # True for ssh -L children that have actually exited (the daemon
+            # reported tunnel `claw` alive via k6 with status_text "squeue
+            # err", but ps showed no ssh -L process and nothing was LISTENing
+            # on the local port — browser saw Connection Refused while the
+            # dashboard said alive). The port check is cheap and authoritative:
+            # if nothing is bound, the user CANNOT reach the tunnel, full stop.
             child = ts.child
-            if child is None or not child.isalive():
-                logger.warning("[tunnel:%s] child died, respawning", name)
+            child_dead = child is None
+            if not child_dead:
+                try:
+                    child_dead = not child.isalive()
+                except Exception:
+                    child_dead = True
+            port_bound = self._port_available(ts.local_port) is False
+            if child_dead or not port_bound:
+                reason = "child died" if child_dead else "port not bound (ghost alive)"
+                logger.warning("[tunnel:%s] %s, respawning", name, reason)
                 self.stop(name, user_initiated=False)
                 self.start(name)
                 continue
