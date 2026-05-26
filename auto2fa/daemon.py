@@ -637,12 +637,26 @@ class Auto2FADaemon:
         "tags", "active_jump", "status", "last_msg", "last_alive_at",
     )
 
+    # Host snapshot: include the fields a UI would visibly change on, but
+    # NOT last_msg — that's free-form daemon-internal text that changes
+    # for things like cool-down countdowns ("298s left" → "297s left" → …),
+    # which would otherwise spam HOST_STATUS_CHANGED every tick.
+    _HOST_STABLE_FIELDS = (
+        "host", "status", "active", "is_master_ready",
+        "pool_index", "pool_alive", "is_mounted",
+    )
+
     def _tunnel_change_key(self, snap: dict | None) -> tuple | None:
         if snap is None:
             return None
         return tuple(snap.get(k) if not isinstance(snap.get(k), list)
                      else tuple(snap.get(k) or [])
                      for k in self._TUNNEL_STABLE_FIELDS)
+
+    def _host_change_key(self, snap: dict | None) -> tuple | None:
+        if snap is None:
+            return None
+        return tuple(snap.get(k) for k in self._HOST_STABLE_FIELDS)
 
     # ---- Helpers used by new client methods ------------------------------
 
@@ -894,13 +908,19 @@ class Auto2FADaemon:
                     logger.exception("runtime log rotation failed")
 
             try:
-                # Host transitions
+                # Host transitions. Compare on the stable-fields key so
+                # noisy mutations of last_msg (cool-down "298s left" →
+                # "297s left" etc.) don't fire HOST_STATUS_CHANGED on
+                # every tick. Snapshot is still updated each pass so
+                # list_hosts callers see fresh values.
                 for mgr in self.managers:
                     snap = self._host_snapshot(mgr)
                     prev = self._last_host_snapshot.get(mgr.host)
-                    if prev != snap:
+                    if self._host_change_key(prev) != self._host_change_key(snap):
                         self._last_host_snapshot[mgr.host] = snap
                         await self._emit(ipc.Event.HOST_STATUS_CHANGED, snap)
+                    else:
+                        self._last_host_snapshot[mgr.host] = snap
 
                 # Tunnel transitions (add / remove / status). We compare
                 # on a STABLE subset of fields — total_uptime_sec is

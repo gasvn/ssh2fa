@@ -142,6 +142,18 @@ class SSHHostManager(threading.Thread):
         self.OTP_FAILURE_THRESHOLD = 3
         self.OTP_COOLDOWN_SEC = 300
 
+        # Pool rotation ping-pong detection. When BOTH pool slots are
+        # equally broken (TCP dead, server unreachable), check_and_rotate
+        # would otherwise flip the symlink every 5s forever — log spam +
+        # wasted probe round-trips. We track the time of the last rotation;
+        # if a probe fails right after a recent rotation, we know rotating
+        # again is pointless — back off probing for a minute so heartbeat
+        # has time to rebuild masters.
+        self.last_rotate_ts = 0.0
+        self.probe_backoff_until_ts = 0.0
+        self.ROTATION_PING_PONG_WINDOW = 30
+        self.PROBE_BACKOFF_SEC = 60
+
         # Paths
         self.target_control_path = self.get_ssh_control_path(host)
         self.pool_control_paths = {
@@ -562,38 +574,49 @@ class SSHHostManager(threading.Thread):
         self.start_master(index)
 
     def check_and_rotate(self):
-        """Checks if active master is full/unresponsive and rotates if needed"""
+        """Probe the active master with a real remote round-trip. If it
+        fails, rotate to the spare. If a recent rotation was followed by
+        ANOTHER failure (ping-pong), both slots are broken — back off
+        probing for a minute to let the heartbeat rebuild fresh masters
+        instead of flipping the symlink endlessly."""
+        now = time.time()
+        # Skip if we're in a back-off after detecting ping-pong.
+        if now < self.probe_backoff_until_ts:
+            return
+
         active = self.active_index
         path = self.pool_control_paths[active]
-        
-        try:
-            # Probe if it accepts new session
-            cmd = ["ssh", "-o", f"ControlPath={path}", self.host, "echo ok"]
-            # Timeout fast (3s). If MaxSessions full, it might hang or Refuse
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            
-            # If return code is not 0, or if "Session open refused" in stderr
-            if res.returncode != 0:
-                logger.warning(f"[{self.host}] Active Master #{active} refused/failed. Rotating...")
-                
-                other = (active + 1) % POOL_SIZE
-                
-                # Check if other is ready?
-                if self.pool_status.get(other) == "Ready":
-                    self.update_symlink(other)
-                    self.status = f"[green]Pool Active ({other})[/green]"
-                    self.last_msg = f"Rotated {active}->{other}"
-                    
-                    # Note: We don't kill the full master. It might just be full.
-                    # It will drain eventually.
-        except Exception:
-            # Timeout usually means full too?
-            logger.warning(f"[{self.host}] Probe timed out. Rotating...")
+
+        def _do_rotate(reason: str):
             other = (active + 1) % POOL_SIZE
+            # If we just rotated < ROTATION_PING_PONG_WINDOW ago and we're
+            # rotating AGAIN, both slots are equally broken. Back off so
+            # heartbeat can rebuild instead of pointlessly flipping.
+            since_last = now - self.last_rotate_ts
+            if since_last < self.ROTATION_PING_PONG_WINDOW:
+                self.probe_backoff_until_ts = now + self.PROBE_BACKOFF_SEC
+                self.last_msg = f"Both pools failing — backoff {self.PROBE_BACKOFF_SEC}s"
+                logger.warning(
+                    f"[{self.host}] rotation ping-pong detected "
+                    f"({since_last:.1f}s since last rotate); backing off "
+                    f"{self.PROBE_BACKOFF_SEC}s. heartbeat will rebuild."
+                )
+                return
             if self.pool_status.get(other) == "Ready":
                 self.update_symlink(other)
                 self.status = f"[green]Pool Active ({other})[/green]"
-                self.last_msg = f"Rotated {active}->{other}"
+                self.last_msg = f"Rotated {active}->{other} ({reason})"
+                self.last_rotate_ts = now
+
+        try:
+            cmd = ["ssh", "-o", f"ControlPath={path}", self.host, "echo ok"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if res.returncode != 0:
+                logger.warning(f"[{self.host}] Active Master #{active} refused/failed. Rotating...")
+                _do_rotate("refused")
+        except Exception:
+            logger.warning(f"[{self.host}] Probe timed out. Rotating...")
+            _do_rotate("timeout")
 
     def check_ssh_socket(self):
         return True # Handled by monitor loop
@@ -693,6 +716,13 @@ class SSHHostManager(threading.Thread):
 
     def toggle(self):
         self.active = not self.active
+        # Toggling clears any cool-downs — the user is explicitly retrying
+        # so we shouldn't make them wait through a stale OTP cool-down or
+        # a ping-pong back-off after they (presumably) fixed the underlying
+        # issue (password updated, network restored, etc.).
+        self.consecutive_login_failures = 0
+        self.cooldown_until_ts = 0.0
+        self.probe_backoff_until_ts = 0.0
 
 def load_hosts():
     try:

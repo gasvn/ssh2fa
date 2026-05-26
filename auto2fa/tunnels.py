@@ -313,6 +313,11 @@ class TunnelManager:
         # Clean up the per-tunnel lock so it doesn't linger.
         with self._locks_meta:
             self._tunnel_locks.pop(name, None)
+        # Also drop from post_connect_running so a delete-mid-hook doesn't
+        # leak the name forever (which would block a future re-add of the
+        # same name from starting its own hook).
+        with self._post_connect_lock:
+            self._post_connect_running.discard(name)
         self.save()
 
     def set_node(self, name: str, node: str, user: str) -> None:

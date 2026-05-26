@@ -142,10 +142,22 @@ final class AppState: ObservableObject {
     }
 
     func reloadAll() async {
+        let isFirstLoad = self.tunnels.isEmpty && lastNotchSignature.isEmpty
         do {
             self.hosts = try await client.listHosts()
             self.tunnels = try await client.listTunnels()
             updateDockBadge()
+            // On the very first reload at app launch, seed the dedup map
+            // with every tunnel's current status — otherwise the first
+            // batch of TUNNEL_STATUS_CHANGED events would each be treated
+            // as "new alive transition" and we'd fire N "Connected X"
+            // notches in rapid succession for tunnels that have been
+            // alive for hours.
+            if isFirstLoad {
+                for t in self.tunnels {
+                    self.lastNotchSignature[t.name] = t.status
+                }
+            }
         } catch {
             connectionError = error.localizedDescription
         }
