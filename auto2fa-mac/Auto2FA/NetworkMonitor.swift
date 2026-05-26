@@ -41,18 +41,22 @@ final class NetworkMonitor {
     }
 
     private func handle(path: NWPath) {
-        // Build a stable signature for the current network. If it didn't
-        // actually change (just transient status flickers), skip.
-        let ifaceNames = path.availableInterfaces
-            .map { "\($0.name):\($0.type.debug)" }
-            .sorted()
-            .joined(separator: ",")
-        let signature = "\(path.status)|\(ifaceNames)|\(path.isExpensive)|\(path.isConstrained)"
+        // Build a signature using ONLY the primary connectivity interface
+        // type (wifi vs ethernet vs cellular) + path status. Docker spinning
+        // up a bridge interface or VPN flapping a utun would otherwise
+        // mutate `availableInterfaces` and falsely trigger a recovery
+        // every few seconds.
+        let primary: String
+        if path.usesInterfaceType(.wifi) { primary = "wifi" }
+        else if path.usesInterfaceType(.wiredEthernet) { primary = "eth" }
+        else if path.usesInterfaceType(.cellular) { primary = "cell" }
+        else if path.usesInterfaceType(.loopback) { primary = "lo" }
+        else { primary = "other" }
+        let signature = "\(path.status)|\(primary)"
         guard signature != lastInterfaceSignature else { return }
         let prev = lastInterfaceSignature
         lastInterfaceSignature = signature
         NSLog("[Auto2FA] network change: \(prev) → \(signature)")
-        // Don't fire on the FIRST detection — that's just startup.
         guard !prev.isEmpty else { return }
 
         // Debounce: rapid changes (e.g. interface dropping then coming back

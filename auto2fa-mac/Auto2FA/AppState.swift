@@ -119,20 +119,31 @@ final class AppState: ObservableObject {
                         // dead (not just the socket), respawn before
                         // hammering the socket with retries that can
                         // never succeed.
-                        if let respawn = await DaemonProcess.shared.respawnIfOwnedDaemonCrashed() {
-                            switch respawn {
-                            case .alreadyRunning, .spawned:
-                                NSLog("[Auto2FA] daemon respawned after crash")
-                                // Bootstrap fresh — the new daemon won't
-                                // remember our subscriptions.
-                                await self.bootstrap()
-                                return
-                            case .failed(let reason):
-                                await MainActor.run {
-                                    self.connectionError = "Daemon respawn failed: \(reason)"
+                        //
+                        // Loop the respawn with backoff — previously a single
+                        // failed respawn left the app in a permanently-dead
+                        // "Daemon respawn failed" state until manual restart.
+                        let delays: [UInt64] = [2, 5, 10, 30, 60, 60, 60]
+                        for delay in delays {
+                            if Task.isCancelled { return }
+                            if let respawn = await DaemonProcess.shared.respawnIfOwnedDaemonCrashed() {
+                                switch respawn {
+                                case .alreadyRunning, .spawned:
+                                    NSLog("[Auto2FA] daemon respawned after crash")
+                                    await self.bootstrap()
+                                    return
+                                case .failed(let reason):
+                                    NSLog("[Auto2FA] daemon respawn failed: \(reason), retrying")
+                                    await MainActor.run {
+                                        self.connectionError = "Daemon respawn failed (will retry): \(reason)"
+                                    }
+                                    try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                                    continue
                                 }
-                                return
                             }
+                            // We don't own a daemon — fall back to socket-
+                            // level reconnect (LaunchAgent / external daemon).
+                            break
                         }
                         await self.client.reconnectWithBackoff()
                     }

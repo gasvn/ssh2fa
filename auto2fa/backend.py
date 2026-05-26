@@ -537,11 +537,24 @@ class SSHHostManager(threading.Thread):
 
                     if should_restart:
                         self.pool_status[i] = "Dead"
+                        # Gate on OTP cool-down. Without this, the heartbeat
+                        # loop keeps calling start_master() on each iteration
+                        # even after `consecutive_login_failures >= 3` has
+                        # set cooldown_until_ts — server keeps getting
+                        # hammered, counter keeps climbing (we saw 16+
+                        # failures in a row in the live log). Now: if
+                        # we're in cool-down, skip start_master and break
+                        # out of manage_pool_loop so the outer run() loop
+                        # re-enters and hits the cool-down sleep.
+                        if time.time() < self.cooldown_until_ts:
+                            self.last_msg = (
+                                f"Cool-down — {int(self.cooldown_until_ts - time.time())}s"
+                            )
+                            return
                         # Prevent tight loop on immediate failure (e.g. Systemic SSH failure)
-                        time.sleep(2) 
-                        # Restart synchronous to ensure capacity?
-                        self.start_master(i) 
-                        
+                        time.sleep(2)
+                        self.start_master(i)
+
                         # Update symlink if we just revived the active index
                         if self.active_index == i:
                             other = (i + 1) % POOL_SIZE

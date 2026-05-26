@@ -196,11 +196,17 @@ struct TunnelDetailsPopover: View {
     }
 
     private func startPolling() {
+        // Always cancel any prior task — .task can fire again when SwiftUI
+        // re-creates the popover (e.g. user closes and reopens it without
+        // a full re-render cycle). Without this, multiple poll loops can
+        // overlap, each issuing tunnelEvents IPCs every 2s and stomping
+        // each other's `events` writes.
         pollTask?.cancel()
         let name = tunnel.name
         pollTask = Task { [weak appState] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
                 guard let state = appState else { return }
                 if let fresh = try? await state.client.tunnelEvents(name) {
                     await MainActor.run { self.events = fresh }
