@@ -142,11 +142,31 @@ actor BackendClient {
 
     // MARK: - Request / receive
 
+    /// Per-method timeout defaults. Most methods are listing/setter
+    /// operations that finish in <1s — but a few legitimately take longer
+    /// (set_node triggers a 10s port-probe, wake_recover scans masters,
+    /// host_test_credentials does a fresh login). 30-45s is a generous
+    /// upper bound that still catches a wedged daemon.
+    private static func defaultTimeout(for method: String) -> TimeInterval {
+        switch method {
+        case "tunnel_set_node", "tunnel_toggle",
+             "tunnel_start", "tunnel_rename",
+             "tunnels_batch", "tunnel_set_jump_candidates",
+             "wake_recover", "reset_all":
+            return 30
+        case "host_test_credentials", "host_add":
+            return 45
+        default:
+            return 10
+        }
+    }
+
     /// Send a request, return the raw `result` JSON bytes (or throw).
-    /// Cancellation-aware: if the surrounding Task is cancelled, we resume
-    /// the pending continuation with ClientError.cancelled so any
-    /// `defer { inFlightTunnels.remove(name) }` runs immediately instead
-    /// of leaking the set entry until the daemon eventually replies.
+    /// Cancellation-aware AND timeout-aware. Without a timeout a hung
+    /// daemon would leave the caller awaiting forever — every Mac-side
+    /// await would pile up indefinitely. We resume the pending
+    /// continuation with .transport("daemon timeout") if the configured
+    /// per-method deadline is exceeded.
     @discardableResult
     private func sendRaw(method: String, params: [String: Any]) async throws -> Data {
         guard let conn = connection else { throw ClientError.notConnected }
@@ -155,18 +175,33 @@ actor BackendClient {
         var line = try JSONSerialization.data(withJSONObject: payload)
         line.append(0x0a)
 
+        let timeoutSec = BackendClient.defaultTimeout(for: method)
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeoutSec * 1_000_000_000))
+            if Task.isCancelled { return }
+            await self?.failRequest(id: id,
+                error: ClientError.transport("daemon timed out after \(Int(timeoutSec))s on \(method)"))
+        }
+
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { cont in
-                self.pendingRequests[id] = cont
-                conn.send(content: line, completion: .contentProcessed { err in
-                    if let err {
-                        Task { await self.failRequest(id: id, error: ClientError.transport(err.localizedDescription)) }
-                    }
-                })
+            do {
+                let data = try await withCheckedThrowingContinuation { cont in
+                    self.pendingRequests[id] = cont
+                    conn.send(content: line, completion: .contentProcessed { err in
+                        if let err {
+                            Task { await self.failRequest(id: id,
+                                error: ClientError.transport(err.localizedDescription)) }
+                        }
+                    })
+                }
+                timeoutTask.cancel()
+                return data
+            } catch {
+                timeoutTask.cancel()
+                throw error
             }
         } onCancel: {
-            // onCancel runs on whatever queue cancelled the Task — must
-            // hop into the actor to mutate pendingRequests safely.
+            timeoutTask.cancel()
             Task { await self.failRequest(id: id, error: ClientError.cancelled) }
         }
     }
