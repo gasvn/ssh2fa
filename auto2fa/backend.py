@@ -131,6 +131,16 @@ class SSHHostManager(threading.Thread):
         self.pool = {}        # {index: pexpect_child}
         self.pool_status = {} # {index: "Init/Ready/Dead"}
         self.active_index = 0
+        # Per-index lock — only one start_master can run for a given pool
+        # slot at a time. Without this, start_master_async (the background
+        # thread that warms up master 1 five seconds after startup) raced
+        # the heartbeat loop (which also tries to bring up missing pool
+        # slots): both spawned ssh, both sent the SAME OTP in the same 30s
+        # window, the server consumed the first and rejected the second
+        # as a duplicate → counter climbed → 5-minute cool-down.
+        # This race was the dominant cause of the "always disconnecting"
+        # symptom the user reported.
+        self._start_locks = {i: threading.Lock() for i in range(POOL_SIZE)}
 
         # OTP rate-limit cool-down: when start_master sees the "server
         # looped back to Password prompt" pattern repeatedly, the server
@@ -139,8 +149,13 @@ class SSHHostManager(threading.Thread):
         # Hammering harder just makes it worse, so we sit out for 5 min.
         self.consecutive_login_failures = 0
         self.cooldown_until_ts = 0.0
-        self.OTP_FAILURE_THRESHOLD = 3
-        self.OTP_COOLDOWN_SEC = 300
+        # Cool-down is a last-resort circuit breaker. With the per-index
+        # start lock in place, repeated OTP failures should be very rare,
+        # so the threshold is forgiving and the cool-down is short — long
+        # enough to let the server's rate-limit window clear, short enough
+        # that the user doesn't perceive the daemon as broken.
+        self.OTP_FAILURE_THRESHOLD = 5
+        self.OTP_COOLDOWN_SEC = 60
 
         # Pool rotation ping-pong detection. When BOTH pool slots are
         # equally broken (TCP dead, server unreachable), check_and_rotate
@@ -286,9 +301,26 @@ class SSHHostManager(threading.Thread):
             return False
 
     def start_master(self, index):
-        """Starts a specific master connection in the pool"""
+        """Starts a specific master connection in the pool.
+
+        Guarded by a per-index non-blocking lock so concurrent callers
+        (e.g. start_master_async vs. the heartbeat noticing the slot is
+        empty) cannot both spawn ssh and burn the same OTP within one
+        30-second window. Whoever loses the race just returns False.
+        """
+        lock = self._start_locks.get(index)
+        if lock is None or not lock.acquire(blocking=False):
+            self.last_msg = f"Master #{index} start already in progress"
+            logger.debug("[%s] Master #%d start skipped — already in progress", self.host, index)
+            return False
+        try:
+            return self._start_master_impl(index)
+        finally:
+            lock.release()
+
+    def _start_master_impl(self, index):
         path = self.pool_control_paths[index]
-        
+
         # Cleanup first (No zombie kill, only specific index)
         cleanup_stale_connection(path, self.host, kill_zombies=False)
         
@@ -536,21 +568,18 @@ class SSHHostManager(threading.Thread):
                             should_restart = True
 
                     if should_restart:
-                        self.pool_status[i] = "Dead"
-                        # Gate on OTP cool-down. Without this, the heartbeat
-                        # loop keeps calling start_master() on each iteration
-                        # even after `consecutive_login_failures >= 3` has
-                        # set cooldown_until_ts — server keeps getting
-                        # hammered, counter keeps climbing (we saw 16+
-                        # failures in a row in the live log). Now: if
-                        # we're in cool-down, skip start_master and break
-                        # out of manage_pool_loop so the outer run() loop
-                        # re-enters and hits the cool-down sleep.
+                        # In OTP cool-down: skip *this slot* but keep monitoring
+                        # the other one. Don't trash pool_status (leave whatever
+                        # the previous state was — a flapping "Dead" badge
+                        # confuses the UI) and don't `return` out of the
+                        # heartbeat (that used to take a healthy pool 0 offline
+                        # just because pool 1 needed a restart).
                         if time.time() < self.cooldown_until_ts:
                             self.last_msg = (
                                 f"Cool-down — {int(self.cooldown_until_ts - time.time())}s"
                             )
-                            return
+                            continue
+                        self.pool_status[i] = "Dead"
                         # Prevent tight loop on immediate failure (e.g. Systemic SSH failure)
                         time.sleep(2)
                         self.start_master(i)

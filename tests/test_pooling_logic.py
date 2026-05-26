@@ -108,5 +108,74 @@ class TestPoolingLogic(unittest.TestCase):
             # Let's trust the unit tests above for safety.
             pass
 
+class TestStartMasterLock(unittest.TestCase):
+    """The per-index lock prevents the start_master_async / heartbeat race
+    that used to spawn two concurrent ssh logins for the same pool slot
+    and burn the same OTP twice within one 30s TOTP window."""
+
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        mock_subprocess.reset_mock()
+        self.mgr = SSHHostManager("test_host", "pass", "secret")
+        self.mgr.running = True
+        self.mgr.active = True
+
+    def test_lock_exists_per_index(self):
+        # POOL_SIZE is 2 — both slots must have a lock object.
+        self.assertEqual(set(self.mgr._start_locks.keys()), {0, 1})
+
+    @patch('backend.cleanup_stale_connection')
+    def test_second_caller_skipped_when_first_holds_lock(self, mock_cleanup):
+        # First caller takes the lock (simulating an in-flight login).
+        self.mgr._start_locks[1].acquire()
+        try:
+            result = self.mgr.start_master(1)
+        finally:
+            self.mgr._start_locks[1].release()
+
+        self.assertFalse(result, "Expected False when lock is held")
+        # The crucial guarantee: no ssh spawn, no cleanup — short-circuit.
+        mock_cleanup.assert_not_called()
+        mock_pexpect.spawn.assert_not_called()
+
+    @patch('backend.cleanup_stale_connection')
+    def test_lock_released_after_success(self, mock_cleanup):
+        mock_child = MagicMock()
+        mock_child.expect.side_effect = [0, 0, 4]  # password → otp → prompt
+        mock_pexpect.spawn.return_value = mock_child
+
+        self.mgr.start_master(1)
+        # Lock must be free again — otherwise a follow-up restart would
+        # silently no-op forever after the first successful login.
+        acquired = self.mgr._start_locks[1].acquire(blocking=False)
+        self.assertTrue(acquired, "Lock was not released after start_master")
+        self.mgr._start_locks[1].release()
+
+    @patch('backend.cleanup_stale_connection')
+    def test_lock_released_even_when_inner_raises(self, mock_cleanup):
+        # Force the implementation to raise after acquiring the lock — the
+        # finally must still release it.
+        with patch.object(self.mgr, '_start_master_impl', side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                self.mgr.start_master(0)
+        acquired = self.mgr._start_locks[0].acquire(blocking=False)
+        self.assertTrue(acquired, "Lock leaked after exception in _start_master_impl")
+        self.mgr._start_locks[0].release()
+
+
+class TestCooldownDefaults(unittest.TestCase):
+    """The cool-down is a circuit breaker, not the primary defense — the
+    per-index lock fixes the actual race. Keep the threshold forgiving
+    and the duration short so a transient blip does not lock the user
+    out for 5 minutes."""
+
+    def test_cooldown_is_short_and_threshold_forgiving(self):
+        mgr = SSHHostManager("test_host", "pass", "secret")
+        self.assertLessEqual(mgr.OTP_COOLDOWN_SEC, 120,
+                             "OTP cool-down must stay short — long cool-downs were the regression")
+        self.assertGreaterEqual(mgr.OTP_FAILURE_THRESHOLD, 5,
+                                "Threshold must be forgiving — 3 was too easy to trip")
+
+
 if __name__ == '__main__':
     unittest.main()
