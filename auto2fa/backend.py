@@ -10,6 +10,7 @@ import logging
 import subprocess
 import threading
 import shutil
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,72 @@ def generate_passcode_from_secret(secret):
     except Exception as e:
         logger.error(f"Failed to generate OTP: {e}")
         raise
+
+
+# --- Cross-host OTP replay guard --------------------------------------------
+# Many users (e.g. all Harvard FAS-RC login nodes) configure every host with
+# the same Duo TOTP secret. When the daemon brings several such hosts up in
+# parallel, each spawns ssh, each derives the same 6-digit code, and the
+# server consumes the first while rejecting the rest as replays — which we
+# saw as "Server looped back to Password prompt" cascades across hosts within
+# the same second.
+#
+# Guard plan:
+#   1. Group hosts by hash(secret) so only those that share a secret block
+#      each other. Hosts with distinct secrets run in parallel as before.
+#   2. Serialize the *OTP submission* (not the whole login) per group with a
+#      lock — the lock is held only across sendline + recording, not the
+#      full multi-second expect.
+#   3. After a submission, remember the code. The next caller regenerates;
+#      if the regenerated code matches the just-used one, sleep until the
+#      next 30-second TOTP window before submitting.
+_OTP_REGISTRY_LOCK = threading.Lock()
+_OTP_GROUP_LOCKS: dict = {}
+_OTP_LAST_SUBMITTED: dict = {}   # group_key -> (code, ts)
+_TOTP_WINDOW_SEC = 30
+
+
+def _otp_group_key(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()[:16] if secret else ""
+
+
+def _get_otp_group_lock(secret: str):
+    key = _otp_group_key(secret)
+    if not key:
+        return None
+    with _OTP_REGISTRY_LOCK:
+        lock = _OTP_GROUP_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _OTP_GROUP_LOCKS[key] = lock
+    return lock
+
+
+def _fresh_otp_or_wait(secret: str, host_label: str) -> str:
+    """Generate a TOTP code that has not just been submitted for this
+    secret group. If it has been, wait for the next 30-second window."""
+    key = _otp_group_key(secret)
+    while True:
+        code = generate_passcode_from_secret(secret)
+        last_code, last_ts = _OTP_LAST_SUBMITTED.get(key, (None, 0.0))
+        # If the previous submission was for a different code OR the
+        # window has clearly rolled over (>=35s ago), this code is safe.
+        if code != last_code or (time.time() - last_ts) > (_TOTP_WINDOW_SEC + 5):
+            return code
+        # Same code — wait until the next TOTP window boundary, plus a
+        # 1s buffer so the new window is fully established server-side.
+        wait_for = _TOTP_WINDOW_SEC - (int(time.time()) % _TOTP_WINDOW_SEC) + 1
+        logger.info(
+            "[%s] OTP %s would replay last submission; waiting %ds for next TOTP window",
+            host_label, code, wait_for,
+        )
+        time.sleep(wait_for)
+
+
+def _record_otp_submission(secret: str, code: str) -> None:
+    key = _otp_group_key(secret)
+    if key:
+        _OTP_LAST_SUBMITTED[key] = (code, time.time())
 
 def extract_secret_from_url(otpauth_url):
     try:
@@ -407,8 +474,20 @@ class SSHHostManager(threading.Thread):
                      should_send_otp = True
                      
             if should_send_otp:
-                fresh_otp = generate_passcode_from_secret(self.otp_secret)
-                child.sendline(fresh_otp)
+                # Serialize OTP submission across hosts that share this
+                # TOTP secret. Without this, hosts brought up in parallel
+                # send the same code within milliseconds and the server
+                # consumes the first while rejecting the rest as replays.
+                otp_lock = _get_otp_group_lock(self.otp_secret)
+                if otp_lock is not None:
+                    otp_lock.acquire()
+                try:
+                    fresh_otp = _fresh_otp_or_wait(self.otp_secret, self.host)
+                    child.sendline(fresh_otp)
+                    _record_otp_submission(self.otp_secret, fresh_otp)
+                finally:
+                    if otp_lock is not None:
+                        otp_lock.release()
                 # Timeout 60s (was 20s): Cannon's MOTD is ~50 lines + slurm
                 # stats table, and the server slows down for a few minutes
                 # after a burst of failed logins. 20s timed out mid-banner

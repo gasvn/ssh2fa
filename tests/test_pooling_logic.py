@@ -163,6 +163,75 @@ class TestStartMasterLock(unittest.TestCase):
         self.mgr._start_locks[0].release()
 
 
+class TestOTPReplayGuard(unittest.TestCase):
+    """Hosts that share an OTP secret (e.g. all Harvard FAS-RC login
+    nodes) must not submit the same TOTP code in parallel. The guard
+    serializes per-secret-group and waits for the next 30s window if
+    the same code would otherwise be replayed."""
+
+    def setUp(self):
+        # Wipe registry state so tests don't cross-contaminate.
+        backend._OTP_GROUP_LOCKS.clear()
+        backend._OTP_LAST_SUBMITTED.clear()
+
+    def test_hosts_with_different_secrets_get_different_locks(self):
+        a = backend._get_otp_group_lock("AAAAAAAAAA")
+        b = backend._get_otp_group_lock("BBBBBBBBBB")
+        self.assertIsNot(a, b)
+
+    def test_hosts_with_same_secret_share_one_lock(self):
+        a = backend._get_otp_group_lock("SHAREDSECRET")
+        b = backend._get_otp_group_lock("SHAREDSECRET")
+        self.assertIs(a, b, "Same secret must yield the same lock object")
+
+    def test_empty_secret_yields_no_lock(self):
+        # Hosts without OTP (key-only) must bypass the guard entirely.
+        self.assertIsNone(backend._get_otp_group_lock(""))
+
+    def test_fresh_otp_returns_immediately_when_no_prior_submission(self):
+        with patch('backend.generate_passcode_from_secret', return_value="123456"):
+            code = backend._fresh_otp_or_wait("SECRET", "host-a")
+        self.assertEqual(code, "123456")
+
+    def test_fresh_otp_returns_immediately_when_code_differs(self):
+        backend._record_otp_submission("SECRET", "111111")
+        with patch('backend.generate_passcode_from_secret', return_value="222222"):
+            code = backend._fresh_otp_or_wait("SECRET", "host-a")
+        self.assertEqual(code, "222222")
+
+    def test_fresh_otp_waits_when_same_code_would_replay(self):
+        # Pretend we just submitted code "999999" right now.
+        backend._record_otp_submission("SECRET", "999999")
+
+        # First call returns the replayed code; second call returns a fresh one.
+        # The function must call time.sleep at least once and then re-generate.
+        call_count = {"n": 0}
+        def gen(_secret):
+            call_count["n"] += 1
+            # Same code first, different code after the "sleep"
+            return "999999" if call_count["n"] == 1 else "888888"
+
+        slept = []
+        with patch('backend.generate_passcode_from_secret', side_effect=gen):
+            with patch('backend.time.sleep', side_effect=lambda s: slept.append(s)):
+                code = backend._fresh_otp_or_wait("SECRET", "host-a")
+        self.assertEqual(code, "888888")
+        self.assertEqual(len(slept), 1, "Must sleep exactly once for the window roll-over")
+        self.assertGreater(slept[0], 0)
+        self.assertLessEqual(slept[0], 31, "Sleep should be at most one TOTP window + small buffer")
+
+    def test_fresh_otp_does_not_wait_after_window_expired(self):
+        # Record submission 60s in the past — should NOT wait.
+        key = backend._otp_group_key("SECRET")
+        backend._OTP_LAST_SUBMITTED[key] = ("777777", __import__('time').time() - 60)
+        slept = []
+        with patch('backend.generate_passcode_from_secret', return_value="777777"):
+            with patch('backend.time.sleep', side_effect=lambda s: slept.append(s)):
+                code = backend._fresh_otp_or_wait("SECRET", "host-a")
+        self.assertEqual(code, "777777")
+        self.assertEqual(slept, [], "Should not sleep after the TOTP window has clearly rolled over")
+
+
 class TestCooldownDefaults(unittest.TestCase):
     """The cool-down is a circuit breaker, not the primary defense — the
     per-index lock fixes the actual race. Keep the threshold forgiving
