@@ -392,28 +392,27 @@ class SSHHostManager(threading.Thread):
         cleanup_stale_connection(path, self.host, kill_zombies=False)
         
         log_file = f"/tmp/auto2fa_ssh_master_{self.host}_{index}.log"
-        ssh_options = (
-            "-v "
-            f"-E {log_file} "
-            "-o StrictHostKeyChecking=no "
-            "-o UserKnownHostsFile=/dev/null "
-            "-o ServerAliveInterval=10 "
-            "-o ServerAliveCountMax=2 "
-            "-o ConnectTimeout=10 "
-            "-o ControlMaster=auto "
-            f"-o ControlPath={path} "  # Use specific pool path
-            "-o ControlPersist=yes"
-        )
-        
+
         # Build argv as a list directly so paths containing spaces (e.g. a
         # home directory like "/Users/john doe/.ssh/...") don't get split.
+        #
+        # Keepalive tolerance (15s x 12 = 180s) is deliberately generous and
+        # kept in sync with ssh_config_template. The master holds the single
+        # shared TCP connection; every multiplexed channel — including the
+        # user's interactive `ssh host` working shell — rides on it. If the
+        # master self-terminates the instant the network blips, the user's
+        # session dies with it and their work is lost. A short blip (wifi
+        # handover, VPN renegotiation, laptop briefly asleep) must NOT tear
+        # the master down. Genuinely-dead masters are still caught fast by the
+        # local `ssh -O check` heartbeat + check_and_rotate, which rotate the
+        # symlink to the spare so new logins stay instant.
         ssh_argv = [
             "-v",
             "-E", log_file,
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ServerAliveInterval=10",
-            "-o", "ServerAliveCountMax=2",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=12",
             "-o", "ConnectTimeout=10",
             "-o", "ControlMaster=auto",
             "-o", f"ControlPath={path}",

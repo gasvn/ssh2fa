@@ -49,10 +49,59 @@ class TestPoolingLogic(unittest.TestCase):
         # Only check kwargs
         self.assertEqual(kwargs.get('kill_zombies'), False, "start_master called with kill_zombies=True!")
 
+    @patch('backend.cleanup_stale_connection')
+    def test_master_keepalive_is_tolerant(self, mock_cleanup):
+        """The pool master must tolerate transient network blips before it
+        self-terminates. When the master's TCP gives up, EVERY multiplexed
+        channel riding it dies too — including the user's interactive
+        `ssh host` working shell. ServerAliveCountMax=2 (interval 10) meant a
+        ~20s wifi/VPN hiccup nuked the user's session. Keep the tolerance
+        window generous and aligned with ssh_config_template (15s x 12 = 180s)."""
+        # Reference the pexpect mock that `backend` actually bound at import
+        # time. Each test file installs its own sys.modules['pexpect'], but
+        # backend binds to whichever was present when it was first imported —
+        # so in a full-suite run that is NOT necessarily this file's
+        # mock_pexpect. Reading backend.pexpect makes this test order-robust.
+        spawn = backend.pexpect.spawn
+        spawn.reset_mock(return_value=True, side_effect=True)
+        mock_child = MagicMock()
+        mock_child.expect.side_effect = [0, 0, 4]  # Password, OTP, Success
+        spawn.return_value = mock_child
+
+        self.mgr.start_master(1)
+
+        self.assertTrue(spawn.called, "ssh master was never spawned")
+        # spawn("ssh", ssh_argv, ...) — argv is the second positional arg.
+        argv = spawn.call_args.args[1]
+
+        self.assertIn("ServerAliveInterval=15", argv)
+        self.assertIn("ServerAliveCountMax=12", argv)
+        self.assertNotIn("ServerAliveCountMax=2", argv,
+                         "Regressed to the aggressive 20s window that killed user shells")
+
+        # Derive the tolerance window and assert it stays generous.
+        def _opt_val(name):
+            tag = f"{name}="
+            for tok in argv:
+                if isinstance(tok, str) and tok.startswith(tag):
+                    return int(tok.split("=", 1)[1])
+            raise AssertionError(f"{name} missing from ssh argv")
+
+        window = _opt_val("ServerAliveInterval") * _opt_val("ServerAliveCountMax")
+        self.assertGreaterEqual(window, 120,
+                                "Keepalive tolerance must stay generous (>= 120s) "
+                                "so network blips don't tear down the user's shell")
+
     def test_cleanup_signature(self):
         """Verify the cleanup function sends pkill only when asked"""
-        # Re-import to unpatch if needed, or just rely on global mock_subprocess
-        
+        # Inspect the subprocess mock that `backend` actually bound at import
+        # time, not this file's module-global. In a full-suite run another
+        # test file may have imported backend first against its own
+        # sys.modules['subprocess'] mock, so mock_subprocess here would never
+        # see the calls. backend.subprocess is always the right object.
+        mock_subprocess = backend.subprocess
+        mock_subprocess.reset_mock()
+
         # 1. False
         backend.cleanup_stale_connection("path", "host", kill_zombies=False)
         # Check subprocess.run calls
