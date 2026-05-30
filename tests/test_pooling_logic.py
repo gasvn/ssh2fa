@@ -295,5 +295,22 @@ class TestCooldownDefaults(unittest.TestCase):
                                 "Threshold must be forgiving — 3 was too easy to trip")
 
 
+class TestHeartbeatCheckTimeout(unittest.TestCase):
+    """The heartbeat probes each master with a LOCAL `ssh -O check`. A single
+    failure tears the master down and rebuilds it — which SIGKILLs whatever
+    holds the socket, including the user's live working shell. The probe is
+    local and normally returns in milliseconds, but a momentary local stall
+    (heavy compile, Time Machine, swap thrashing) could make a 2s timeout
+    fire spuriously and execute a healthy master. Keep the timeout generous
+    so transient local load doesn't get a good connection killed."""
+
+    def test_check_timeout_is_forgiving(self):
+        self.assertGreaterEqual(
+            backend.HEARTBEAT_CHECK_TIMEOUT, 5,
+            "Local `ssh -O check` timeout must stay generous (>= 5s) so a "
+            "momentary local stall doesn't false-positive and kill the "
+            "user's shell along with the rebuilt master")
+
+
 if __name__ == '__main__':
     unittest.main()

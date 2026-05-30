@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 POOL_SIZE = 2
 ROTATION_CHECK_INTERVAL = 5   # Seconds (Remote Check - Light Load)
 HEARTBEAT_INTERVAL = 3        # Seconds (Local Check - Zero Load)
+HEARTBEAT_CHECK_TIMEOUT = 5   # Seconds. Timeout for the local `ssh -O check`
+                              # probe. Generous on purpose: the probe is local
+                              # and normally returns in ms, but a momentary
+                              # local stall must NOT false-positive — a failed
+                              # probe rebuilds the master, which SIGKILLs the
+                              # socket holder, i.e. the user's live shell.
 
 def send_notification(title, message):
     """Sends a native macOS desktop notification.
@@ -632,11 +638,13 @@ class SSHHostManager(threading.Thread):
                     elif current_time - last_heartbeat > HEARTBEAT_INTERVAL:
                         path = self.pool_control_paths[i]
                         try:
-                            # Quick check (1s timeout)
                             # We use 'ssh -O check' which verifies the master process is responding LOCALLY.
                             # This does NOT ping the server, so it is cheap and safe.
+                            # Timeout is HEARTBEAT_CHECK_TIMEOUT (generous) so a
+                            # momentary local stall doesn't false-positive and
+                            # take down a healthy master + the user's shell.
                             chk_cmd = ["ssh", "-O", "check", "-o", f"ControlPath={path}", self.host]
-                            res = subprocess.run(chk_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                            res = subprocess.run(chk_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=HEARTBEAT_CHECK_TIMEOUT)
                             if res.returncode != 0:
                                 logger.warning(f"[{self.host}] Master #{i} socket unresponsive. Restarting...")
                                 should_restart = True
