@@ -11,8 +11,8 @@ mock_subprocess = MagicMock()
 sys.modules['pexpect'] = mock_pexpect
 sys.modules['subprocess'] = mock_subprocess
 
-# Add path
-sys.path.append("/Users/shgao/logs/auto2fa_dev/auto2fa")
+# Add path (relative to this file, so the suite runs on any checkout/user)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "auto2fa"))
 
 import backend
 from backend import SSHHostManager

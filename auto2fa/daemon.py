@@ -145,8 +145,11 @@ class Auto2FADaemon:
             self.managers.append(mgr)
         self.host_map = {m.host: m for m in self.managers}
 
-        config_path = os.environ.get("SSH_CONFIG_PATH")
-        tunnels_cfg = os.path.join(config_path, "tunnels.json")
+        # Resolve via the same validated resolver passwords.json uses, so a
+        # stale/foreign SSH_CONFIG_PATH (e.g. injected by a leftover .env when
+        # the daemon is spawned at login without .zshrc) can't point us at a
+        # non-existent directory and silently wipe the user's tunnels.
+        tunnels_cfg = os.path.join(credentials.config_dir(), "tunnels.json")
         self.tunnel_mgr = TunnelManager(
             host_managers=self.host_map, config_path=tunnels_cfg
         )

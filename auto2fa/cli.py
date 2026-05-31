@@ -1,8 +1,8 @@
 """auto2fa CLI — a small Unix-socket client for scripting the daemon.
 
-Install (until packaged): symlink into PATH, e.g.
-    ln -s /Users/shgao/logs/auto2fa_dev/auto2fa/cli.py ~/bin/auto2fa
-    chmod +x /Users/shgao/logs/auto2fa_dev/auto2fa/cli.py
+Install (until packaged): symlink into PATH from your checkout, e.g.
+    ln -s "$(pwd)/auto2fa/cli.py" ~/bin/auto2fa
+    chmod +x ~/bin/auto2fa
 
 Examples:
     auto2fa list                        # show hosts + tunnels

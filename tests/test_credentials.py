@@ -181,5 +181,67 @@ class TestSaveDelete(_Base):
         self.assertIsNone(self.mem.get_password("auto2fa", "h.password"))
 
 
+class TestConfigDirResolver(unittest.TestCase):
+    """Regression tests for config_dir() — the boot-time "all my tunnels and
+    hosts disappeared after reboot" bug.
+
+    Root cause: at login the daemon is spawned by `zsh -lc`, which does NOT
+    source .zshrc, so SSH_CONFIG_PATH is unset. load_dotenv() then picked up
+    a stale `.env` pointing at another machine's path (/Users/suyc/.ssh).
+    The daemon read passwords.json / tunnels.json from that non-existent
+    directory, got nothing, and the UI showed an empty config — while the
+    real files sat untouched in ~/.ssh. config_dir() must refuse a
+    SSH_CONFIG_PATH that isn't an existing directory and fall back to ~/.ssh.
+    """
+
+    def setUp(self):
+        self.old_env = os.environ.get("SSH_CONFIG_PATH")
+
+    def tearDown(self):
+        if self.old_env is None:
+            os.environ.pop("SSH_CONFIG_PATH", None)
+        else:
+            os.environ["SSH_CONFIG_PATH"] = self.old_env
+
+    def test_existing_dir_is_honored(self):
+        tmp = tempfile.mkdtemp(prefix="a2f-cfgdir-")
+        try:
+            os.environ["SSH_CONFIG_PATH"] = tmp
+            self.assertEqual(credentials.config_dir(), tmp)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_nonexistent_foreign_path_falls_back_to_ssh(self):
+        # The exact failure mode: a foreign path injected by a stale .env.
+        os.environ["SSH_CONFIG_PATH"] = "/Users/suyc/.ssh"
+        self.assertEqual(credentials.config_dir(),
+                         os.path.expanduser("~/.ssh"))
+
+    def test_unset_falls_back_to_ssh(self):
+        os.environ.pop("SSH_CONFIG_PATH", None)
+        self.assertEqual(credentials.config_dir(),
+                         os.path.expanduser("~/.ssh"))
+
+    def test_empty_string_falls_back_to_ssh(self):
+        os.environ["SSH_CONFIG_PATH"] = ""
+        self.assertEqual(credentials.config_dir(),
+                         os.path.expanduser("~/.ssh"))
+
+    def test_tilde_path_is_expanded(self):
+        os.environ["SSH_CONFIG_PATH"] = "~/.ssh"
+        self.assertEqual(credentials.config_dir(),
+                         os.path.expanduser("~/.ssh"))
+
+    def test_passwords_path_routes_through_resolver(self):
+        # With a poisoned env, _passwords_path() must resolve into ~/.ssh,
+        # NOT the non-existent foreign directory.
+        os.environ["SSH_CONFIG_PATH"] = "/Users/suyc/.ssh"
+        self.assertEqual(
+            credentials._passwords_path(),
+            os.path.join(os.path.expanduser("~/.ssh"), "passwords.json"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

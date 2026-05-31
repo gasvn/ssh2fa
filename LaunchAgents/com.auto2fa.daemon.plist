@@ -25,12 +25,11 @@
         <false/>
     </dict>
 
-    <!-- The daemon needs SSH_CONFIG_PATH to find passwords.json + tunnels.json.
-         Adjust this to your ~/.ssh equivalent. -->
+    <!-- The daemon stores passwords.json + tunnels.json in ~/.ssh by default
+         (resolved per-user at runtime — no need to hardcode a username here).
+         Only set SSH_CONFIG_PATH below if you keep them somewhere else. -->
     <key>EnvironmentVariables</key>
     <dict>
-        <key>SSH_CONFIG_PATH</key>
-        <string>/Users/YOUR_USERNAME/.ssh</string>
         <key>PATH</key>
         <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     </dict>

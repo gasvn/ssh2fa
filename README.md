@@ -49,13 +49,17 @@ brew install fuse-t-sshfs
 
 ## Configuration
 
-### Step 1: Create `.env` file
+### Step 1: (Optional) config location
 
-Create a `.env` file in the project root directory:
+By default auto2fa stores `passwords.json` + `tunnels.json` in `~/.ssh`,
+resolved per-user at runtime — nothing to configure. Only set
+`SSH_CONFIG_PATH` if you keep them elsewhere, either as an exported
+environment variable or in a `.env` file in the project root:
 ```bash
 SSH_CONFIG_PATH=/path/to/your/.ssh
 ```
-Example: `SSH_CONFIG_PATH=/Users/yourname/.ssh`
+Do **not** commit a `.env` with an absolute path — it would override the
+per-user default on every machine that checked it out.
 
 ### Step 2: Configure SSH Config
 

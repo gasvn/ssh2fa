@@ -89,11 +89,34 @@ def delete_credentials(host: str) -> None:
 # passwords.json — schema-aware load / save / migrate
 # ---------------------------------------------------------------------------
 
+def config_dir() -> str:
+    """Resolve the directory that holds passwords.json / tunnels.json.
+
+    Honors SSH_CONFIG_PATH ONLY when it points at a directory that actually
+    exists. A stale or foreign value — e.g. another machine's path injected
+    by a leftover `.env` that load_dotenv() picks up when the daemon is
+    spawned at login (where .zshrc, and thus the real export, isn't sourced)
+    — is ignored. Without this guard the daemon silently read an empty
+    config from a non-existent directory and the user's hosts and tunnels
+    vanished from the UI after a reboot, even though the real files were
+    sitting untouched in ~/.ssh.
+
+    Falls back to ~/.ssh, where auto2fa has always stored its config.
+    """
+    p = os.environ.get("SSH_CONFIG_PATH")
+    if p:
+        expanded = os.path.expanduser(p)
+        if os.path.isdir(expanded):
+            return expanded
+        logger.warning(
+            "[credentials] SSH_CONFIG_PATH=%r is not an existing directory; "
+            "falling back to ~/.ssh", p
+        )
+    return os.path.expanduser("~/.ssh")
+
+
 def _passwords_path() -> str:
-    config_path = os.environ.get("SSH_CONFIG_PATH")
-    if not config_path:
-        raise RuntimeError("SSH_CONFIG_PATH not set")
-    return os.path.join(config_path, "passwords.json")
+    return os.path.join(config_dir(), "passwords.json")
 
 
 def load_config() -> dict:
