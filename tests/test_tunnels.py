@@ -640,7 +640,7 @@ class TestTunnelManagerTick(unittest.TestCase):
              unittest.mock.patch.object(tm, "stop") as p_stop:
             tm.tick()
             p_stop.assert_called_once_with("x", user_initiated=False)
-            p_start.assert_called_once_with("x")
+            p_start.assert_called_once_with("x", _auto_recovery=True)
 
     def test_tick_does_not_failover_on_transient_jump_unready(self):
         """A multiplexed `ssh -L` child keeps working even if the master's
@@ -696,7 +696,7 @@ class TestTunnelManagerTick(unittest.TestCase):
              unittest.mock.patch.object(tm, "_port_available", return_value=True):
             tm.tick()
             p_stop.assert_called_once_with("x", user_initiated=False)
-            p_start.assert_called_once_with("x")
+            p_start.assert_called_once_with("x", _auto_recovery=True)
 
     def test_tick_respawns_when_isalive_raises(self):
         """pexpect can raise PtyProcessError (ECHILD etc.) from isalive().
@@ -718,7 +718,7 @@ class TestTunnelManagerTick(unittest.TestCase):
              unittest.mock.patch.object(tm, "_port_available", return_value=False):
             tm.tick()
             p_stop.assert_called_once_with("x", user_initiated=False)
-            p_start.assert_called_once_with("x")
+            p_start.assert_called_once_with("x", _auto_recovery=True)
 
     def test_tick_stops_tunnel_when_host_disabled(self):
         """User toggled the jump host off → we should stop the tunnel
@@ -950,6 +950,159 @@ class TestExpandFirstNode(unittest.TestCase):
     def test_malformed_returns_raw(self):
         from tunnels import expand_first_node
         self.assertEqual(expand_first_node("(Resources)"), ("(Resources)", False))
+
+
+class TestBugHuntFixes(unittest.TestCase):
+    """Regression tests for the multi-bug-hunt fixes M1/M2/M4/M14."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="a2f-tun-fix-")
+        self.cfg = os.path.join(self.tmp, "tunnels.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _ready_mgr(self):
+        m = MagicMock()
+        m.is_master_ready.return_value = True
+        m.active = True
+        return m
+
+    # --- M1: stale / port_busy must auto-recover when wants_alive -----------
+    def test_tick_recovers_stale_tunnel(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "stale"; ts.wants_alive = True; ts.last_node = "n1"
+        with unittest.mock.patch.object(tm, "start") as p_start:
+            tm.tick()
+            p_start.assert_called_once_with("x", _auto_recovery=True)
+
+    def test_tick_recovers_port_busy_tunnel(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "port_busy"; ts.wants_alive = True; ts.last_node = "n1"
+        with unittest.mock.patch.object(tm, "start") as p_start:
+            tm.tick()
+            p_start.assert_called_once_with("x", _auto_recovery=True)
+
+    # --- M2: auto-recovery must honor a concurrent user stop() --------------
+    def test_auto_recovery_start_honors_user_stop(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "idle"; ts.wants_alive = False  # user just stopped it
+        with unittest.mock.patch.object(tm, "pick_active_jump") as p_jump:
+            tm.start("x", _auto_recovery=True)
+            p_jump.assert_not_called()
+        self.assertEqual(ts.status, "idle")
+
+    def test_normal_start_ignores_wants_alive_flag(self):
+        # An explicit (non-auto) start must proceed even if wants_alive is
+        # False — that is how the user turns a stopped tunnel back on.
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "idle"; ts.wants_alive = False; ts.last_node = "n1"
+        with unittest.mock.patch.object(tm, "pick_active_jump", return_value="k8") as p_jump, \
+             unittest.mock.patch.object(tm, "_port_available", return_value=True), \
+             unittest.mock.patch.object(tm, "_probe_port_ready", return_value=False):
+            tm.start("x")  # not auto-recovery
+            p_jump.assert_called()  # proceeded past the wants_alive guard
+
+    # --- M4: set_node on an ALIVE tunnel must re-target the forward ---------
+    def test_set_node_retargets_alive_tunnel(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"; ts.last_node = "oldnode"
+        with unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "start") as p_start:
+            tm.set_node("x", "newnode", "shgao")
+            p_stop.assert_called_once_with("x", user_initiated=False)
+            p_start.assert_called_once_with("x")
+        self.assertEqual(ts.last_node, "newnode")
+
+    def test_set_node_same_node_alive_does_not_bounce(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={"k8": self._ready_mgr()}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ts = tm.tunnels["x"]
+        ts.status = "alive"; ts.last_node = "samenode"
+        with unittest.mock.patch.object(tm, "stop") as p_stop, \
+             unittest.mock.patch.object(tm, "start") as p_start:
+            tm.set_node("x", "samenode", "shgao")
+            p_stop.assert_not_called()
+            p_start.assert_not_called()
+
+    # --- M14: save() must fsync the file before the rename ------------------
+    def test_save_fsyncs_before_rename(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        with unittest.mock.patch("tunnels.os.fsync") as p_fsync:
+            tm.add("x", self._free_port())  # add() calls save()
+            self.assertTrue(p_fsync.called, "save() must fsync before rename")
+        with open(self.cfg) as f:
+            data = json.load(f)
+        self.assertIn("x", data["tunnels"])
+
+    # --- M9/M15: rename must migrate state + the per-tunnel lock atomically -
+    def test_rename_migrates_state_and_lock(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("old", self._free_port())
+        old_lock = tm._lock_for("old")
+        tm.rename("old", "new")
+        self.assertNotIn("old", tm.tunnels)
+        self.assertIn("new", tm.tunnels)
+        self.assertEqual(tm.tunnels["new"].name, "new")
+        # Same lock object carried over so blocked threads stay serialized.
+        self.assertIs(tm._lock_for("new"), old_lock)
+        self.assertNotIn("old", tm._tunnel_locks)
+        # Persisted under the new name.
+        tm2 = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm2.load()
+        self.assertIn("new", tm2.tunnels)
+        self.assertNotIn("old", tm2.tunnels)
+
+    def test_rename_noop_on_missing_or_duplicate(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("a", self._free_port())
+        tm.add("b", self._free_port())
+        tm.rename("a", "b")          # duplicate target -> no-op
+        self.assertIn("a", tm.tunnels)
+        self.assertIn("b", tm.tunnels)
+        tm.rename("ghost", "z")      # missing source -> no-op
+        self.assertNotIn("z", tm.tunnels)
+
+    # --- L3: update_fields sets under the lock and persists -----------------
+    def test_update_fields_sets_and_persists(self):
+        from tunnels import TunnelManager
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.add("x", self._free_port())
+        ok = tm.update_fields("x", url_path="/lab", tags=["a"], auto_start=True)
+        self.assertTrue(ok)
+        self.assertEqual(tm.tunnels["x"].url_path, "/lab")
+        self.assertEqual(tm.tunnels["x"].tags, ["a"])
+        self.assertTrue(tm.tunnels["x"].auto_start)
+        self.assertFalse(tm.update_fields("ghost", url_path="/x"))
+        tm2 = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm2.load()
+        self.assertEqual(tm2.tunnels["x"].url_path, "/lab")
 
 
 if __name__ == "__main__":

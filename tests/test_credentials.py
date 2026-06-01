@@ -243,5 +243,66 @@ class TestConfigDirResolver(unittest.TestCase):
         )
 
 
+class TestSetCredentialsRollback(_Base):
+    """M8: set_credentials must not leave an orphaned password if the
+    otpauth write fails."""
+
+    def test_otpauth_failure_rolls_back_password(self):
+        orig_set = self.mem.set_password
+        def flaky_set(service, account, secret):
+            if account.endswith(".otpauth"):
+                raise RuntimeError("keychain locked")
+            return orig_set(service, account, secret)
+        with patch.object(keyring, "set_password", side_effect=flaky_set):
+            with self.assertRaises(RuntimeError):
+                credentials.set_credentials("h", "pw", "otpauth://x?secret=A")
+        self.assertIsNone(self.mem.get_password("auto2fa", "h.password"),
+                          "password must be rolled back when otpauth write fails")
+        self.assertIsNone(self.mem.get_password("auto2fa", "h.otpauth"))
+
+
+class TestMigrationBackupOrder(_Base):
+    """L1: a no-op migration (no valid creds to move) must not leave a
+    .pre-keychain-backup behind, and the file stays as-is."""
+
+    def test_no_backup_for_credless_legacy(self):
+        path = os.path.join(self.tmp, "passwords.json")
+        with open(path, "w") as f:
+            json.dump({"k6": {"autoConnect": True}}, f)  # v1 but no creds
+        result = credentials.load_config()
+        self.assertEqual(result, {})
+        self.assertFalse(os.path.exists(path + ".pre-keychain-backup"),
+                         "no backup should be left for a no-op migration")
+
+
+class TestAtomicWriteJson(_Base):
+    """M7/L2: durable, non-clobbering atomic JSON writer."""
+
+    def test_writes_valid_json_and_cleans_tmp(self):
+        path = os.path.join(self.tmp, "x.json")
+        credentials._atomic_write_json(path, {"a": 1, "b": [2, 3]})
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"a": 1, "b": [2, 3]})
+        leftovers = [n for n in os.listdir(self.tmp) if n.startswith("x.json.tmp")]
+        self.assertEqual(leftovers, [], "temp file must be renamed/cleaned, not left behind")
+
+    def test_tmp_name_is_unique_per_thread(self):
+        # Two writers on different threads must not share a tmp path.
+        import threading
+        names = set()
+        real_replace = os.replace
+        def capture(src, dst):
+            names.add(os.path.basename(src))
+            return real_replace(src, dst)
+        path = os.path.join(self.tmp, "y.json")
+        with patch("auto2fa.credentials.os.replace", side_effect=capture):
+            ts = [threading.Thread(target=credentials._atomic_write_json,
+                                   args=(path, {"t": i})) for i in range(4)]
+            for t in ts: t.start()
+            for t in ts: t.join()
+        # Each thread's tmp basename embeds its thread id -> distinct names.
+        self.assertGreater(len(names), 1, "tmp names should differ across threads")
+
+
 if __name__ == "__main__":
     unittest.main()

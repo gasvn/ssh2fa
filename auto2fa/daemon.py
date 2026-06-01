@@ -368,11 +368,10 @@ class Auto2FADaemon:
                 path = params.get("path")
                 if isinstance(path, str) and not path.strip():
                     path = None
-                ts = self.tunnel_mgr.tunnels.get(name)
-                if ts is None:
+                ok = await asyncio.to_thread(
+                    self.tunnel_mgr.update_fields, name, url_path=path)
+                if not ok:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
-                ts.url_path = path
-                self.tunnel_mgr.save()
                 return ipc.make_response(req_id, self._tunnel_snapshot(name))
 
             if method == ipc.Method.TUNNEL_SET_TAGS:
@@ -382,11 +381,11 @@ class Auto2FADaemon:
                 if not isinstance(tags, list):
                     return ipc.make_error(req_id, ipc.ErrCode.BAD_PARAMS,
                                           "tags must be a list of strings")
-                ts = self.tunnel_mgr.tunnels.get(name)
-                if ts is None:
+                clean = [str(t).strip() for t in tags if str(t).strip()]
+                ok = await asyncio.to_thread(
+                    self.tunnel_mgr.update_fields, name, tags=clean)
+                if not ok:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
-                ts.tags = [str(t).strip() for t in tags if str(t).strip()]
-                self.tunnel_mgr.save()
                 return ipc.make_response(req_id, self._tunnel_snapshot(name))
 
             if method == ipc.Method.TUNNEL_RENAME:
@@ -413,11 +412,10 @@ class Auto2FADaemon:
                     # auto-recovery path also kicks in if start() fails.
                     await asyncio.to_thread(self.tunnel_mgr.stop, old,
                                             user_initiated=False)
-                # Reseat under the new key.
-                ts.name = new
-                self.tunnel_mgr.tunnels[new] = ts
-                del self.tunnel_mgr.tunnels[old]
-                self.tunnel_mgr.save()
+                # Reseat under the new key INSIDE the manager (holds the
+                # per-tunnel lock + migrates it) rather than mutating the
+                # tunnels dict from the event loop, which raced tick()/start().
+                await asyncio.to_thread(self.tunnel_mgr.rename, old, new)
                 if was_alive:
                     await asyncio.to_thread(self.tunnel_mgr.start, new)
                 return ipc.make_response(req_id, self._tunnel_snapshot(new))
@@ -461,11 +459,10 @@ class Auto2FADaemon:
                 cmd = params.get("cmd")
                 if isinstance(cmd, str) and not cmd.strip():
                     cmd = None
-                ts = self.tunnel_mgr.tunnels.get(name)
-                if ts is None:
+                ok = await asyncio.to_thread(
+                    self.tunnel_mgr.update_fields, name, post_connect_cmd=cmd)
+                if not ok:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
-                ts.post_connect_cmd = cmd
-                self.tunnel_mgr.save()
                 return ipc.make_response(req_id, self._tunnel_snapshot(name))
 
             if method == ipc.Method.RESET_ALL:
@@ -498,8 +495,12 @@ class Auto2FADaemon:
                     # still wants tunnel running.
                     await asyncio.to_thread(self.tunnel_mgr.stop, name,
                                             user_initiated=False)
-                ts.jump_candidates = cands
-                self.tunnel_mgr.save()
+                # Mutate under the per-tunnel lock (tick reads jump_candidates
+                # via pick_active_jump on the worker thread).
+                ok = await asyncio.to_thread(
+                    self.tunnel_mgr.update_fields, name, jump_candidates=cands)
+                if not ok:
+                    return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
                 if was_alive:
                     await asyncio.to_thread(self.tunnel_mgr.start, name)
                 return ipc.make_response(req_id, self._tunnel_snapshot(name))
@@ -507,11 +508,10 @@ class Auto2FADaemon:
             if method == ipc.Method.TUNNEL_SET_AUTOSTART:
                 name = params["name"]
                 value = bool(params.get("value", False))
-                ts = self.tunnel_mgr.tunnels.get(name)
-                if ts is None:
+                ok = await asyncio.to_thread(
+                    self.tunnel_mgr.update_fields, name, auto_start=value)
+                if not ok:
                     return ipc.make_error(req_id, ipc.ErrCode.NOT_FOUND, name)
-                ts.auto_start = value
-                self.tunnel_mgr.save()
                 return ipc.make_response(req_id, self._tunnel_snapshot(name))
 
             if method == ipc.Method.PORT_SUGGEST:
@@ -598,7 +598,22 @@ class Auto2FADaemon:
         logger.info(f"client connected: {peer}")
         try:
             while not reader.at_eof():
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except ValueError:
+                    # readline raises (LimitOverrunError/ValueError) when a
+                    # single line exceeds the stream limit. Previously this
+                    # propagated to the outer handler and silently killed the
+                    # connection with no reply. Report it and close cleanly —
+                    # the buffer is in an unknown state, so we don't try to
+                    # resync mid-stream.
+                    try:
+                        writer.write(ipc.encode(ipc.make_error(
+                            "", ipc.ErrCode.INVALID_REQUEST, "request too large")))
+                        await writer.drain()
+                    except Exception:
+                        pass
+                    break
                 if not line:
                     break
                 try:
@@ -607,6 +622,15 @@ class Auto2FADaemon:
                     writer.write(ipc.encode(
                         ipc.make_error("", ipc.ErrCode.INVALID_REQUEST, "bad JSON")
                     ))
+                    await writer.drain()
+                    continue
+
+                # A valid-JSON but non-object request (e.g. `5`, `"x"`, `[...]`)
+                # would crash `.get(...)` below with AttributeError and kill the
+                # connection. Reject it with a proper error instead.
+                if not isinstance(msg, dict):
+                    writer.write(ipc.encode(ipc.make_error(
+                        "", ipc.ErrCode.INVALID_REQUEST, "request must be a JSON object")))
                     await writer.drain()
                     continue
 
@@ -679,10 +703,14 @@ class Auto2FADaemon:
             if port in taken:
                 continue
             sk = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
-            sk.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+            # Deliberately NO SO_REUSEADDR here: with it, a port still in
+            # TIME_WAIT (or otherwise half-claimed) binds successfully and we
+            # report it "free", then the real listener fails. A plain bind is
+            # the honest test of exclusive availability. (This only SUGGESTS a
+            # port; tunnels.add() re-validates at start time, so the inherent
+            # find-then-use TOCTOU is harmless.)
             try:
                 sk.bind(("127.0.0.1", port))
-                sk.close()
                 return port
             except OSError:
                 continue
@@ -700,7 +728,12 @@ class Auto2FADaemon:
         attempts that triggers server-side rate-limiting."""
         import pexpect
         import tempfile
-        from .backend import generate_passcode_from_secret
+        from .backend import (
+            generate_passcode_from_secret,
+            _get_otp_group_lock,
+            _fresh_otp_or_wait,
+            _record_otp_submission,
+        )
         # Use mkstemp (not mktemp — deprecated, symlink-attack vulnerable).
         # We close the fd immediately; ssh -E will reopen the path for writing.
         # We're not racing because we own /tmp/auto2fa-* by convention.
@@ -764,7 +797,20 @@ class Auto2FADaemon:
                 if idx in (1, 2, 3):
                     if otp_sent:
                         return (False, "Server asked for OTP twice — rejected")
-                    child.sendline(generate_passcode_from_secret(secret))
+                    # Serialize with any live manager that shares this TOTP
+                    # secret, and record the submission, so this test login
+                    # doesn't replay/burn a code another host is using in the
+                    # same 30s window (which would make BOTH fail).
+                    otp_lock = _get_otp_group_lock(secret)
+                    if otp_lock is not None:
+                        otp_lock.acquire()
+                    try:
+                        code = _fresh_otp_or_wait(secret, host, otp_lock)
+                        child.sendline(code)
+                        _record_otp_submission(secret, code)
+                    finally:
+                        if otp_lock is not None:
+                            otp_lock.release()
                     otp_sent = True
                     continue
             return (False, "Login dialog stuck after 6 turns")
@@ -1065,7 +1111,12 @@ class Auto2FADaemon:
 
         self._loop = asyncio.get_running_loop()
         server = await asyncio.start_unix_server(
-            self._handle_client, path=ipc.SOCKET_PATH
+            self._handle_client, path=ipc.SOCKET_PATH,
+            # Raise the per-line read limit well above any legitimate request
+            # (default is 64 KiB). Combined with the LimitOverrunError handling
+            # in _handle_client, an oversized line now yields a clean error
+            # instead of silently crashing the connection.
+            limit=1024 * 1024,
         )
         # Tighten permissions — local user only
         try:

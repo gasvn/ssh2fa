@@ -312,5 +312,124 @@ class TestHeartbeatCheckTimeout(unittest.TestCase):
             "user's shell along with the rebuilt master")
 
 
+_VALID_SECRET = "JBSWY3DPEHPK3PXP"  # valid base32 for pyotp
+
+
+class TestLoginFailureCooldown(unittest.TestCase):
+    """H1: 'Login incorrect' / 'Permission denied' must count toward the
+    rate-limit cool-down, not just the password loop-back."""
+
+    def setUp(self):
+        mock_pexpect.reset_mock()
+        # Clear the cross-host OTP replay registry so each test generates a
+        # "fresh" code and _fresh_otp_or_wait returns immediately (no real
+        # 30s window-wait sleep between tests that share the TOTP window).
+        backend._OTP_LAST_SUBMITTED.clear()
+        self.mgr = SSHHostManager("h", "pass", _VALID_SECRET)
+        self.mgr.running = True
+        self.mgr.active = True
+
+    def _run_with_final_idx(self, final_idx):
+        # Drive: Password(0) -> OTP-needed(0) -> final third-expect idx.
+        spawn = backend.pexpect.spawn
+        spawn.reset_mock(return_value=True, side_effect=True)
+        child = MagicMock()
+        child.expect.side_effect = [0, 0, final_idx]
+        spawn.return_value = child
+        with patch('backend.cleanup_stale_connection'):
+            return self.mgr.start_master(1)
+
+    def test_login_incorrect_counts_as_failure(self):
+        ok = self._run_with_final_idx(2)  # "Login incorrect"
+        self.assertFalse(ok)
+        self.assertEqual(self.mgr.consecutive_login_failures, 1)
+
+    def test_permission_denied_counts_as_failure(self):
+        ok = self._run_with_final_idx(3)  # "Permission denied"
+        self.assertFalse(ok)
+        self.assertEqual(self.mgr.consecutive_login_failures, 1)
+
+    def test_password_loopback_still_counts(self):
+        ok = self._run_with_final_idx(4)  # looped back to Password
+        self.assertFalse(ok)
+        self.assertEqual(self.mgr.consecutive_login_failures, 1)
+
+    def test_threshold_arms_cooldown(self):
+        self.mgr.consecutive_login_failures = self.mgr.OTP_FAILURE_THRESHOLD - 1
+        before = backend.time.time() if hasattr(backend.time, 'time') else None
+        ok = self._run_with_final_idx(2)
+        self.assertFalse(ok)
+        self.assertGreaterEqual(self.mgr.consecutive_login_failures,
+                                self.mgr.OTP_FAILURE_THRESHOLD)
+        self.assertGreater(self.mgr.cooldown_until_ts, 0.0,
+                           "cool-down must arm once the failure threshold is hit")
+
+    def test_success_resets_counter(self):
+        self.mgr.consecutive_login_failures = 3
+        ok = self._run_with_final_idx(0)  # shell prompt -> success
+        self.assertTrue(ok)
+        self.assertEqual(self.mgr.consecutive_login_failures, 0)
+        self.assertEqual(self.mgr.cooldown_until_ts, 0.0)
+
+
+class TestFreshOtpLockRelease(unittest.TestCase):
+    """M5: _fresh_otp_or_wait must release the shared OTP lock while sleeping
+    for the next window, and hold it again on return."""
+
+    class _CountingLock:
+        def __init__(self):
+            self.acquires = 0
+            self.releases = 0
+        def acquire(self):
+            self.acquires += 1
+        def release(self):
+            self.releases += 1
+
+    def test_fresh_code_does_not_touch_lock(self):
+        backend._OTP_LAST_SUBMITTED.clear()
+        lock = self._CountingLock()
+        code = backend._fresh_otp_or_wait(_VALID_SECRET, "h", lock)
+        self.assertTrue(code)
+        self.assertEqual((lock.acquires, lock.releases), (0, 0),
+                         "no wait needed -> lock must be left untouched")
+
+    def test_replay_releases_lock_during_sleep(self):
+        # First generated code replays the last submission; second is fresh.
+        with patch('backend.generate_passcode_from_secret', side_effect=["AAA", "BBB"]):
+            backend._record_otp_submission(_VALID_SECRET, "AAA")  # last submitted = AAA, now
+            lock = self._CountingLock()
+            slept = []
+            with patch('backend.time.sleep', side_effect=lambda s: slept.append(s)):
+                code = backend._fresh_otp_or_wait(_VALID_SECRET, "h", lock)
+            self.assertEqual(code, "BBB")
+            self.assertTrue(slept, "should have slept for the next window")
+            self.assertEqual(lock.releases, 1, "must release lock before sleeping")
+            self.assertEqual(lock.acquires, 1, "must re-acquire lock after sleeping")
+
+
+class TestStartMasterAsyncGuard(unittest.TestCase):
+    """M6: the staggered async master must abort if the host went inactive
+    during its 5s sleep, instead of leaking a master + burning an OTP."""
+
+    def test_aborts_when_inactive(self):
+        mgr = SSHHostManager("h", "pass", _VALID_SECRET)
+        mgr.running = True
+        mgr.active = True
+        with patch('backend.time.sleep'):
+            with patch.object(mgr, 'start_master') as ms:
+                mgr.active = False  # toggled off during the (mocked) sleep
+                mgr.start_master_async(1)
+                ms.assert_not_called()
+
+    def test_proceeds_when_active(self):
+        mgr = SSHHostManager("h", "pass", _VALID_SECRET)
+        mgr.running = True
+        mgr.active = True
+        with patch('backend.time.sleep'):
+            with patch.object(mgr, 'start_master') as ms:
+                mgr.start_master_async(1)
+                ms.assert_called_once_with(1)
+
+
 if __name__ == '__main__':
     unittest.main()

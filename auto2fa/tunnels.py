@@ -263,7 +263,22 @@ class TunnelManager:
             try:
                 with open(tmp, "w") as f:
                     json.dump(payload, f, indent=2)
+                    # fsync the file before the rename so a crash can't leave
+                    # tunnels.json truncated/empty — exactly the class of
+                    # "all my tunnels vanished" loss we want to avoid.
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(tmp, self.config_path)
+                # fsync the directory so the rename itself is durable across
+                # a power loss (the entry, not just the file contents).
+                try:
+                    dir_fd = os.open(os.path.dirname(self.config_path) or ".", os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                except OSError:
+                    pass
             except Exception:
                 # Make sure we don't leave a half-written tmp behind
                 try:
@@ -332,21 +347,75 @@ class TunnelManager:
             self._post_connect_running.discard(name)
         self.save()
 
+    def rename(self, old: str, new: str) -> None:
+        """Atomically reseat a tunnel under a new name.
+
+        Must be done inside the manager (not by mutating .tunnels from the IPC
+        event loop) so it can hold the per-tunnel lock — otherwise a concurrent
+        tick()/start()/stop() on the same TunnelState races the dict swap, and
+        the old name's lock is orphaned (two threads then think they hold
+        "the" lock for the same state). Migrates the lock object and the
+        post-connect bookkeeping. Caller should stop the tunnel first if it was
+        alive. No-op if `old` is gone or `new` already exists.
+        """
+        lock = self._lock_for(old)
+        with lock:
+            ts = self.tunnels.get(old)
+            if ts is None or new in self.tunnels:
+                return
+            ts.name = new
+            with self._locks_meta:
+                self.tunnels[new] = ts
+                del self.tunnels[old]
+                # Reuse the SAME lock object for the new name so a thread that
+                # is blocked on it (acquired via the old name) keeps serializing
+                # correctly against the renamed tunnel.
+                self._tunnel_locks[new] = self._tunnel_locks.pop(old, lock)
+            with self._post_connect_lock:
+                if old in self._post_connect_running:
+                    self._post_connect_running.discard(old)
+                    self._post_connect_running.add(new)
+            self.save()
+
+    def update_fields(self, name: str, **fields) -> bool:
+        """Set persisted fields on a tunnel under its per-tunnel lock, then
+        save. Returns False if the tunnel is gone. Used by the IPC SET_*
+        handlers so the mutation + save don't race tick()'s reads of the same
+        TunnelState on the worker thread."""
+        with self._lock_for(name):
+            ts = self.tunnels.get(name)
+            if ts is None:
+                return False
+            for k, v in fields.items():
+                setattr(ts, k, v)
+            self.save()
+        return True
+
     def set_node(self, name: str, node: str, user: str) -> None:
         """Update the saved compute-node target for a tunnel.
 
-        If the tunnel is idle/stale/failed, automatically (re)starts it.
+        If the tunnel is idle/stale/failed, automatically (re)starts it. If the
+        tunnel is currently alive/starting AND the node actually changed, the
+        live `ssh -L` is still forwarding to the OLD node — so we tear it down
+        and restart so the forward re-targets the new node. Without this, the
+        UI showed the new node while traffic kept going to the old one.
         Silently returns if the tunnel was removed.
         """
         ts = self.tunnels.get(name)
         if ts is None:
             return
+        old_node = ts.last_node
         ts.last_node = node
         ts.last_user = user
         # Picking a fresh node clears stale-misses; if it was stale, it can be retried
         ts.consecutive_squeue_misses = 0
         self.save()
         if ts.status in ("idle", "stale", "failed", "port_busy"):
+            self.start(name)
+        elif old_node != node and ts.status in ("alive", "starting"):
+            # Re-target the live forward at the new node. user_initiated=False
+            # keeps wants_alive set so start() (and auto-recovery) bring it back.
+            self.stop(name, user_initiated=False)
             self.start(name)
 
     def pick_active_jump(self, ts: TunnelState) -> Optional[str]:
@@ -368,7 +437,7 @@ class TunnelManager:
     PROBE_TIMEOUT_SEC = 10.0
     PROBE_INTERVAL_SEC = 0.2
 
-    def start(self, name: str) -> None:
+    def start(self, name: str, _auto_recovery: bool = False) -> None:
         """Start (or restart) a tunnel.
 
         BLOCKS for up to PROBE_TIMEOUT_SEC (~10s) while probing the local port.
@@ -379,10 +448,19 @@ class TunnelManager:
         NOT block each other (so two tunnels can probe in parallel).
         Calls on the SAME tunnel serialise.
         Silently returns if the tunnel has been removed (race with delete).
+
+        `_auto_recovery=True` (used by tick's recovery/respawn paths) makes
+        start() honor a concurrent user stop(): tick() decides to recover off
+        the lock, but a user stop() may acquire the lock first and clear
+        wants_alive. Re-checking wants_alive under the lock here ensures we
+        don't silently revive a tunnel the user just turned off.
         """
         with self._lock_for(name):
             ts = self.tunnels.get(name)
             if ts is None:
+                return
+
+            if _auto_recovery and not ts.wants_alive:
                 return
 
             if ts.status in ("alive", "starting"):
@@ -687,13 +765,17 @@ class TunnelManager:
             # Without this case, a single master flap dropped the tunnel
             # to idle FOREVER until the user manually clicked Start —
             # which the user perceived as "tunnels keep disconnecting".
-            if ts.wants_alive and ts.status in ("idle", "failed"):
+            # Recover from stale/port_busy too, not just idle/failed: a node
+            # that briefly left squeue can return, and a port that was busy can
+            # free up. Without these, a tunnel the user wants alive could sit
+            # stranded in 'stale'/'port_busy' forever.
+            if ts.wants_alive and ts.status in ("idle", "failed", "stale", "port_busy"):
                 if now - ts.last_recovery_attempt_ts < AUTO_RECOVERY_INTERVAL_SEC:
                     continue
                 ts.last_recovery_attempt_ts = now
                 logger.info("[tunnel:%s] auto-recover attempt (status=%s)",
                             name, ts.status)
-                self.start(name)
+                self.start(name, _auto_recovery=True)
                 continue
 
             if ts.status in ("idle", "stale", "port_busy", "failed", "starting"):
@@ -725,7 +807,7 @@ class TunnelManager:
                 reason = "child died" if child_dead else "port not bound (ghost alive)"
                 logger.warning("[tunnel:%s] %s, respawning", name, reason)
                 self.stop(name, user_initiated=False)
-                self.start(name)
+                self.start(name, _auto_recovery=True)
                 continue
 
             # Case 2: jump master no longer ready → failover, but ONLY
@@ -765,17 +847,26 @@ class TunnelManager:
                 ts.consecutive_squeue_misses += 1
                 if ts.consecutive_squeue_misses >= self.STALE_MISS_THRESHOLD:
                     logger.info("[tunnel:%s] node %s gone, marking stale", name, ts.last_node)
-                    try:
-                        if child.isalive():
-                            child.terminate(force=True)
-                    except Exception:
-                        pass
-                    ts.child = None
-                    ts.active_jump = None
-                    self._accumulate_uptime(ts)
-                    ts.fail_count += 1
-                    ts.status = "stale"
-                    ts.last_msg = f"node {ts.last_node} no longer in squeue"
+                    # Take the per-tunnel lock before terminating + mutating.
+                    # The squeue discover() above is slow; meanwhile start()
+                    # (auto-recovery) may have replaced ts.child with a fresh
+                    # one. Re-check identity under the lock so we never
+                    # terminate a newly-spawned child or stomp a status that
+                    # changed out from under us.
+                    with self._lock_for(name):
+                        if ts.child is not child or ts.status != "alive":
+                            continue
+                        try:
+                            if child.isalive():
+                                child.terminate(force=True)
+                        except Exception:
+                            pass
+                        ts.child = None
+                        ts.active_jump = None
+                        self._accumulate_uptime(ts)
+                        ts.fail_count += 1
+                        ts.status = "stale"
+                        ts.last_msg = f"node {ts.last_node} no longer in squeue"
 
     def shutdown(self) -> None:
         """Stop every tunnel. Called on dashboard exit.

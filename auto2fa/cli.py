@@ -37,6 +37,10 @@ def _rpc(method: str, params: dict | None = None) -> dict:
               file=sys.stderr)
         sys.exit(1)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # Bound every blocking socket op. A wedged daemon (e.g. event loop stuck
+    # behind a long start() probe) would otherwise hang the CLI forever with
+    # no feedback. 30s is well above any legitimate request.
+    s.settimeout(30)
     try:
         s.connect(SOCKET_PATH)
     except OSError as e:
@@ -44,15 +48,21 @@ def _rpc(method: str, params: dict | None = None) -> dict:
         sys.exit(1)
     req_id = uuid.uuid4().hex
     req = json.dumps({"id": req_id, "method": method, "params": params or {}}) + "\n"
-    s.sendall(req.encode("utf-8"))
-    # read until newline
-    buf = b""
-    while b"\n" not in buf:
-        chunk = s.recv(65536)
-        if not chunk:
-            break
-        buf += chunk
-    s.close()
+    try:
+        s.sendall(req.encode("utf-8"))
+        # read until newline
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    except socket.timeout:
+        print("daemon did not respond within 30s — it may be wedged; "
+              "try `auto2fa` again or restart the app", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        s.close()
     line, _, _ = buf.partition(b"\n")
     if not line:
         print("daemon closed connection without responding", file=sys.stderr)

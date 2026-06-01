@@ -91,9 +91,16 @@ def _get_otp_group_lock(secret: str):
     return lock
 
 
-def _fresh_otp_or_wait(secret: str, host_label: str) -> str:
+def _fresh_otp_or_wait(secret: str, host_label: str, lock=None) -> str:
     """Generate a TOTP code that has not just been submitted for this
-    secret group. If it has been, wait for the next 30-second window."""
+    secret group. If it has been, wait for the next 30-second window.
+
+    On return the caller-supplied `lock` (if any) is HELD, so the caller can
+    sendline + _record_otp_submission atomically. While SLEEPING for the next
+    window, however, we RELEASE the lock: a window-wait can be up to ~31s, and
+    holding the shared cross-host OTP lock for that long serialized and stalled
+    every other host sharing the secret. We re-acquire and re-check after the
+    sleep, so the no-replay guarantee is preserved."""
     key = _otp_group_key(secret)
     while True:
         code = generate_passcode_from_secret(secret)
@@ -109,7 +116,13 @@ def _fresh_otp_or_wait(secret: str, host_label: str) -> str:
             "[%s] OTP %s would replay last submission; waiting %ds for next TOTP window",
             host_label, code, wait_for,
         )
-        time.sleep(wait_for)
+        if lock is not None:
+            lock.release()
+        try:
+            time.sleep(wait_for)
+        finally:
+            if lock is not None:
+                lock.acquire()
 
 
 def _record_otp_submission(secret: str, code: str) -> None:
@@ -487,7 +500,10 @@ class SSHHostManager(threading.Thread):
                 if otp_lock is not None:
                     otp_lock.acquire()
                 try:
-                    fresh_otp = _fresh_otp_or_wait(self.otp_secret, self.host)
+                    # _fresh_otp_or_wait releases `otp_lock` while sleeping for
+                    # the next TOTP window (so peers aren't stalled) and holds
+                    # it again on return, so sendline + record stay atomic.
+                    fresh_otp = _fresh_otp_or_wait(self.otp_secret, self.host, otp_lock)
                     child.sendline(fresh_otp)
                     _record_otp_submission(self.otp_secret, fresh_otp)
                 finally:
@@ -529,10 +545,21 @@ class SSHHostManager(threading.Thread):
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Process exited immediately (EOF). Likely Can't Assign Address or Config Error.")
                 elif not password_sent and not should_send_otp and idx == 6:
                     logger.warning(f"[{self.host}] Master #{index} Failed Login. Timed out waiting for any prompt (host unreachable?).")
-                elif idx == 4:
-                    logger.warning(f"[{self.host}] Master #{index} Failed Login. Server looped back to Password prompt (Wrong Creds/OTP?). FinalIdx={idx}")
-                    # "Loop back to Password" is the canonical server-side
-                    # rejection. Track it for rate-limit cool-down.
+                elif (should_send_otp and idx in (2, 3)) or idx == 4:
+                    # Canonical server-side credential rejections in the OTP
+                    # path: idx 2 = "Login incorrect", idx 3 = "Permission
+                    # denied", idx 4 = looped back to the Password prompt.
+                    # ALL THREE must count toward the rate-limit cool-down.
+                    # Previously only idx==4 (loop-back) did, so a server that
+                    # answers a bad password/OTP with "Login incorrect" or
+                    # "Permission denied" (the common OpenSSH/PAM behavior)
+                    # never tripped the 5-strike breaker — consecutive_login_
+                    # failures stayed 0, the cool-down never armed, and the
+                    # pool loop respawned ssh every ~2-3s forever with the same
+                    # wrong creds, deepening the server-side rate limit.
+                    _reason = {2: "Login incorrect", 3: "Permission denied"}.get(
+                        idx, "looped back to Password prompt")
+                    logger.warning(f"[{self.host}] Master #{index} Failed Login ({_reason}, Wrong Creds/OTP?). FinalIdx={idx}")
                     self.consecutive_login_failures += 1
                     if self.consecutive_login_failures >= self.OTP_FAILURE_THRESHOLD:
                         self.cooldown_until_ts = time.time() + self.OTP_COOLDOWN_SEC
@@ -699,6 +726,13 @@ class SSHHostManager(threading.Thread):
 
     def start_master_async(self, index):
         time.sleep(5) # Stagger start
+        # Re-check desired state AFTER the stagger sleep. The user can toggle
+        # the host off (or the daemon can shut down) during these 5s; without
+        # this guard we'd spawn an SSH ControlMaster for an inactive host —
+        # leaking the master AND burning an OTP from the shared TOTP window.
+        if not (self.active and self.running):
+            logger.info(f"[{self.host}] start_master_async({index}) aborted — host no longer active")
+            return
         self.start_master(index)
 
     def check_and_rotate(self):
