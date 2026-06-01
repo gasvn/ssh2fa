@@ -76,40 +76,54 @@ actor BackendClient {
         let conn = NWConnection(to: path, using: .tcp)
         connection = conn
 
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            // stateUpdateHandler fires on every state change; the connect
-            // continuation must be resumed exactly once, then the handler
-            // swapped to one that only logs/handles drops post-connect.
-            let resumed = OneShot()
-            conn.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    if resumed.fire() {
-                        cont.resume()
-                        Task { await self?.installPostConnectHandler() }
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                // stateUpdateHandler fires on every state change; the connect
+                // continuation must be resumed exactly once, then the handler
+                // swapped to one that only logs/handles drops post-connect.
+                let resumed = OneShot()
+                conn.stateUpdateHandler = { [weak self] state in
+                    switch state {
+                    case .ready:
+                        if resumed.fire() {
+                            cont.resume()
+                            Task { await self?.installPostConnectHandler() }
+                        }
+                    case .failed(let err):
+                        if resumed.fire() {
+                            cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                        } else {
+                            Task { await self?.handleClosed() }
+                        }
+                    case .waiting(let err):
+                        // For a unix socket, .waiting usually means the socket file
+                        // doesn't exist (daemon not running). Treat as fatal at
+                        // connect time so we don't hang.
+                        if resumed.fire() {
+                            cont.resume(throwing: ClientError.transport(err.localizedDescription))
+                        }
+                    case .cancelled:
+                        if !resumed.fire() {
+                            Task { await self?.handleClosed() }
+                        }
+                    default:
+                        break
                     }
-                case .failed(let err):
-                    if resumed.fire() {
-                        cont.resume(throwing: ClientError.transport(err.localizedDescription))
-                    } else {
-                        Task { await self?.handleClosed() }
-                    }
-                case .waiting(let err):
-                    // For a unix socket, .waiting usually means the socket file
-                    // doesn't exist (daemon not running). Treat as fatal at
-                    // connect time so we don't hang.
-                    if resumed.fire() {
-                        cont.resume(throwing: ClientError.transport(err.localizedDescription))
-                    }
-                case .cancelled:
-                    if !resumed.fire() {
-                        Task { await self?.handleClosed() }
-                    }
-                default:
-                    break
                 }
+                conn.start(queue: .global(qos: .userInitiated))
             }
-            conn.start(queue: .global(qos: .userInitiated))
+        } catch {
+            // A connect-time failure (.failed/.waiting) resumed the
+            // continuation by throwing, but `connection` was assigned BEFORE
+            // the handshake (line above). If we leave it set, the next
+            // connect() short-circuits on `guard connection == nil` and
+            // returns WITHOUT throwing — which reconnectWithBackoff reads as
+            // success, wedging the app in a fake "connected" state where every
+            // request fails. Clear the dead connection so the next attempt
+            // genuinely reconnects.
+            conn.cancel()
+            if connection === conn { connection = nil }
+            throw error
         }
 
         // Start the read loop AFTER connection is ready
