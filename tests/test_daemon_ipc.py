@@ -119,6 +119,25 @@ class TestFindFreePort(unittest.TestCase):
         self.assertNotIn(got, {base, base + 1})
 
 
+class TestHostNameValidation(unittest.TestCase):
+    """A host name flows into a Keychain key, ssh alias, /tmp log path, and
+    the ~/Mounts/<host> sshfs path — names with '/' or '..' must be rejected
+    so they can't traverse out of those locations."""
+
+    def test_accepts_normal_names(self):
+        for h in ("k6", "k7", "b8", "kempner", "gpu-node_1", "a.b.c"):
+            self.assertTrue(daemon_mod._valid_host_name(h), h)
+
+    def test_rejects_traversal_and_separators(self):
+        for h in ("../../../tmp/pwned", "a/b", "..", ".", "", "a..b",
+                  "/etc", "x/../y", "-leading-dash"):
+            self.assertFalse(daemon_mod._valid_host_name(h), h)
+
+    def test_rejects_non_string(self):
+        self.assertFalse(daemon_mod._valid_host_name(None))
+        self.assertFalse(daemon_mod._valid_host_name(5))
+
+
 class TestListTunnelsNoneFilter(unittest.TestCase):
     """list_tunnels snapshots each tunnel once; a concurrent remove between
     the old filter-call and body-call used to leak a None into the result."""

@@ -531,6 +531,29 @@ class TestTunnelManagerStart(unittest.TestCase):
         self.assertEqual(tm.tunnels["x"].status, "failed")
         child.terminate.assert_called()
 
+    def test_start_probe_raises_terminates_child(self):
+        """If _probe_port_ready RAISES (e.g. OSError when out of fds), the
+        freshly spawned child must still be terminated and not leak in
+        ts.child (regression)."""
+        from tunnels import TunnelManager
+        import tunnels as t
+        hm = {"k8": self._mgr(ready=True)}
+        tm = TunnelManager(host_managers=hm, config_path=self.cfg)
+        port = self._free_port()
+        tm.add("x", port)
+        tm.set_node("x", "holygpu01", "shgao")
+
+        child = MagicMock()
+        child.isalive.return_value = True
+        with unittest.mock.patch.object(t.pexpect, "spawn", return_value=child), \
+             unittest.mock.patch.object(
+                 tm, "_probe_port_ready",
+                 side_effect=OSError("[Errno 24] Too many open files")):
+            tm.start("x")  # must NOT propagate, must NOT leak the child
+        self.assertEqual(tm.tunnels["x"].status, "failed")
+        child.terminate.assert_called_with(force=True)
+        self.assertIsNone(tm.tunnels["x"].child)
+
     def test_start_is_noop_when_alive(self):
         from tunnels import TunnelManager
         hm = {"k8": self._mgr(ready=True)}

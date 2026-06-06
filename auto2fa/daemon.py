@@ -15,6 +15,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -116,6 +117,21 @@ def load_hosts() -> dict:
     compat with anything still importing daemon.load_hosts. The real
     logic (Keychain fetch + auto-migrate) lives in credentials.py."""
     return credentials.load_config()
+
+
+_HOST_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
+def _valid_host_name(host) -> bool:
+    """A host name becomes a dict key, a Keychain entry, an ssh alias, a
+    /tmp/auto2fa_ssh_master_<host>_*.log path, and the ~/Mounts/<host> sshfs
+    mount point — so a name containing '/' or '..' could escape those
+    locations (path traversal). Restrict to a safe token."""
+    return (
+        isinstance(host, str)
+        and bool(_HOST_NAME_RE.match(host))
+        and ".." not in host
+    )
 
 
 def _acquire_singleton_lock():
@@ -577,6 +593,11 @@ class Auto2FADaemon:
             if method == ipc.Method.HOST_ADD:
                 # Add a host to passwords.json AND start a manager for it.
                 host = params["host"]
+                if not _valid_host_name(host):
+                    return ipc.make_error(
+                        req_id, ipc.ErrCode.BAD_PARAMS,
+                        "invalid host name (letters, digits, '.', '-', '_' only; "
+                        "no '/' or '..')")
                 password = params.get("password", "")
                 otpauth_url = params.get("otpauth_url", "")
                 auto_connect = bool(params.get("auto_connect", False))

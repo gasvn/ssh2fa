@@ -536,7 +536,25 @@ class TunnelManager:
                 return
             ts.child = child
 
-            if self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC):
+            try:
+                probe_ok = self._probe_port_ready(ts.local_port, self.PROBE_TIMEOUT_SEC)
+            except Exception as e:
+                # _probe_port_ready can raise (e.g. OSError/MemoryError when the
+                # host is out of fds). Don't let the freshly spawned ssh child
+                # leak in ts.child — tear it down and mark failed, mirroring the
+                # spawn-failure branch above so start() stays exception-safe.
+                try:
+                    child.terminate(force=True)
+                except Exception:
+                    pass
+                ts.fail_count += 1
+                ts.status = "failed"
+                ts.last_msg = f"probe error: {str(e)[:60]}"
+                ts.child = None
+                ts.active_jump = None
+                return
+
+            if probe_ok:
                 ts.status = "alive"
                 ts.last_msg = f"via {jump}"
                 ts.consecutive_squeue_misses = 0

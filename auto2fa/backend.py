@@ -798,6 +798,14 @@ class SSHHostManager(threading.Thread):
             self.last_msg = "sshfs not installed"
             return False
 
+        # Defensive: never let a hand-edited/legacy host name escape ~/Mounts
+        # via '/' or '..' (HOST_ADD validates new names, but old passwords.json
+        # entries predate that check).
+        if "/" in self.host or ".." in self.host or self.host in (".", ""):
+            self.last_msg = "invalid host name for mount"
+            logger.error("refusing to mount unsafe host name %r", self.host)
+            return False
+
         mount_point = os.path.expanduser(f"~/Mounts/{self.host}")
         os.makedirs(mount_point, exist_ok=True)
         if os.path.ismount(mount_point):
