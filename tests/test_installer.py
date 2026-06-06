@@ -182,5 +182,17 @@ class TestInstallEntry(unittest.TestCase):
         self.assertIn("service", calls)
 
 
+class TestCliWiring(unittest.TestCase):
+    def test_install_subcommand_dispatches_to_installer(self):
+        from auto2fa import cli
+        import unittest.mock as mock
+        with mock.patch.object(cli, "sys") as fake_sys, \
+             mock.patch("auto2fa.installer.install", return_value=0) as inst:
+            fake_sys.argv = ["auto2fa", "install"]
+            cli.main()
+        inst.assert_called_once()
+        fake_sys.exit.assert_called_once_with(0)
+
+
 if __name__ == "__main__":
     unittest.main()

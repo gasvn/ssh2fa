@@ -175,6 +175,11 @@ def cmd_raw(args):
     print(json.dumps(res, indent=2))
 
 
+def cmd_install(args):
+    from . import installer
+    sys.exit(installer.install())
+
+
 def main():
     p = argparse.ArgumentParser(prog="auto2fa", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -214,7 +219,12 @@ def main():
                     help='JSON object, e.g. \'{"host":"k6"}\'')
     sp.set_defaults(func=cmd_raw)
 
-    args = p.parse_args()
+    sub.add_parser(
+        "install",
+        help="generate + load this machine's deploy artifacts (no daemon needed)"
+    ).set_defaults(func=cmd_install)
+
+    args = p.parse_args(sys.argv[1:])
     args.func(args)
 
 
