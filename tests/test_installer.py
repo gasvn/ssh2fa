@@ -194,5 +194,28 @@ class TestCliWiring(unittest.TestCase):
         fake_sys.exit.assert_called_once_with(0)
 
 
+class TestBootstrap(unittest.TestCase):
+    def test_creates_venv_installs_and_hands_off(self):
+        import importlib, unittest.mock as mock
+        boot = importlib.import_module("install")  # repo-root install.py
+        recorded = []
+
+        def fake_run(argv, **kw):
+            recorded.append(argv)
+            class _R:
+                returncode = 0
+            return _R()
+
+        with mock.patch.object(boot.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(boot.os.path, "isdir", return_value=False):
+            rc = boot.main()
+
+        self.assertEqual(rc, 0)
+        joined = [" ".join(a) for a in recorded]
+        self.assertTrue(any("-m venv" in j for j in joined), joined)
+        self.assertTrue(any(("install" in a and "-e" in a) for a in recorded), joined)
+        self.assertTrue(any(j.endswith("auto2fa install") for j in joined), joined)
+
+
 if __name__ == "__main__":
     unittest.main()
