@@ -41,6 +41,60 @@ class InstallPaths:
     plist_path: str    # ~/Library/LaunchAgents/com.auto2fa.daemon.plist
 
 
+_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{daemon_bin}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{repo_dir}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{venv_bin}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>SSH_CONFIG_PATH</key>
+        <string>{ssh_config}</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/auto2fa_daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/auto2fa_daemon.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+</dict>
+</plist>
+"""
+
+
+def render_plist(paths: "InstallPaths") -> str:
+    """Render the LaunchAgent plist for this machine. The daemon is launched
+    via the venv's auto2fa-daemon console script (a concrete interpreter, never
+    a login shell) and SSH_CONFIG_PATH is pinned to the resolved config dir."""
+    return _PLIST_TEMPLATE.format(
+        label=LAUNCHD_LABEL,
+        daemon_bin=paths.daemon_bin,
+        repo_dir=paths.repo_dir,
+        venv_bin=paths.venv_bin,
+        ssh_config=paths.ssh_config,
+    )
+
+
 def detect() -> InstallPaths:
     """Resolve every path the installer needs from the live environment.
     repo_dir is the parent of the auto2fa package this module lives in."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import xml.dom.minidom
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -24,6 +25,29 @@ class TestDetect(unittest.TestCase):
         from auto2fa import credentials
         self.assertEqual(p.ssh_config, credentials.config_dir())
         self.assertTrue(os.path.isabs(p.ssh_config))
+
+
+class TestRenderPlist(unittest.TestCase):
+    def _paths(self):
+        return installer.InstallPaths(
+            repo_dir="/Users/x/auto2fa_dev",
+            venv_dir="/Users/x/auto2fa_dev/.venv",
+            venv_bin="/Users/x/auto2fa_dev/.venv/bin",
+            python_bin="/Users/x/auto2fa_dev/.venv/bin/python",
+            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon",
+            config_dir="/Users/x/.auto2fa",
+            ssh_config="/Users/x/.ssh",
+            plist_path="/Users/x/Library/LaunchAgents/com.auto2fa.daemon.plist",
+        )
+
+    def test_plist_is_valid_xml_with_detected_paths(self):
+        xmlstr = installer.render_plist(self._paths())
+        xml.dom.minidom.parseString(xmlstr)  # must parse as valid XML
+        self.assertIn("/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon", xmlstr)
+        self.assertIn("<string>/Users/x/auto2fa_dev</string>", xmlstr)   # WorkingDirectory
+        self.assertIn("/Users/x/.ssh", xmlstr)                           # SSH_CONFIG_PATH
+        self.assertIn("com.auto2fa.daemon", xmlstr)
+        self.assertIn("/Users/x/auto2fa_dev/.venv/bin:", xmlstr)         # PATH prefix
 
 
 if __name__ == "__main__":
