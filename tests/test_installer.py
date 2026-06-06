@@ -71,5 +71,38 @@ class TestWritePointers(unittest.TestCase):
             self.assertEqual(f.read(), "/Users/x/auto2fa_dev/.venv/bin/python")
 
 
+class _FakeRun:
+    def __init__(self):
+        self.calls = []
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+
+class TestRenderServiceDispatch(unittest.TestCase):
+    def _paths(self, tmp):
+        return installer.InstallPaths(
+            repo_dir="/r", venv_dir="/r/.venv", venv_bin="/r/.venv/bin",
+            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/auto2fa-daemon",
+            config_dir=os.path.join(tmp, ".auto2fa"), ssh_config="/s",
+            plist_path=os.path.join(tmp, "com.auto2fa.daemon.plist"),
+        )
+
+    def test_non_macos_writes_no_plist_and_does_not_call_launchctl(self):
+        tmp = tempfile.mkdtemp()
+        paths = self._paths(tmp)
+        fake = _FakeRun()
+        import unittest.mock as mock
+        with mock.patch.object(installer.platform, "system", return_value="Linux"):
+            status = installer.render_service(paths, _run=fake)
+        self.assertEqual(fake.calls, [])                      # no launchctl
+        self.assertFalse(os.path.exists(paths.plist_path))    # no plist on Linux
+        self.assertIn("not yet supported", status.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

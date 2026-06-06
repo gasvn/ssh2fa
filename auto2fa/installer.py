@@ -106,6 +106,18 @@ def write_pointers(paths: "InstallPaths") -> None:
         f.write(paths.python_bin)
 
 
+def render_service(paths: "InstallPaths", *, _run=subprocess.run) -> str:
+    """Write + load the platform's auto-start service. Returns a human status
+    line. Per-OS dispatch so P3 can add the Linux (systemd) branch here."""
+    system = platform.system()
+    if system == "Darwin":
+        return _install_launchagent(paths, _run=_run)
+    return (
+        f"service auto-start not yet supported on {system} (P3) — pointers "
+        f"written; start the daemon manually with `{paths.daemon_bin}`"
+    )
+
+
 def detect() -> InstallPaths:
     """Resolve every path the installer needs from the live environment.
     repo_dir is the parent of the auto2fa package this module lives in."""
