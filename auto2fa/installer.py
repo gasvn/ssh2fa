@@ -17,7 +17,9 @@ import datetime
 import os
 import platform
 import shutil
+import socket
 import subprocess
+import time
 from dataclasses import dataclass
 
 from . import credentials
@@ -141,6 +143,37 @@ def render_service(paths: "InstallPaths", *, _run=subprocess.run) -> str:
         f"service auto-start not yet supported on {system} (P3) — pointers "
         f"written; start the daemon manually with `{paths.daemon_bin}`"
     )
+
+
+def verify(paths: "InstallPaths", *, timeout: float = 10.0) -> str:
+    """Best-effort: poll the IPC socket until it accepts a connection."""
+    from . import ipc
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(ipc.SOCKET_PATH)
+            return "daemon socket is responding"
+        except OSError:
+            time.sleep(0.3)
+        finally:
+            s.close()
+    return "daemon socket not responding yet — check /tmp/auto2fa_daemon.log"
+
+
+def install() -> int:
+    """`auto2fa install`: generate this machine's artifacts and load the
+    service. Idempotent. Does NOT require a running daemon."""
+    paths = detect()
+    write_pointers(paths)
+    status = render_service(paths)
+    print(f"[auto2fa install] {status}")
+    print(f"[auto2fa install] project-dir: {paths.repo_dir}")
+    print(f"[auto2fa install] interpreter: {paths.python_bin}")
+    print(f"[auto2fa install] config dir:  {paths.ssh_config}")
+    if platform.system() == "Darwin":
+        print(f"[auto2fa install] {verify(paths)}")
+    return 0
 
 
 def detect() -> InstallPaths:

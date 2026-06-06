@@ -158,5 +158,29 @@ class TestInstallLaunchAgent(unittest.TestCase):
         self.assertIn("125", str(cm.exception))
 
 
+class TestInstallEntry(unittest.TestCase):
+    def test_verify_reports_not_responding_when_socket_absent(self):
+        from auto2fa import ipc
+        import unittest.mock as mock
+        with mock.patch.object(ipc, "SOCKET_PATH", "/tmp/auto2fa-nope.sock"):
+            msg = installer.verify(installer.detect(), timeout=0.3)
+        self.assertIn("not responding", msg.lower())
+
+    def test_install_runs_steps_and_returns_zero(self):
+        import unittest.mock as mock
+        calls = []
+        with mock.patch.object(installer, "write_pointers",
+                               side_effect=lambda p: calls.append("pointers")), \
+             mock.patch.object(installer, "render_service",
+                               side_effect=lambda p: calls.append("service") or "ok"), \
+             mock.patch.object(installer, "verify",
+                               side_effect=lambda p, timeout=10.0: "checked"), \
+             mock.patch.object(installer.platform, "system", return_value="Darwin"):
+            rc = installer.install()
+        self.assertEqual(rc, 0)
+        self.assertIn("pointers", calls)
+        self.assertIn("service", calls)
+
+
 if __name__ == "__main__":
     unittest.main()
