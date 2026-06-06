@@ -95,6 +95,17 @@ def render_plist(paths: "InstallPaths") -> str:
     )
 
 
+def write_pointers(paths: "InstallPaths") -> None:
+    """Write the two files the Mac app reads to discover the daemon:
+    project-dir.txt (repo) and python-path.txt (interpreter). No trailing
+    newline — the Swift side trims whitespace, but keep it exact."""
+    os.makedirs(paths.config_dir, exist_ok=True)
+    with open(os.path.join(paths.config_dir, "project-dir.txt"), "w") as f:
+        f.write(paths.repo_dir)
+    with open(os.path.join(paths.config_dir, "python-path.txt"), "w") as f:
+        f.write(paths.python_bin)
+
+
 def detect() -> InstallPaths:
     """Resolve every path the installer needs from the live environment.
     repo_dir is the parent of the auto2fa package this module lives in."""

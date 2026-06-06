@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 import xml.dom.minidom
 
@@ -48,6 +49,26 @@ class TestRenderPlist(unittest.TestCase):
         self.assertIn("/Users/x/.ssh", xmlstr)                           # SSH_CONFIG_PATH
         self.assertIn("com.auto2fa.daemon", xmlstr)
         self.assertIn("/Users/x/auto2fa_dev/.venv/bin:", xmlstr)         # PATH prefix
+
+
+class TestWritePointers(unittest.TestCase):
+    def test_writes_both_pointer_files(self):
+        tmp = tempfile.mkdtemp()
+        paths = installer.InstallPaths(
+            repo_dir="/Users/x/auto2fa_dev",
+            venv_dir="/Users/x/auto2fa_dev/.venv",
+            venv_bin="/Users/x/auto2fa_dev/.venv/bin",
+            python_bin="/Users/x/auto2fa_dev/.venv/bin/python",
+            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon",
+            config_dir=os.path.join(tmp, ".auto2fa"),
+            ssh_config="/Users/x/.ssh",
+            plist_path="/ignored",
+        )
+        installer.write_pointers(paths)
+        with open(os.path.join(paths.config_dir, "project-dir.txt")) as f:
+            self.assertEqual(f.read(), "/Users/x/auto2fa_dev")
+        with open(os.path.join(paths.config_dir, "python-path.txt")) as f:
+            self.assertEqual(f.read(), "/Users/x/auto2fa_dev/.venv/bin/python")
 
 
 if __name__ == "__main__":
