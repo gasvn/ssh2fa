@@ -20,7 +20,7 @@ All three share the same Python backend (`auto2fa/backend.py`, `auto2fa/tunnels.
 - **Two-Layer Port Forwards**: Named, persistent SLURM-aware tunnels (login host → compute node) with auto-recovery.
 - **Smart Reliability**: Actively checks connection health and automatically reconnects.
 - **Native Notifications**: Desktop alerts on connection / disconnection; **Dynamic Notch** toasts on MacBook Pros (Mac app only).
-- **Auto-start on Login**: LaunchAgent template included.
+- **Auto-start on Login**: configured by `python3 install.py`.
 
 ## Installation
 

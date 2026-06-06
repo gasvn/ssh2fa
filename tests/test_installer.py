@@ -195,6 +195,15 @@ class TestCliWiring(unittest.TestCase):
         inst.assert_called_once()
         fake_sys.exit.assert_called_once_with(0)
 
+    def test_no_args_launches_tui(self):
+        from auto2fa import cli
+        import unittest.mock as mock
+        with mock.patch.object(cli, "sys") as fake_sys, \
+             mock.patch("auto2fa.main.main") as tui_main:
+            fake_sys.argv = ["auto2fa"]
+            cli.main()
+        tui_main.assert_called_once()
+
 
 class TestBootstrap(unittest.TestCase):
     def test_creates_venv_installs_and_hands_off(self):
