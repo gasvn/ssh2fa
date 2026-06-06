@@ -3,3 +3,4 @@ rich
 pyotp
 pexpect
 python-dotenv
+keyring

@@ -11,6 +11,7 @@ See docs/superpowers/specs/2026-05-24-mac-app-design.md.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -117,12 +118,41 @@ def load_hosts() -> dict:
     return credentials.load_config()
 
 
+def _acquire_singleton_lock():
+    """Take an exclusive, non-blocking flock on ipc.LOCK_PATH.
+
+    Returns the open file object on success — the caller MUST keep it alive
+    for the process lifetime — or None if another daemon already holds it.
+
+    At boot the daemon can be launched twice (LaunchAgent RunAtLoad *and* the
+    Mac app's socket-gated spawn). Without this guard the second daemon would
+    os.remove() the first's socket, rebind, and the two would fight over
+    passwords.json / tunnels.json / ssh masters. flock is tied to the open
+    file description and is dropped automatically when the process exits —
+    including a crash or SIGKILL — so a dead daemon never wedges the next one.
+    """
+    os.makedirs(ipc.SOCKET_DIR, exist_ok=True)
+    f = open(ipc.LOCK_PATH, "w")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    try:
+        f.write(str(os.getpid()))
+        f.flush()
+    except OSError:
+        pass
+    return f
+
+
 class Auto2FADaemon:
     def __init__(self):
         self.managers: list[SSHHostManager] = []
         self.tunnel_mgr: TunnelManager | None = None
         self.host_map: dict[str, SSHHostManager] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock_fp = None  # exclusive single-instance flock; held for life
         self._clients: set[asyncio.StreamWriter] = set()
         self._subscribers: set[asyncio.StreamWriter] = set()
         self._tick_stop = False
@@ -1101,6 +1131,19 @@ class Auto2FADaemon:
 
     async def run(self) -> None:
         os.makedirs(ipc.SOCKET_DIR, exist_ok=True)
+
+        # Single-instance guard FIRST — before we touch the socket. If another
+        # daemon is already alive (e.g. the LaunchAgent started one and the Mac
+        # app raced to spawn a second), back out cleanly without clobbering its
+        # socket. See _acquire_singleton_lock().
+        self._lock_fp = _acquire_singleton_lock()
+        if self._lock_fp is None:
+            logger.warning(
+                "another auto2fa daemon already holds %s — exiting without "
+                "touching the socket", ipc.LOCK_PATH
+            )
+            return
+
         # Remove any stale socket from a crashed previous run
         if os.path.exists(ipc.SOCKET_PATH):
             try:

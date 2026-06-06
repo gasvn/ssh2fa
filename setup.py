@@ -10,6 +10,7 @@ setup(
         "pyotp",
         "pexpect",
         "python-dotenv",
+        "keyring",
     ],
     entry_points={
         "console_scripts": [

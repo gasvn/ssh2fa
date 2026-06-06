@@ -96,6 +96,63 @@ final class DaemonProcess {
         return nil
     }
 
+    /// Resolve a CONCRETE Python interpreter that can run `-m auto2fa.daemon`.
+    ///
+    /// We must never depend on a login shell's PATH at spawn time. At login
+    /// launchd hands the app a pristine environment, and `zsh -lc` is a
+    /// *non-interactive* login shell that does NOT source ~/.zshrc (that's
+    /// interactive-only). So the user's conda/pyenv/venv `python` — and on
+    /// modern macOS even a bare `python`, which no longer exists — isn't on
+    /// PATH. The daemon then failed to start after every reboot with
+    /// "command not found: python", which looked to the user like all their
+    /// hosts and tunnels had vanished. The real files in ~/.ssh were fine.
+    ///
+    /// Order: explicit pin > one-time discovery through an *interactive*
+    /// login shell (which DOES source .zshrc), cached for next boot >
+    /// /usr/bin/python3 as a last resort.
+    static func discoverInterpreter() -> String {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let pinPath = home + "/.auto2fa/python-path.txt"
+
+        // 1. Explicit pin (this file also doubles as our discovery cache).
+        if let data = try? String(contentsOfFile: pinPath, encoding: .utf8) {
+            let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && fm.isExecutableFile(atPath: trimmed) {
+                return trimmed
+            }
+        }
+
+        // 2. Discover the user's interactive interpreter ONCE. `-i` forces zsh
+        //    to source ~/.zshrc, so conda/pyenv/venv activation runs and
+        //    `python` resolves to the same one the user uses by hand.
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        probe.arguments = ["-ilc", "command -v python || command -v python3"]
+        let pipe = Pipe()
+        probe.standardOutput = pipe
+        probe.standardError = FileHandle.nullDevice
+        if (try? probe.run()) != nil {
+            probe.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+            // An interactive shell may print banners; take the last line that
+            // actually points at an executable file.
+            for line in out.split(separator: "\n").reversed() {
+                let cand = line.trimmingCharacters(in: .whitespaces)
+                if !cand.isEmpty && fm.isExecutableFile(atPath: cand) {
+                    // Cache so we never pay the interactive-shell cost again.
+                    try? cand.write(toFile: pinPath, atomically: true, encoding: .utf8)
+                    return cand
+                }
+            }
+        }
+
+        // 3. Last resort. May lack deps, but yields an explicit ModuleNotFound
+        //    in the log rather than a silent "command not found".
+        return "/usr/bin/python3"
+    }
+
     /// Spawn the daemon if it isn't already running. Returns:
     ///   - .alreadyRunning if a daemon was already listening
     ///   - .spawned if we just started one
@@ -119,13 +176,24 @@ final class DaemonProcess {
             return .failed(reason: msg)
         }
 
-        // Use the user's shell so PATH / aliases / pyenv / virtualenvs resolve
-        // correctly. Bash -lc loads .zshrc/.bash_profile so `python` is the
-        // same one the user uses interactively.
+        // Launch with a CONCRETE interpreter path — never through a login
+        // shell. `zsh -lc` does not source ~/.zshrc, so a bare `python` is
+        // unresolvable at login and the daemon would silently fail to start.
+        // See discoverInterpreter() for the full story.
+        let interpreter = DaemonProcess.discoverInterpreter()
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", "cd \(shellQuote(projectDir)) && exec python -m auto2fa.daemon"]
+        p.executableURL = URL(fileURLWithPath: interpreter)
+        p.arguments = ["-m", "auto2fa.daemon"]
         p.currentDirectoryURL = URL(fileURLWithPath: projectDir)
+        // Make the package importable regardless of how this interpreter
+        // handles `-m` + cwd, while preserving any inherited environment.
+        var env = ProcessInfo.processInfo.environment
+        if let existing = env["PYTHONPATH"], !existing.isEmpty {
+            env["PYTHONPATH"] = projectDir + ":" + existing
+        } else {
+            env["PYTHONPATH"] = projectDir
+        }
+        p.environment = env
 
         // Capture stdout/stderr to a log file so we can debug daemon crashes.
         let logURL = URL(fileURLWithPath: "/tmp/auto2fa-daemon-mac.log")
@@ -146,7 +214,7 @@ final class DaemonProcess {
             NSLog("[Auto2FA] spawned daemon PID=\(p.processIdentifier) from \(projectDir)")
 
             // Wait up to 15s for the socket to appear and respond.
-            // Cold-start Python via pyenv + zsh -lc + asyncio init can
+            // Cold-start Python (interpreter load + asyncio init) can
             // routinely take 5-10s; the old 5s window made first-launch
             // brittle on slower machines.
             for _ in 0..<75 {
@@ -178,10 +246,5 @@ final class DaemonProcess {
         // removes the socket. If macOS SIGKILLs us before that finishes,
         // ssh ControlMaster cleanup will be picked up by cleanup_orphans
         // on the next daemon start.
-    }
-
-    private func shellQuote(_ s: String) -> String {
-        // Single-quote the path and escape any embedded single quotes.
-        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
