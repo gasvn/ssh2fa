@@ -145,7 +145,17 @@ final class AppState: ObservableObject {
                             // level reconnect (LaunchAgent / external daemon).
                             break
                         }
-                        await self.client.reconnectWithBackoff()
+                        // If every backoff attempt failed, say so plainly
+                        // instead of leaving the "retrying…" banner up forever.
+                        // (On success reconnectWithBackoff yields true, which
+                        // the watcher turns into connectionError = nil.)
+                        let ok = await self.client.reconnectWithBackoff()
+                        if !ok && !Task.isCancelled {
+                            await MainActor.run {
+                                self.connectionError =
+                                    "Couldn't reconnect to the daemon. Restart Auto2FA, or check /tmp/auto2fa_daemon.log."
+                            }
+                        }
                     }
                 }
             }

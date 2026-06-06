@@ -61,13 +61,22 @@ def _rpc(method: str, params: dict | None = None) -> dict:
         print("daemon did not respond within 30s — it may be wedged; "
               "try `auto2fa` again or restart the app", file=sys.stderr)
         sys.exit(1)
+    except OSError as e:
+        # sendall/recv can raise BrokenPipeError/OSError (not just timeout)
+        # if the daemon dies mid-exchange — report cleanly, don't traceback.
+        print(f"lost connection to daemon: {e}", file=sys.stderr)
+        sys.exit(1)
     finally:
         s.close()
     line, _, _ = buf.partition(b"\n")
     if not line:
         print("daemon closed connection without responding", file=sys.stderr)
         sys.exit(1)
-    resp = json.loads(line.decode("utf-8"))
+    try:
+        resp = json.loads(line.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"daemon sent a malformed response: {e}", file=sys.stderr)
+        sys.exit(1)
     if "error" in resp:
         print(f"daemon error: {resp['error'].get('message', 'unknown')}",
               file=sys.stderr)
@@ -157,7 +166,11 @@ def cmd_logs(args):
 
 
 def cmd_raw(args):
-    params = json.loads(args.params) if args.params else {}
+    try:
+        params = json.loads(args.params) if args.params else {}
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON for --params: {e}", file=sys.stderr)
+        sys.exit(1)
     res = _rpc(args.method, params)
     print(json.dumps(res, indent=2))
 

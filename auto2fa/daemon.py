@@ -243,10 +243,13 @@ class Auto2FADaemon:
         return [self._host_snapshot(m) for m in self.managers]
 
     def list_tunnels(self) -> list[dict]:
+        # Snapshot once per tunnel: calling _tunnel_snapshot twice (filter +
+        # body) let a concurrent remove() between the two calls slip a None
+        # into the returned list.
         return [
-            self._tunnel_snapshot(n)
+            snap
             for n in list(self.tunnel_mgr.tunnels.keys())
-            if self._tunnel_snapshot(n) is not None
+            if (snap := self._tunnel_snapshot(n)) is not None
         ]
 
     # ---- IPC handlers ----------------------------------------------------
@@ -648,7 +651,10 @@ class Auto2FADaemon:
                     break
                 try:
                     msg = ipc.decode(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    # A line with invalid UTF-8 bytes raises UnicodeDecodeError
+                    # (NOT a JSONDecodeError) — without catching it the whole
+                    # connection handler crashed with no error reply.
                     writer.write(ipc.encode(
                         ipc.make_error("", ipc.ErrCode.INVALID_REQUEST, "bad JSON")
                     ))
@@ -886,7 +892,7 @@ class Auto2FADaemon:
         rebuild every enabled master. Returns counts so the UI can show
         a small confirmation toast."""
         previously_active = [
-            name for name, ts in self.tunnel_mgr.tunnels.items()
+            name for name, ts in list(self.tunnel_mgr.tunnels.items())
             if ts.status in ("alive", "starting", "stale")
         ]
         for name in previously_active:
@@ -925,7 +931,7 @@ class Auto2FADaemon:
         # before we modify any state.
         alive_tunnels = [
             (name, ts.active_jump)
-            for name, ts in self.tunnel_mgr.tunnels.items()
+            for name, ts in list(self.tunnel_mgr.tunnels.items())
             if ts.status in ("alive", "starting", "stale")
         ]
         logger.info(f"wake_recover: probing {len(self.managers)} masters")

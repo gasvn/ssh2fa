@@ -264,22 +264,27 @@ actor BackendClient {
     }
 
     /// Best-effort retry: tries connect() up to ~2 minutes with backoff.
-    /// Yields true on success. Called by AppState on disconnect events.
-    func reconnectWithBackoff() async {
+    /// Yields true and returns true on success. Returns false if every
+    /// attempt failed (or the task was cancelled) so the caller can surface a
+    /// terminal "couldn't reconnect" state instead of leaving the user on a
+    /// "retrying…" banner forever.
+    @discardableResult
+    func reconnectWithBackoff() async -> Bool {
         // 1, 2, 4, 8, 16, 30, 30, 30 …
         let delays: [UInt64] = [1, 2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30]
         for delay in delays {
             // Bail if user cancelled the bootstrap task entirely.
-            if Task.isCancelled { return }
+            if Task.isCancelled { return false }
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             do {
                 try await connect()
                 connectionStateCont.yield(true)
-                return
+                return true
             } catch {
                 // keep trying
             }
         }
+        return false
     }
 
     private func dispatch(line: Data) {

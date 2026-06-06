@@ -231,19 +231,33 @@ class TunnelManager:
 
         loaded: Dict[str, TunnelState] = {}
         for name, cfg in (data.get("tunnels") or {}).items():
-            loaded[name] = TunnelState(
-                name=name,
-                local_port=int(cfg["local_port"]),
-                remote_port=int(cfg.get("remote_port", cfg["local_port"])),
-                jump_candidates=cfg.get("jump_candidates"),
-                last_node=cfg.get("last_node"),
-                last_user=cfg.get("last_user"),
-                auto_start=bool(cfg.get("auto_start", False)),
-                post_connect_cmd=cfg.get("post_connect_cmd"),
-                tags=list(cfg.get("tags", []) or []),
-                url_path=cfg.get("url_path"),
-                wants_alive=bool(cfg.get("wants_alive", False)),
-            )
+            # Skip (don't crash on) a malformed entry — local_port is the one
+            # required field, and a non-int port would blow up int(). The
+            # docstring promises a malformed file is treated gracefully; that
+            # has to hold per-entry too, or one bad row wipes every tunnel.
+            if not isinstance(cfg, dict) or "local_port" not in cfg:
+                logger.error(
+                    "tunnels.json: skipping malformed entry %r (missing local_port)",
+                    name,
+                )
+                continue
+            try:
+                loaded[name] = TunnelState(
+                    name=name,
+                    local_port=int(cfg["local_port"]),
+                    remote_port=int(cfg.get("remote_port", cfg["local_port"])),
+                    jump_candidates=cfg.get("jump_candidates"),
+                    last_node=cfg.get("last_node"),
+                    last_user=cfg.get("last_user"),
+                    auto_start=bool(cfg.get("auto_start", False)),
+                    post_connect_cmd=cfg.get("post_connect_cmd"),
+                    tags=list(cfg.get("tags", []) or []),
+                    url_path=cfg.get("url_path"),
+                    wants_alive=bool(cfg.get("wants_alive", False)),
+                )
+            except (TypeError, ValueError) as e:
+                logger.error("tunnels.json: skipping malformed entry %r: %s", name, e)
+                continue
         self.tunnels = loaded
 
     def save(self) -> None:
@@ -361,16 +375,24 @@ class TunnelManager:
         lock = self._lock_for(old)
         with lock:
             ts = self.tunnels.get(old)
-            if ts is None or new in self.tunnels:
+            if ts is None:
                 return
-            ts.name = new
-            with self._locks_meta:
-                self.tunnels[new] = ts
-                del self.tunnels[old]
-                # Reuse the SAME lock object for the new name so a thread that
-                # is blocked on it (acquired via the old name) keeps serializing
-                # correctly against the renamed tunnel.
-                self._tunnel_locks[new] = self._tunnel_locks.pop(old, lock)
+            # Hold _add_lock for the duplicate check + insert so a concurrent
+            # rename/add racing to the SAME `new` name can't both pass the
+            # check and clobber one another (two renames take different
+            # per-tunnel locks, so only this global lock serializes them —
+            # mirrors the fix in add()).
+            with self._add_lock:
+                if new in self.tunnels:
+                    return
+                ts.name = new
+                with self._locks_meta:
+                    self.tunnels[new] = ts
+                    del self.tunnels[old]
+                    # Reuse the SAME lock object for the new name so a thread
+                    # blocked on it (acquired via the old name) keeps
+                    # serializing correctly against the renamed tunnel.
+                    self._tunnel_locks[new] = self._tunnel_locks.pop(old, lock)
             with self._post_connect_lock:
                 if old in self._post_connect_running:
                     self._post_connect_running.discard(old)

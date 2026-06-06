@@ -40,7 +40,11 @@ final class DaemonProcess {
             return nil  // still alive — let the regular reconnect try
         }
         NSLog("[Auto2FA] owned daemon died — respawning")
-        ownedProcess = nil
+        // Do NOT clear ownedProcess here. ensureRunning() overwrites it with
+        // the new Process only on a successful spawn; if the spawn fails we
+        // must keep the (dead) reference so this guard stays true and a later
+        // retry will try to respawn again. Clearing it up-front meant one
+        // failed respawn wedged the app into "never retry" forever.
         return await ensureRunning()
     }
 

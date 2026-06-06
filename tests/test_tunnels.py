@@ -207,6 +207,34 @@ class TestTunnelManagerPersistence(unittest.TestCase):
         # File untouched
         self.assertEqual(open(self.cfg).read(), "{not valid json")
 
+    def test_load_skips_entry_missing_local_port(self):
+        """A single malformed entry must be skipped, not crash load() with a
+        KeyError that wipes every other tunnel (regression)."""
+        from tunnels import TunnelManager
+        with open(self.cfg, "w") as f:
+            json.dump({"tunnels": {
+                "good": {"local_port": 8090, "remote_port": 8090},
+                "broken": {"remote_port": 8888},          # no local_port
+            }}, f)
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.load()  # must NOT raise KeyError
+        self.assertIn("good", tm.tunnels)
+        self.assertNotIn("broken", tm.tunnels)
+        self.assertEqual(tm.tunnels["good"].local_port, 8090)
+
+    def test_load_skips_entry_with_non_int_port(self):
+        """A non-integer port raises ValueError inside int(); that entry is
+        skipped rather than crashing the whole load."""
+        from tunnels import TunnelManager
+        with open(self.cfg, "w") as f:
+            json.dump({"tunnels": {
+                "good": {"local_port": 8090},
+                "bad": {"local_port": "not-a-number"},
+            }}, f)
+        tm = TunnelManager(host_managers={}, config_path=self.cfg)
+        tm.load()
+        self.assertEqual(set(tm.tunnels.keys()), {"good"})
+
 
 class TestTunnelManagerAdd(unittest.TestCase):
     def setUp(self):

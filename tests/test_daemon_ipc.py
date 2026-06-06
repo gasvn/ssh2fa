@@ -72,6 +72,15 @@ class TestNonObjectRequest(unittest.TestCase):
         self.assertIn("error", resps[0])
         self.assertEqual(resps[0]["error"]["code"], ipc.ErrCode.INVALID_REQUEST)
 
+    def test_invalid_utf8_gets_invalid_request(self):
+        """Invalid UTF-8 bytes raise UnicodeDecodeError (NOT JSONDecodeError);
+        the handler must reply with an error instead of crashing the
+        connection silently (regression)."""
+        resps = _run_client_with(b"\xff\xfe{\"id\":\"1\"}\n")
+        self.assertEqual(len(resps), 1)
+        self.assertIn("error", resps[0])
+        self.assertEqual(resps[0]["error"]["code"], ipc.ErrCode.INVALID_REQUEST)
+
 
 class TestOversizedRequest(unittest.TestCase):
     """M12: a line larger than the stream limit must yield a clean error,
@@ -108,6 +117,24 @@ class TestFindFreePort(unittest.TestCase):
         base = 49000
         got = d._find_free_port(base, taken={base, base + 1})
         self.assertNotIn(got, {base, base + 1})
+
+
+class TestListTunnelsNoneFilter(unittest.TestCase):
+    """list_tunnels snapshots each tunnel once; a concurrent remove between
+    the old filter-call and body-call used to leak a None into the result."""
+
+    def test_list_tunnels_never_returns_none(self):
+        d = daemon_mod.Auto2FADaemon()
+
+        class _TM:
+            tunnels = {"a": object(), "b": object()}
+
+        d.tunnel_mgr = _TM()
+        # Simulate tunnel 'b' having just been removed: its snapshot is None.
+        d._tunnel_snapshot = lambda n: None if n == "b" else {"name": n}
+        out = d.list_tunnels()
+        self.assertNotIn(None, out)
+        self.assertEqual(out, [{"name": "a"}])
 
 
 if __name__ == "__main__":
