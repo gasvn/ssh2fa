@@ -181,6 +181,12 @@ def cmd_install(args):
 
 
 def main():
+    # When invoked with no arguments, launch the interactive TUI directly.
+    if len(sys.argv) == 1:
+        from .main import main as tui_main
+        tui_main()
+        return
+
     p = argparse.ArgumentParser(prog="auto2fa", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)

@@ -113,7 +113,7 @@ class TestInstallLaunchAgent(unittest.TestCase):
             plist_path=os.path.join(tmp, "com.auto2fa.daemon.plist"),
         )
 
-    def test_writes_plist_and_loads_in_bootout_bootstrap_kickstart_order(self):
+    def test_writes_plist_and_loads_in_unload_bootout_bootstrap_kickstart_order(self):
         tmp = tempfile.mkdtemp()
         paths = self._paths(tmp)
         fake = _FakeRun()
@@ -122,7 +122,9 @@ class TestInstallLaunchAgent(unittest.TestCase):
             status = installer.render_service(paths, _run=fake)
         self.assertTrue(os.path.exists(paths.plist_path))
         subcmds = [c[1] for c in fake.calls]  # argv[1] is the launchctl verb
-        self.assertEqual(subcmds, ["bootout", "bootstrap", "kickstart"])
+        # unload first (legacy, works reliably on macOS 15+), then bootout,
+        # then bootstrap + kickstart.
+        self.assertEqual(subcmds, ["unload", "bootout", "bootstrap", "kickstart"])
         self.assertIn("loaded", status.lower())
 
     def test_backs_up_existing_plist_once(self):

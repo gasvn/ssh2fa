@@ -7,7 +7,7 @@ Auto2FA is a robust SSH connection manager that handles 2FA (TOTP) automation an
 | Frontend | Best for | How to run |
 |---|---|---|
 | **Textual TUI** (`auto2fa`) | SSH sessions, headless servers, no GUI | `auto2fa` |
-| **Daemon mode** (`auto2fa-daemon`) | Background service consumed by the Mac app | `auto2fa-daemon`, or auto-start via `LaunchAgents/com.auto2fa.daemon.plist` |
+| **Daemon mode** (`auto2fa-daemon`) | Background service consumed by the Mac app | `auto2fa-daemon`, or auto-start is configured by `python3 install.py` |
 | **Native macOS app** (Swift) | Daily driver on a Mac — menu bar status + dock window + Dynamic Notch toasts | Open `auto2fa-mac/Auto2FA.xcodeproj` in Xcode, ⌘R |
 
 All three share the same Python backend (`auto2fa/backend.py`, `auto2fa/tunnels.py`). The TUI runs it in-process; the Mac app talks to the daemon over `~/.auto2fa/auto2fa.sock` (line-delimited JSON-RPC). See [`auto2fa-mac/README.md`](auto2fa-mac/README.md) and [`docs/superpowers/specs/2026-05-24-mac-app-design.md`](docs/superpowers/specs/2026-05-24-mac-app-design.md).
@@ -27,8 +27,12 @@ All three share the same Python backend (`auto2fa/backend.py`, `auto2fa/tunnels.
 ```bash
 git clone <repo>
 cd auto2fa
-pip install -e .
+python3 install.py        # creates .venv, installs, generates + loads the daemon
 ```
+
+`install.py` is idempotent — re-run it any time (after moving the repo, switching
+machines, or pulling updates) and it regenerates this machine's deployment
+artifacts. No manual path editing.
 
 ### Dependencies (macOS)
 

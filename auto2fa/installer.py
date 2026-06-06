@@ -120,8 +120,11 @@ def _install_launchagent(paths: "InstallPaths", *, _run) -> str:
 
     domain = f"gui/{os.getuid()}"
     target = f"{domain}/{LAUNCHD_LABEL}"
-    # bootout first so a re-run isn't rejected with "already loaded"; ignore
-    # "no such process" on a clean machine.
+    # Unregister before re-registering.  Use the legacy `unload` form first
+    # because `bootout` on macOS 15+ returns 0 but leaves the service in the
+    # launchd database, which causes `bootstrap` to fail with error 5.  `unload`
+    # reliably removes it.  Ignore all errors (clean-machine or already-unloaded).
+    _run(["launchctl", "unload", paths.plist_path], capture_output=True)
     _run(["launchctl", "bootout", target], capture_output=True)
     r = _run(["launchctl", "bootstrap", domain, paths.plist_path],
              capture_output=True, text=True)
