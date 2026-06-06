@@ -104,5 +104,59 @@ class TestRenderServiceDispatch(unittest.TestCase):
         self.assertIn("not yet supported", status.lower())
 
 
+class TestInstallLaunchAgent(unittest.TestCase):
+    def _paths(self, tmp):
+        return installer.InstallPaths(
+            repo_dir="/r", venv_dir="/r/.venv", venv_bin="/r/.venv/bin",
+            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/auto2fa-daemon",
+            config_dir=os.path.join(tmp, ".auto2fa"), ssh_config="/s",
+            plist_path=os.path.join(tmp, "com.auto2fa.daemon.plist"),
+        )
+
+    def test_writes_plist_and_loads_in_bootout_bootstrap_kickstart_order(self):
+        tmp = tempfile.mkdtemp()
+        paths = self._paths(tmp)
+        fake = _FakeRun()
+        import unittest.mock as mock
+        with mock.patch.object(installer.platform, "system", return_value="Darwin"):
+            status = installer.render_service(paths, _run=fake)
+        self.assertTrue(os.path.exists(paths.plist_path))
+        subcmds = [c[1] for c in fake.calls]  # argv[1] is the launchctl verb
+        self.assertEqual(subcmds, ["bootout", "bootstrap", "kickstart"])
+        self.assertIn("loaded", status.lower())
+
+    def test_backs_up_existing_plist_once(self):
+        tmp = tempfile.mkdtemp()
+        paths = self._paths(tmp)
+        os.makedirs(os.path.dirname(paths.plist_path), exist_ok=True)
+        with open(paths.plist_path, "w") as f:
+            f.write("OLD")
+        fake = _FakeRun()
+        import unittest.mock as mock
+        with mock.patch.object(installer.platform, "system", return_value="Darwin"):
+            installer.render_service(paths, _run=fake)
+        backups = [n for n in os.listdir(os.path.dirname(paths.plist_path))
+                   if ".bak-" in n]
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(os.path.dirname(paths.plist_path), backups[0])) as f:
+            self.assertEqual(f.read(), "OLD")  # backup preserves the old content
+
+    def test_bootstrap_failure_raises_install_error(self):
+        tmp = tempfile.mkdtemp()
+        paths = self._paths(tmp)
+        import unittest.mock as mock
+        def fake_run(argv, **kw):
+            class _R:
+                returncode = 1 if argv[1] == "bootstrap" else 0
+                stderr = "Bootstrap failed: 125: Domain does not exist"
+                stdout = ""
+            return _R()
+        with mock.patch.object(installer.platform, "system", return_value="Darwin"):
+            with self.assertRaises(installer.InstallError) as cm:
+                installer.render_service(paths, _run=fake_run)
+        self.assertIn("bootstrap failed", str(cm.exception).lower())
+        self.assertIn("125", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

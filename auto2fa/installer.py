@@ -106,6 +106,31 @@ def write_pointers(paths: "InstallPaths") -> None:
         f.write(paths.python_bin)
 
 
+def _install_launchagent(paths: "InstallPaths", *, _run) -> str:
+    os.makedirs(os.path.dirname(paths.plist_path), exist_ok=True)
+    # Back up an existing plist once before overwriting (matches the project
+    # convention; lets the user revert a bad install).
+    if os.path.exists(paths.plist_path):
+        stamp = datetime.date.today().strftime("%Y%m%d")
+        shutil.copy2(paths.plist_path, f"{paths.plist_path}.bak-{stamp}")
+    with open(paths.plist_path, "w") as f:
+        f.write(render_plist(paths))
+
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{LAUNCHD_LABEL}"
+    # bootout first so a re-run isn't rejected with "already loaded"; ignore
+    # "no such process" on a clean machine.
+    _run(["launchctl", "bootout", target], capture_output=True)
+    r = _run(["launchctl", "bootstrap", domain, paths.plist_path],
+             capture_output=True, text=True)
+    if r.returncode != 0:
+        raise InstallError(
+            f"launchctl bootstrap failed ({r.returncode}): "
+            f"{(r.stderr or '').strip()}")
+    _run(["launchctl", "kickstart", "-k", target], capture_output=True)
+    return f"LaunchAgent installed at {paths.plist_path} and loaded"
+
+
 def render_service(paths: "InstallPaths", *, _run=subprocess.run) -> str:
     """Write + load the platform's auto-start service. Returns a human status
     line. Per-OS dispatch so P3 can add the Linux (systemd) branch here."""
