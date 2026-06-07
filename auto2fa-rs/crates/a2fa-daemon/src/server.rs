@@ -30,8 +30,31 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Hard cap on concurrently-handled connections. Each connection holds a
+/// thread for its lifetime, so a buggy/looping local client must not be able
+/// to spawn threads without bound.
+const MAX_CONNS: usize = 128;
+
+/// RAII guard: increments the live-connection counter on construction and
+/// decrements it on drop. Guarantees the counter is released on EVERY exit
+/// path from a connection handler — normal return, early return, or panic.
+struct ConnGuard(Arc<AtomicUsize>);
+
+impl ConnGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        ConnGuard(counter)
+    }
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 use anyhow::{Context, Result};
 use a2fa_core::config::{config_dir, passwords_path};
@@ -249,13 +272,28 @@ pub fn run() -> Result<()> {
     }
 
     // 7. Accept loop.
+    let conn_count = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                // Connection cap: refuse (close) when too many are live, rather
+                // than spawning an unbounded number of handler threads.
+                if conn_count.load(Ordering::SeqCst) >= MAX_CONNS {
+                    log::warn!(
+                        "refusing connection: MAX_CONNS ({MAX_CONNS}) reached; closing"
+                    );
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    drop(stream);
+                    continue;
+                }
                 let ctx2 = ctx.clone();
+                let counter = Arc::clone(&conn_count);
                 std::thread::Builder::new()
                     .name("conn".into())
-                    .spawn(move || handle_connection(stream, ctx2))
+                    .spawn(move || {
+                        let _guard = ConnGuard::new(counter);
+                        handle_connection(stream, ctx2);
+                    })
                     .context("spawn connection thread")?;
             }
             Err(e) => {
@@ -290,6 +328,13 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
     let mut reader = BufReader::new(reader_stream);
     let mut writer = stream;
 
+    // Per-connection subscribe-once flag. A connection may send
+    // `subscribe_events` repeatedly (the read loop `continue`s after handling
+    // it); we register exactly ONE subscriber + forwarder thread per
+    // connection and just re-ack any further requests. Without this, a single
+    // connection could register unbounded subscribers/threads.
+    let mut subscribed = false;
+
     let mut line_buf = String::new();
     loop {
         line_buf.clear();
@@ -311,12 +356,28 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
                     let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("");
                     if Method::from_str(method) == Some(Method::SubscribeEvents) {
-                        // Register subscriber and forward events on a dedicated thread.
-                        let rx = subscribers::register(&ctx.state);
-                        if let Ok(ev_stream) = writer.try_clone() {
-                            subscribers::forward_events(ev_stream, rx);
+                        // Register exactly once per connection.
+                        if !subscribed {
+                            match subscribers::register(&ctx.state) {
+                                Some(rx) => {
+                                    if let Ok(ev_stream) = writer.try_clone() {
+                                        subscribers::forward_events(ev_stream, rx);
+                                        subscribed = true;
+                                    }
+                                    // If try_clone failed, `rx` drops here and
+                                    // the just-registered sender is pruned by
+                                    // the next `emit`; leave `subscribed` false
+                                    // so a retry can re-register.
+                                }
+                                None => {
+                                    // Cap reached — refused by the engine.
+                                    log::warn!(
+                                        "subscribe_events refused (subscriber cap reached)"
+                                    );
+                                }
+                            }
                         }
-                        let ack = encode_response(id, serde_json::json!({ "subscribed": true }));
+                        let ack = encode_response(id, serde_json::json!({ "subscribed": subscribed }));
                         if writer.write_all(ack.as_bytes()).is_err() {
                             break;
                         }

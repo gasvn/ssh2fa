@@ -233,7 +233,7 @@ mod tests {
     /// The emitted event must use the lowercase wire name (tunnel_status_changed).
     #[test]
     fn first_tick_emits_tunnel_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("nb", TunnelStatus::Idle)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -258,7 +258,7 @@ mod tests {
     /// Second tick with unchanged state emits NO event.
     #[test]
     fn second_tick_no_event_when_unchanged() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("nb", TunnelStatus::Idle)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -273,7 +273,7 @@ mod tests {
     /// Changing total_uptime_sec must NOT emit an event.
     #[test]
     fn uptime_change_does_not_emit_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("nb", TunnelStatus::Alive)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -291,7 +291,7 @@ mod tests {
     /// A real status change (Idle → Alive) MUST emit an event.
     #[test]
     fn status_change_emits_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("nb", TunnelStatus::Idle)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -309,7 +309,7 @@ mod tests {
     /// Removing a tunnel emits a "removed" event.
     #[test]
     fn removed_tunnel_emits_removed_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("nb", TunnelStatus::Idle)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -328,7 +328,7 @@ mod tests {
     /// Host changes are also detected; event name must be lowercase on the wire.
     #[test]
     fn host_status_change_emits_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![]);
         inner.hosts.push(make_host("k6", false));
         inner.subscribe(tx);
@@ -355,7 +355,7 @@ mod tests {
     /// Emitted JSON must have the shape: {"event":"tunnel_status_changed","data":{...}}\n
     #[test]
     fn emitted_event_json_shape_is_correct() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![make_tunnel("myconn", TunnelStatus::Idle)]);
         inner.subscribe(tx);
         let state = Mutex::new(inner);
@@ -378,7 +378,7 @@ mod tests {
     /// last_msg change on a host must NOT emit an event.
     #[test]
     fn host_last_msg_change_does_not_emit_event() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(16);
         let mut inner = State::with_tunnels(vec![]);
         inner.hosts.push(make_host("k6", true));
         inner.subscribe(tx);
