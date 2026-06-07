@@ -490,6 +490,83 @@ pub fn render_confirm_delete(f: &mut Frame, sheet: &ConfirmDeleteSheet) {
 }
 
 // ---------------------------------------------------------------------------
+// Help modal
+// ---------------------------------------------------------------------------
+
+/// Keybinding reference lines, grouped. Each entry is `(key, description)`;
+/// a `("", "Section")` entry with an empty key is rendered as a section header.
+pub fn help_lines() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("", "Global"),
+        ("q", "Quit"),
+        ("t / Ctrl+n", "New tunnel"),
+        ("?", "Show this help"),
+        ("Tab", "Switch between Hosts and Tunnels"),
+        ("/", "Filter the focused pane"),
+        ("l", "Toggle the logs view"),
+        ("j/k  ↑/↓", "Move cursor"),
+        ("", "Tunnels"),
+        ("Space", "Start / stop the selected tunnel"),
+        ("Enter", "Pick a compute node"),
+        ("y", "Copy URL to clipboard"),
+        ("d", "Delete the selected tunnel"),
+        ("s / x", "Start / stop (explicit aliases)"),
+        ("", "Hosts"),
+        ("Space", "Start / stop the selected host"),
+        ("m", "Mount / unmount remote filesystem"),
+        ("r", "Rotate connection pool"),
+    ]
+}
+
+/// Render the help modal listing all keybindings.
+pub fn render_help(f: &mut Frame) {
+    let rows = help_lines();
+    // border (2) + title (1) + blank (1) + hint (1) + a little slack.
+    let height = (rows.len() as u16) + 6;
+    let area = centered_rect(64, height.min(f.area().height), f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Keyboard Reference")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (key, desc) in rows {
+        if key.is_empty() {
+            lines.push(Line::from(Span::styled(
+                desc.to_string(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {key:<12}"),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(desc.to_string()),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "?, Esc or q to close",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+// ---------------------------------------------------------------------------
 // Tests (pure logic)
 // ---------------------------------------------------------------------------
 
@@ -601,5 +678,21 @@ mod tests {
     fn truncate_shortens_long_strings() {
         assert_eq!(truncate("abc", 10), "abc");
         assert_eq!(truncate("abcdefghij", 5), "abcd\u{2026}");
+    }
+
+    #[test]
+    fn help_lines_are_nonempty_and_cover_key_bindings() {
+        let lines = help_lines();
+        assert!(!lines.is_empty());
+        let keys: Vec<&str> = lines.iter().map(|(k, _)| *k).collect();
+        for expected in ["q", "Space", "Enter", "y", "d", "m", "r"] {
+            assert!(keys.contains(&expected), "missing help key: {expected}");
+        }
+        // Section headers present.
+        let sections: Vec<&str> =
+            lines.iter().filter(|(k, _)| k.is_empty()).map(|(_, d)| *d).collect();
+        assert!(sections.contains(&"Global"));
+        assert!(sections.contains(&"Tunnels"));
+        assert!(sections.contains(&"Hosts"));
     }
 }

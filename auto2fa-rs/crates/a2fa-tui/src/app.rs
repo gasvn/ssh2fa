@@ -3,6 +3,9 @@
 //! All UI state lives here; `main.rs` feeds it events and the view modules
 //! read it for rendering.  Keeping this I/O-free makes it directly testable.
 
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
 use a2fa_core::model::{Host, Tunnel, TunnelStatus};
 use ratatui::style::Color;
 
@@ -37,7 +40,132 @@ pub enum SheetKind {
     NewTunnel,
     NodePicker,
     ConfirmDelete,
+    Help,
 }
+
+// ---------------------------------------------------------------------------
+// Toast / transient notification
+// ---------------------------------------------------------------------------
+
+/// Severity of a transient toast — drives its color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl Severity {
+    pub fn color(self) -> Color {
+        match self {
+            Severity::Info => Color::Green,
+            Severity::Warning => Color::Yellow,
+            Severity::Error => Color::Red,
+        }
+    }
+}
+
+/// A transient toast shown in the status line, auto-clearing after a while.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    pub severity: Severity,
+    pub created: Instant,
+}
+
+/// How long a toast remains visible before auto-clearing.
+pub const TOAST_TTL: Duration = Duration::from_secs(6);
+
+/// Build the URL for a tunnel's local endpoint.
+///
+/// Always `http://localhost:<port>`, with `url_path` appended when present.
+/// A missing leading '/' on `url_path` is added so the result is well-formed.
+pub fn tunnel_url(local_port: u16, url_path: Option<&str>) -> String {
+    let base = format!("http://localhost:{local_port}");
+    match url_path {
+        Some(p) if !p.is_empty() => {
+            if p.starts_with('/') {
+                format!("{base}{p}")
+            } else {
+                format!("{base}/{p}")
+            }
+        }
+        _ => base,
+    }
+}
+
+/// Decide the toast (and whether to fire a native notification) for a single
+/// tunnel status transition. Pure mirror of Python `_notify_status_transitions`.
+///
+/// Returns `None` when the transition is uninteresting (no change, or an
+/// unhandled state). The bool in the tuple is `fire_native`.
+pub fn status_transition_toast(
+    prev: Option<&str>,
+    new: &str,
+    last_msg: &str,
+    user_stopped: bool,
+) -> Option<(String, Severity, bool)> {
+    if prev == Some(new) {
+        return None;
+    }
+    match (prev, new) {
+        (Some("alive"), "stale") => Some((
+            format!("⚠ {NAME}: compute node ended — Enter to repick"),
+            Severity::Warning,
+            true,
+        )),
+        (Some("alive"), "failed") => Some((
+            format!("✕ {NAME} disconnected: {last_msg}"),
+            Severity::Error,
+            true,
+        )),
+        (Some("alive"), "idle") => {
+            if user_stopped {
+                Some((format!("⊘ {NAME} stopped"), Severity::Info, false))
+            } else {
+                Some((
+                    format!("⚠ {NAME}: connection dropped — reconnecting"),
+                    Severity::Warning,
+                    true,
+                ))
+            }
+        }
+        (Some("alive"), "starting") => Some((
+            format!("↻ {NAME}: reconnecting…"),
+            Severity::Warning,
+            false,
+        )),
+        // Transitions into a bad state with no alive-prev to compare.
+        (_, "failed") => {
+            let m = if last_msg.is_empty() {
+                "failed to connect".to_string()
+            } else {
+                last_msg.to_string()
+            };
+            Some((format!("✕ {NAME}: {m}"), Severity::Error, true))
+        }
+        (_, "port_busy") => {
+            Some((format!("✕ {NAME}: port in use"), Severity::Error, false))
+        }
+        (_, "stale") => Some((
+            format!("⚠ {NAME}: node not running — Enter to repick"),
+            Severity::Warning,
+            false,
+        )),
+        (Some("starting"), "alive")
+        | (Some("idle"), "alive")
+        | (Some("stale"), "alive")
+        | (Some("failed"), "alive")
+        | (Some("port_busy"), "alive") => {
+            Some((format!("✓ {NAME} connected"), Severity::Info, false))
+        }
+        _ => None,
+    }
+}
+
+/// Placeholder token replaced with the tunnel name by the caller. Keeping the
+/// decision fn name-agnostic makes it trivially unit-testable.
+const NAME: &str = "{name}";
 
 // ---------------------------------------------------------------------------
 // Application model
@@ -72,6 +200,15 @@ pub struct AppModel {
 
     /// Signal to exit the event loop.
     pub should_quit: bool,
+
+    /// Active transient toast (auto-clears after `TOAST_TTL`).
+    pub toast: Option<Toast>,
+
+    /// Last-seen status per tunnel, for transition detection.
+    pub last_seen_status: HashMap<String, String>,
+
+    /// Tunnels the user just intentionally stopped (so an alive→idle is quiet).
+    pub user_stopped: HashSet<String>,
 }
 
 impl Default for AppModel {
@@ -88,6 +225,9 @@ impl Default for AppModel {
             input_mode: InputMode::Normal,
             filter_buf: String::new(),
             should_quit: false,
+            toast: None,
+            last_seen_status: HashMap::new(),
+            user_stopped: HashSet::new(),
         }
     }
 }
@@ -242,6 +382,7 @@ impl AppModel {
     }
 
     /// Clear the active filter and return to Normal mode.
+    #[allow(dead_code)]
     pub fn clear_filter(&mut self) {
         self.filter.clear();
         self.filter_buf.clear();
@@ -249,7 +390,50 @@ impl AppModel {
     }
 
     /// Replace the tunnel list with a fresh snapshot from the daemon.
-    pub fn set_tunnels(&mut self, tunnels: Vec<Tunnel>) {
+    ///
+    /// Detects per-tunnel status transitions vs. the last snapshot, emits the
+    /// in-app toast for the most important change, and returns the list of
+    /// native notifications to fire (title, message). The caller (main.rs) is
+    /// responsible for actually firing them — this keeps `AppModel` I/O-free.
+    pub fn set_tunnels(&mut self, tunnels: Vec<Tunnel>) -> Vec<(String, String)> {
+        let mut native: Vec<(String, String)> = Vec::new();
+        let mut present: HashSet<String> = HashSet::new();
+
+        for t in &tunnels {
+            let name = t.name.clone();
+            present.insert(name.clone());
+            let new_status = t.status.to_string();
+            let prev = self.last_seen_status.get(&name).cloned();
+            self.last_seen_status.insert(name.clone(), new_status.clone());
+
+            let user_stopped = self.user_stopped.contains(&name);
+            if let Some((text, severity, fire_native)) = status_transition_toast(
+                prev.as_deref(),
+                &new_status,
+                &t.last_msg,
+                user_stopped,
+            ) {
+                let text = text.replace("{name}", &name);
+                // Intentional-stop is consumed once it produces its quiet toast.
+                if prev.as_deref() == Some("alive") && new_status == "idle" {
+                    self.user_stopped.remove(&name);
+                }
+                if fire_native {
+                    let title = match severity {
+                        Severity::Error => "Auto2FA: tunnel failed",
+                        Severity::Warning => "Auto2FA: tunnel issue",
+                        Severity::Info => "Auto2FA",
+                    };
+                    native.push((title.to_string(), text.clone()));
+                }
+                self.push_toast(text, severity);
+            }
+        }
+
+        // Drop last-seen entries for tunnels that no longer exist.
+        self.last_seen_status.retain(|k, _| present.contains(k));
+        self.user_stopped.retain(|k| present.contains(k));
+
         self.tunnels = tunnels;
         let new_vis = self.visible_tunnels(&self.filter).len();
         if new_vis > 0 && self.tunnels_sel >= new_vis {
@@ -257,6 +441,35 @@ impl AppModel {
         } else if new_vis == 0 {
             self.tunnels_sel = 0;
         }
+        native
+    }
+
+    /// Show a transient toast (also mirrored into the status line).
+    pub fn push_toast(&mut self, text: impl Into<String>, severity: Severity) {
+        let text = text.into();
+        self.status_msg = text.clone();
+        self.toast = Some(Toast {
+            text,
+            severity,
+            created: Instant::now(),
+        });
+    }
+
+    /// Clear the toast if it has outlived `TOAST_TTL`. Returns true if cleared.
+    pub fn expire_toast(&mut self) -> bool {
+        if let Some(t) = &self.toast {
+            if t.created.elapsed() >= TOAST_TTL {
+                self.toast = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mark a tunnel as intentionally stopped by the user (so the resulting
+    /// alive→idle transition produces a quiet toast, not a warning).
+    pub fn mark_user_stopped(&mut self, name: &str) {
+        self.user_stopped.insert(name.to_string());
     }
 
     /// Replace the host list with a fresh snapshot from the daemon.
@@ -401,6 +614,127 @@ mod tests {
         app.focus = Pane::Tunnels;
         app.move_up();
         assert_eq!(app.tunnels_sel, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // tunnel_url
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn tunnel_url_no_path() {
+        assert_eq!(tunnel_url(8888, None), "http://localhost:8888");
+        assert_eq!(tunnel_url(8888, Some("")), "http://localhost:8888");
+    }
+
+    #[test]
+    fn tunnel_url_with_leading_slash() {
+        assert_eq!(tunnel_url(8888, Some("/lab")), "http://localhost:8888/lab");
+    }
+
+    #[test]
+    fn tunnel_url_without_leading_slash() {
+        assert_eq!(tunnel_url(8888, Some("lab")), "http://localhost:8888/lab");
+    }
+
+    // -------------------------------------------------------------------
+    // status_transition_toast
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn transition_same_status_is_none() {
+        assert!(status_transition_toast(Some("alive"), "alive", "", false).is_none());
+    }
+
+    #[test]
+    fn transition_alive_to_failed_fires_native() {
+        let (text, sev, native) =
+            status_transition_toast(Some("alive"), "failed", "boom", false).unwrap();
+        assert!(text.contains("disconnected"));
+        assert!(text.contains("boom"));
+        assert_eq!(sev, Severity::Error);
+        assert!(native);
+    }
+
+    #[test]
+    fn transition_alive_to_stale_fires_native() {
+        let (_, sev, native) =
+            status_transition_toast(Some("alive"), "stale", "", false).unwrap();
+        assert_eq!(sev, Severity::Warning);
+        assert!(native);
+    }
+
+    #[test]
+    fn transition_user_stopped_alive_to_idle_is_quiet() {
+        let (text, sev, native) =
+            status_transition_toast(Some("alive"), "idle", "", true).unwrap();
+        assert!(text.contains("stopped"));
+        assert_eq!(sev, Severity::Info);
+        assert!(!native);
+    }
+
+    #[test]
+    fn transition_unexpected_alive_to_idle_warns_and_notifies() {
+        let (text, sev, native) =
+            status_transition_toast(Some("alive"), "idle", "", false).unwrap();
+        assert!(text.contains("dropped"));
+        assert_eq!(sev, Severity::Warning);
+        assert!(native);
+    }
+
+    #[test]
+    fn transition_starting_to_alive_is_quiet_no_native() {
+        let (text, sev, native) =
+            status_transition_toast(Some("starting"), "alive", "", false).unwrap();
+        assert!(text.contains("connected"));
+        assert_eq!(sev, Severity::Info);
+        assert!(!native);
+    }
+
+    #[test]
+    fn transition_alive_to_starting_quiet_warning() {
+        let (text, sev, native) =
+            status_transition_toast(Some("alive"), "starting", "", false).unwrap();
+        assert!(text.contains("reconnecting"));
+        assert_eq!(sev, Severity::Warning);
+        assert!(!native);
+    }
+
+    #[test]
+    fn transition_initial_failed_fires_native() {
+        let (text, sev, native) =
+            status_transition_toast(None, "failed", "", false).unwrap();
+        assert!(text.contains("failed to connect"));
+        assert_eq!(sev, Severity::Error);
+        assert!(native);
+    }
+
+    #[test]
+    fn transition_port_busy_no_native() {
+        let (text, sev, native) =
+            status_transition_toast(Some("idle"), "port_busy", "", false).unwrap();
+        assert!(text.contains("port in use"));
+        assert_eq!(sev, Severity::Error);
+        assert!(!native);
+    }
+
+    #[test]
+    fn set_tunnels_emits_native_and_clears_removed() {
+        let mut app = AppModel::default();
+        // Seed an alive tunnel.
+        let mut t = tunnel("nb", "n1");
+        t.status = TunnelStatus::Alive;
+        let natives = app.set_tunnels(vec![t.clone()]);
+        // First sight: no prev → alive is not a flagged transition.
+        assert!(natives.is_empty());
+        // Now it fails — should produce a native notification.
+        t.status = TunnelStatus::Failed;
+        t.last_msg = "lost".into();
+        let natives = app.set_tunnels(vec![t.clone()]);
+        assert_eq!(natives.len(), 1);
+        assert!(natives[0].1.contains("nb"));
+        // Removing the tunnel drops its last_seen entry.
+        app.set_tunnels(vec![]);
+        assert!(app.last_seen_status.is_empty());
     }
 
     #[test]

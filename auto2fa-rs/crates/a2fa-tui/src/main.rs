@@ -13,6 +13,7 @@
 
 mod app;
 mod client;
+mod notify;
 mod views;
 
 use std::io;
@@ -36,13 +37,14 @@ use ratatui::{
 };
 use serde_json::Value;
 
-use app::{AppModel, InputMode, Pane, SheetKind};
+use app::{tunnel_url, AppModel, InputMode, Pane, SheetKind};
 use views::{
     hosts::render_hosts,
     logs::render_logs,
     sheets::{
-        render_add_host, render_confirm_delete, render_new_tunnel, render_node_picker,
-        AddHostSheet, ConfirmDeleteSheet, NewTunnelSheet, NodePickerSheet, SqueueJob,
+        render_add_host, render_confirm_delete, render_help, render_new_tunnel,
+        render_node_picker, AddHostSheet, ConfirmDeleteSheet, NewTunnelSheet,
+        NodePickerSheet, SqueueJob,
     },
     tunnels::render_tunnels,
 };
@@ -130,7 +132,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
     match client::rpc("list_tunnels", serde_json::json!({})) {
         Ok(v) => {
             if let Ok(tunnels) = serde_json::from_value(v) {
+                // Initial load: seed last_seen_status without spamming toasts /
+                // notifications for tunnels that are already alive.
                 app.set_tunnels(tunnels);
+                app.toast = None;
+                app.status_msg.clear();
             }
         }
         Err(e) => {
@@ -190,6 +196,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         // Drain events that may have arrived during key handling.
         while let Ok(ev) = rx.try_recv() {
             apply_daemon_event(&mut app, ev);
+            needs_redraw = true;
+        }
+
+        // Auto-clear an expired toast (loop wakes at least every 250 ms).
+        if app.expire_toast() {
+            app.status_msg.clear();
             needs_redraw = true;
         }
 
@@ -403,6 +415,16 @@ fn handle_key(
             return;
         }
 
+        InputMode::Sheet(SheetKind::Help) => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    app.input_mode = InputMode::Normal;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         InputMode::Filter => {
             match key.code {
                 KeyCode::Enter | KeyCode::Esc => app.commit_filter(),
@@ -437,7 +459,7 @@ fn handle_key(
         // Switch pane
         KeyCode::Tab => app.cycle_focus(),
 
-        // Logs view
+        // Logs view (Rust-only addition, kept on `l`).
         KeyCode::Char('l') => {
             if app.focus == Pane::Logs {
                 app.focus = Pane::Tunnels;
@@ -451,12 +473,24 @@ fn handle_key(
             app.filter_buf = app.filter.clone();
             app.input_mode = InputMode::Filter;
         }
-        KeyCode::Char('c') => {
-            // Clear filter (without Ctrl).
-            app.clear_filter();
+
+        // Help (global)
+        KeyCode::Char('?') => {
+            app.input_mode = InputMode::Sheet(SheetKind::Help);
         }
 
-        // Actions on tunnels
+        // New tunnel (global: `t` or Ctrl+n, parity with Python).
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            sheets.new_tunnel = Some(NewTunnelSheet::new());
+            app.input_mode = InputMode::Sheet(SheetKind::NewTunnel);
+        }
+        KeyCode::Char('t') => {
+            sheets.new_tunnel = Some(NewTunnelSheet::new());
+            app.input_mode = InputMode::Sheet(SheetKind::NewTunnel);
+        }
+
+        // ----- Tunnel-pane actions -----
+        // Explicit start/stop aliases (Rust-only convenience; Space toggles).
         KeyCode::Char('s') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
@@ -470,6 +504,7 @@ fn handle_key(
         KeyCode::Char('x') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
+                app.mark_user_stopped(&name);
                 match client::rpc("tunnel_stop", serde_json::json!({ "name": name })) {
                     Ok(_) => app.status_msg = format!("Stopped {name}"),
                     Err(e) => app.status_msg = format!("stop failed: {e}"),
@@ -477,11 +512,14 @@ fn handle_key(
                 refresh_tunnels(app);
             }
         }
-        // Space toggles a tunnel (start/stop); Enter opens the node picker
-        // (parity with the Python TUI).
+        // Space toggles a tunnel (start/stop); Enter opens the node picker.
         KeyCode::Char(' ') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
+                // If currently alive, a toggle stops it — mark intentional.
+                if t.status.to_string() == "alive" {
+                    app.mark_user_stopped(&name);
+                }
                 match client::rpc("tunnel_toggle", serde_json::json!({ "name": name })) {
                     Ok(_) => app.status_msg = format!("Toggled {name}"),
                     Err(e) => app.status_msg = format!("toggle failed: {e}"),
@@ -489,7 +527,7 @@ fn handle_key(
                 refresh_tunnels(app);
             }
         }
-        KeyCode::Enter | KeyCode::Char('n') if app.focus == Pane::Tunnels => {
+        KeyCode::Enter if app.focus == Pane::Tunnels => {
             open_node_picker(app, sheets);
         }
         KeyCode::Char('d') if app.focus == Pane::Tunnels => {
@@ -498,18 +536,41 @@ fn handle_key(
                 app.input_mode = InputMode::Sheet(SheetKind::ConfirmDelete);
             }
         }
-        KeyCode::Char('a') if app.focus == Pane::Tunnels => {
-            sheets.new_tunnel = Some(NewTunnelSheet::new());
-            app.input_mode = InputMode::Sheet(SheetKind::NewTunnel);
+        KeyCode::Char('y') if app.focus == Pane::Tunnels => {
+            if let Some(t) = app.selected_tunnel() {
+                let url = tunnel_url(t.local_port, t.url_path.as_deref());
+                notify::copy_to_clipboard(&url);
+                app.status_msg = format!("copied {url}");
+            }
         }
 
-        // Actions on hosts
-        KeyCode::Enter | KeyCode::Char(' ') if app.focus == Pane::Hosts => {
+        // ----- Host-pane actions -----
+        KeyCode::Char(' ') if app.focus == Pane::Hosts => {
             if let Some(h) = app.selected_host() {
                 let name = h.host.clone();
                 match client::rpc("host_toggle", serde_json::json!({ "host": name })) {
                     Ok(_) => app.status_msg = format!("Toggled {name}"),
                     Err(e) => app.status_msg = format!("host_toggle failed: {e}"),
+                }
+                refresh_hosts(app);
+            }
+        }
+        KeyCode::Char('m') if app.focus == Pane::Hosts => {
+            if let Some(h) = app.selected_host() {
+                let name = h.host.clone();
+                match client::rpc("host_mount_toggle", serde_json::json!({ "host": name })) {
+                    Ok(_) => app.status_msg = format!("Toggled mount for {name}"),
+                    Err(e) => app.status_msg = format!("mount failed: {e}"),
+                }
+                refresh_hosts(app);
+            }
+        }
+        KeyCode::Char('r') if app.focus == Pane::Hosts => {
+            if let Some(h) = app.selected_host() {
+                let name = h.host.clone();
+                match client::rpc("host_rotate", serde_json::json!({ "host": name })) {
+                    Ok(_) => app.status_msg = format!("Rotated {name}"),
+                    Err(e) => app.status_msg = format!("rotate failed: {e}"),
                 }
                 refresh_hosts(app);
             }
@@ -646,7 +707,10 @@ fn submit_node(app: &mut AppModel, name: &str, node: &str, user: &str) {
 fn refresh_tunnels(app: &mut AppModel) {
     if let Ok(v) = client::rpc("list_tunnels", serde_json::json!({})) {
         if let Ok(tunnels) = serde_json::from_value(v) {
-            app.set_tunnels(tunnels);
+            let natives = app.set_tunnels(tunnels);
+            for (title, msg) in natives {
+                notify::system_notify(&title, &msg);
+            }
         }
     }
 }
@@ -671,11 +735,7 @@ fn apply_daemon_event(app: &mut AppModel, event: Value) {
     match event_type {
         "tunnel_update" => {
             // Re-fetch the full list for simplicity.
-            if let Ok(v) = client::rpc("list_tunnels", serde_json::json!({})) {
-                if let Ok(tunnels) = serde_json::from_value(v) {
-                    app.set_tunnels(tunnels);
-                }
-            }
+            refresh_tunnels(app);
         }
         "host_update" => {
             if let Ok(v) = client::rpc("list_hosts", serde_json::json!({})) {
@@ -753,6 +813,9 @@ fn render_frame(
                 render_confirm_delete(f, sh);
             }
         }
+        InputMode::Sheet(SheetKind::Help) => {
+            render_help(f);
+        }
         InputMode::Filter => {
             render_filter_bar(f, status_area, app);
         }
@@ -762,7 +825,16 @@ fn render_frame(
 
 fn render_status_bar(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &AppModel) {
     let help =
-        " q:quit  Tab:switch  ↑↓/jk:move  Spc:toggle  Enter/n:node  s:start  x:stop  d:delete  a:add  l:logs  /:filter";
+        " q:quit  t:new  ?:help  Tab:switch  Spc:toggle  Enter:node  y:yank  d:del  m:mount  r:rot  l:logs  /:filter";
+
+    // An active toast is shown with its severity color; otherwise the help line.
+    if let Some(toast) = &app.toast {
+        let para = Paragraph::new(format!(" {}", toast.text))
+            .style(Style::default().fg(toast.severity.color()))
+            .block(Block::default());
+        f.render_widget(para, area);
+        return;
+    }
 
     let msg = if app.status_msg.is_empty() {
         help.to_string()
