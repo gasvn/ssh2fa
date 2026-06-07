@@ -274,5 +274,5 @@ pub fn run_login(
 fn write_line(w: &mut dyn Write, s: &str) -> Result<()> {
     let line = format!("{s}\n");
     w.write_all(line.as_bytes())
-        .map_err(|e| Error::Io(e))
+        .map_err(Error::Io)
 }

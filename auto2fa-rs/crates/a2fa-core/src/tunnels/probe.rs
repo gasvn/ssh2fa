@@ -20,13 +20,10 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(200);
 pub fn probe_port_ready(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        match TcpStream::connect_timeout(
+        if let Ok(_) = TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
             Duration::from_millis(500),
-        ) {
-            Ok(_) => return true,
-            Err(_) => {}
-        }
+        ) { return true }
         if Instant::now() >= deadline {
             return false;
         }

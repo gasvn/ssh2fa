@@ -189,14 +189,14 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
     // Write to tmp, fsync, then rename
     {
         let mut f = std::fs::File::create(&tmp_path)
-            .map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
         f.write_all(json_text.as_bytes())
-            .map_err(|e| Error::Io(e))?;
-        f.flush().map_err(|e| Error::Io(e))?;
-        f.sync_all().map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
+        f.flush().map_err(Error::Io)?;
+        f.sync_all().map_err(Error::Io)?;
     }
 
-    std::fs::rename(&tmp_path, path).map_err(|e| Error::Io(e))?;
+    std::fs::rename(&tmp_path, path).map_err(Error::Io)?;
 
     // fsync the directory so the rename is durable
     if let Some(dir) = path.parent() {

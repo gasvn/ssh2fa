@@ -133,7 +133,7 @@ pub fn host_toggle_with_registry(
             }
         }
 
-        let reg = registry.unwrap_or_else(OtpRegistry::new);
+        let reg = registry.unwrap_or_default();
         spawn_host_start(
             host_name.clone(),
             0, // always start slot 0 on toggle

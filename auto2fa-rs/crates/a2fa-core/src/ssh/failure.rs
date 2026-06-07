@@ -44,7 +44,7 @@ pub fn failure_reason(output: &str) -> String {
     }
 
     // Fallback: last non-empty line (might give a useful hint)
-    if let Some(last) = output.lines().filter(|l| !l.trim().is_empty()).last() {
+    if let Some(last) = output.lines().filter(|l| !l.trim().is_empty()).next_back() {
         let trimmed = last.trim().to_string();
         if !trimmed.is_empty() {
             return trimmed;

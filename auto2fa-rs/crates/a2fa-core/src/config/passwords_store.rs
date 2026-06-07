@@ -33,17 +33,13 @@ const SCHEMA_VERSION: u32 = 2;
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct HostMeta {
     /// Whether the host should auto-connect at daemon start.
     #[serde(rename = "autoConnect")]
     pub auto_connect: bool,
 }
 
-impl Default for HostMeta {
-    fn default() -> Self {
-        Self { auto_connect: false }
-    }
-}
 
 // On-disk v2 layout
 #[derive(Debug, Serialize, Deserialize)]

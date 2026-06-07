@@ -22,11 +22,7 @@ pub fn render_logs(f: &mut Frame, area: Rect, app: &AppModel) {
 
     // Show only the last `inner_height` lines so the view is always at tail.
     let total = app.log_lines.len();
-    let start = if total > inner_height {
-        total - inner_height
-    } else {
-        0
-    };
+    let start = total.saturating_sub(inner_height);
 
     let lines: Vec<Line> = app.log_lines[start..]
         .iter()
