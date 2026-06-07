@@ -1,0 +1,10 @@
+[package]
+name = "a2fa-tui"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+a2fa-core = { path = "../a2fa-core" }
+anyhow.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"

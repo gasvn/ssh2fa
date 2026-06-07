@@ -1,0 +1,9 @@
+[package]
+name = "a2fa-cli"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+a2fa-core = { path = "../a2fa-core" }
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
