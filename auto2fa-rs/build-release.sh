@@ -59,6 +59,34 @@ for pair in $BINS; do
   chmod +x "$DIST/$dist_name"
 done
 
+# ── Step 4: code-sign with a STABLE identity ──────────────────────────────────
+# The daemon reads SSH passwords / OTP secrets from the macOS Keychain. macOS
+# pins Keychain access to the binary's code signature; an ad-hoc signature
+# changes every build, forcing a re-authorization ("Always Allow") prompt each
+# time (and an unanswered prompt could previously wedge the daemon). Signing
+# with a STABLE identity (an Apple Development cert) keeps the grant across
+# rebuilds → no recurring prompts. Override via AUTO2FA_SIGN_ID; set "-" to
+# force ad-hoc.
+SIGN_ID="${AUTO2FA_SIGN_ID:-}"
+if [ -z "$SIGN_ID" ]; then
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+              | awk -F'"' '/Apple Development/{print $2; exit}')"
+fi
+if [ -z "$SIGN_ID" ]; then
+  echo "NOTE: no Apple Development identity found — ad-hoc signing."
+  echo "      (Keychain will re-prompt on each rebuild; set AUTO2FA_SIGN_ID to a stable identity.)"
+  SIGN_ID="-"
+fi
+echo "→ codesign (identity: $SIGN_ID)"
+for pair in $BINS; do
+  dist_name="${pair##*:}"
+  if codesign --force --sign "$SIGN_ID" --timestamp=none "$DIST/$dist_name" 2>/dev/null; then
+    echo "  signed $dist_name"
+  else
+    echo "  WARN: failed to sign $dist_name"
+  fi
+done
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "dist/ contents:"
