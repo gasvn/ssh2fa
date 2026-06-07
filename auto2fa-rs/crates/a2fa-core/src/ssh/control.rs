@@ -17,8 +17,18 @@ use log::{info, warn};
 /// and treat timeout as "master not alive".
 const MASTER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum time to wait for `ssh -O exit` to respond.
+///
+/// Same hazard as `master_check`: a wedged / half-open control socket can hang
+/// `ssh -O exit` indefinitely. We cap it at 5 s so teardown and the
+/// pre-login `cleanup_stale_socket` can never block forever.
+const MASTER_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Maximum time to wait for `ssh -G <host>` (ControlPath resolution).
 const SSH_G_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the bounded-run poll loop wakes up to check for child exit.
+const BOUNDED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 // ---------------------------------------------------------------------------
 // ControlPath scheme
@@ -192,6 +202,80 @@ pub fn remove_symlink(host: &str) {
 // Control-channel commands (ssh -O …)
 // ---------------------------------------------------------------------------
 
+/// The outcome of a bounded control-channel ssh run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedOutcome {
+    /// Child exited within the deadline with a successful (0) status.
+    Success,
+    /// Child exited within the deadline with a non-zero status.
+    Failure,
+    /// Child did not exit before the deadline and was killed.
+    TimedOut,
+    /// The child could not be spawned, or `try_wait` errored.
+    SpawnError,
+}
+
+impl BoundedOutcome {
+    /// Treat only a clean exit as "success"; timeout / non-zero / spawn error
+    /// are all failures from the caller's point of view.
+    fn is_success(self) -> bool {
+        matches!(self, BoundedOutcome::Success)
+    }
+}
+
+/// Run a control-channel `ssh` command (`-O check` / `-O exit` etc.) with a
+/// hard deadline, killing the child if it does not exit in time.
+///
+/// This is the single bounded-ssh chokepoint for control-channel commands: a
+/// wedged / half-open ControlMaster socket can make `ssh -O …` hang
+/// indefinitely, so we spawn the child with stdout/stderr nulled, poll
+/// `try_wait()` every [`BOUNDED_POLL_INTERVAL`], and on deadline `kill()`+`wait()`
+/// (reaping the child to avoid a zombie) and report [`BoundedOutcome::TimedOut`].
+///
+/// `label` is used only for log messages (e.g. "ssh -O check").
+fn run_ssh_bounded(args: &[&str], host: &str, timeout: Duration, label: &str) -> BoundedOutcome {
+    let mut child = match Command::new("ssh")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[{host}] {label} spawn failed: {e}");
+            return BoundedOutcome::SpawnError;
+        }
+    };
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    BoundedOutcome::Success
+                } else {
+                    BoundedOutcome::Failure
+                };
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    warn!("[{host}] {label} timed out after {timeout:?} — killing");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return BoundedOutcome::TimedOut;
+                }
+                std::thread::sleep(BOUNDED_POLL_INTERVAL);
+            }
+            Err(e) => {
+                warn!("[{host}] {label} wait error: {e}");
+                let _ = child.kill();
+                let _ = child.wait();
+                return BoundedOutcome::SpawnError;
+            }
+        }
+    }
+}
+
 /// Run `ssh -O check -o ControlPath=<path> <host>` and return `true` iff
 /// exit code 0 (master is alive and responding).
 ///
@@ -199,92 +283,66 @@ pub fn remove_symlink(host: &str) {
 /// network round-trip; it just asks the local ControlMaster process for
 /// its status. Normally returns in milliseconds.
 ///
-/// A [`MASTER_CHECK_TIMEOUT`] (5 s) is enforced: if the child has not exited
-/// within that window (e.g. wedged control socket), the process is killed and
-/// `false` is returned. This prevents the tick thread from hanging forever.
+/// A [`MASTER_CHECK_TIMEOUT`] (5 s) is enforced via [`run_ssh_bounded`]: if the
+/// child has not exited within that window (e.g. wedged control socket), the
+/// process is killed and `false` is returned. This prevents the tick thread
+/// from hanging forever.
 pub fn master_check(control_path: &Path, host: &str) -> bool {
-    let mut child = match Command::new("ssh")
-        .args([
-            "-O",
-            "check",
-            "-o",
-            &format!("ControlPath={}", control_path.display()),
-            host,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("[{host}] ssh -O check spawn failed: {e}");
-            return false;
-        }
-    };
-
-    let deadline = Instant::now() + MASTER_CHECK_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    warn!("[{host}] ssh -O check timed out after {MASTER_CHECK_TIMEOUT:?} — killing");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                warn!("[{host}] ssh -O check wait error: {e}");
-                let _ = child.kill();
-                return false;
-            }
-        }
-    }
+    let control_opt = format!("ControlPath={}", control_path.display());
+    run_ssh_bounded(
+        &["-O", "check", "-o", &control_opt, host],
+        host,
+        MASTER_CHECK_TIMEOUT,
+        "ssh -O check",
+    )
+    .is_success()
 }
 
 /// Send `ssh -O exit` to cleanly shut down the ControlMaster for a pool slot.
 ///
 /// Failures are logged but not propagated — an exit may legitimately fail if
 /// the master is already dead.
+///
+/// A [`MASTER_EXIT_TIMEOUT`] (5 s) is enforced via [`run_ssh_bounded`]: a wedged
+/// control socket can make `ssh -O exit` hang forever, which would wedge
+/// teardown. On deadline the child is killed and the failure is logged.
 pub fn master_exit(control_path: &Path, host: &str) {
-    let res = Command::new("ssh")
-        .args([
-            "-O",
-            "exit",
-            "-o",
-            &format!("ControlPath={}", control_path.display()),
-            host,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    match res {
-        Ok(s) if s.success() => info!("[{host}] ControlMaster exited cleanly"),
-        Ok(s) => warn!("[{host}] ssh -O exit returned {s} (master may already be dead)"),
-        Err(e) => warn!("[{host}] ssh -O exit failed: {e}"),
+    let control_opt = format!("ControlPath={}", control_path.display());
+    match run_ssh_bounded(
+        &["-O", "exit", "-o", &control_opt, host],
+        host,
+        MASTER_EXIT_TIMEOUT,
+        "ssh -O exit",
+    ) {
+        BoundedOutcome::Success => info!("[{host}] ControlMaster exited cleanly"),
+        BoundedOutcome::TimedOut => {
+            warn!("[{host}] ssh -O exit timed out (killed) — master may be wedged")
+        }
+        BoundedOutcome::Failure => {
+            warn!("[{host}] ssh -O exit returned non-zero (master may already be dead)")
+        }
+        BoundedOutcome::SpawnError => warn!("[{host}] ssh -O exit failed to spawn"),
     }
 }
 
 /// Remove any stale socket file at `path`, optionally sending `ssh -O exit`
 /// first (polite teardown). Mirrors `cleanup_stale_connection` in backend.py
 /// minus the zombie-kill logic (that is handled at a higher layer).
+///
+/// The polite `ssh -O exit` is bounded by [`MASTER_EXIT_TIMEOUT`] via
+/// [`run_ssh_bounded`] so a wedged socket cannot block the pre-login cleanup
+/// forever. The socket file is force-removed afterward regardless of outcome.
 pub fn cleanup_stale_socket(path: &Path, host: &str) {
     if path.exists() {
-        // Polite exit (ignore errors — socket may be stale)
-        let _ = Command::new("ssh")
-            .args([
-                "-o",
-                &format!("ControlPath={}", path.display()),
-                "-O",
-                "exit",
-                host,
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // Polite exit (ignore outcome — socket may be stale; bounded so a
+        // wedged socket can't hang this pre-login cleanup).
+        let control_opt = format!("ControlPath={}", path.display());
+        let _ = run_ssh_bounded(
+            &["-o", &control_opt, "-O", "exit", host],
+            host,
+            MASTER_EXIT_TIMEOUT,
+            "ssh -O exit (cleanup)",
+        );
 
         // Force-remove the socket file if still present
         if path.exists() {
@@ -416,6 +474,40 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(4),
             "master_check took too long: {elapsed:?}"
+        );
+    }
+
+    /// The bounded helper must return promptly for an instantly-failing
+    /// command (`ssh -O exit` against a nonexistent control path with
+    /// BatchMode → fails fast) — well within the timeout. This exercises the
+    /// one bounded-ssh chokepoint that `master_exit` / `cleanup_stale_socket`
+    /// route through.
+    #[test]
+    fn run_ssh_bounded_fails_fast_for_missing_socket() {
+        use std::time::Instant;
+        let control_opt = "ControlPath=/tmp/bogus-auto2fa-test-socket-does-not-exist";
+        let t0 = Instant::now();
+        let outcome = run_ssh_bounded(
+            &["-o", "BatchMode=yes", "-o", control_opt, "-O", "exit", "localhost"],
+            "localhost",
+            MASTER_EXIT_TIMEOUT,
+            "ssh -O exit (test)",
+        );
+        let elapsed = t0.elapsed();
+        // No live master at the bogus path → ssh -O exit fails fast (NOT a
+        // timeout).
+        assert!(
+            !outcome.is_success(),
+            "exit against a missing socket must not succeed"
+        );
+        assert_ne!(
+            outcome,
+            BoundedOutcome::TimedOut,
+            "instantly-failing command must not hit the deadline"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "run_ssh_bounded took too long: {elapsed:?}"
         );
     }
 }

@@ -287,17 +287,45 @@ impl HostManagers {
     /// `ssh -O exit` and cleans up the control-path symlink for each slot).
     /// Errors from individual hosts are logged and swallowed so teardown
     /// continues for the remaining hosts.  Panic-safe.
+    ///
+    /// Lock discipline: the map lock is held ONLY to snapshot the per-host
+    /// `PoolState`s, then DROPPED before the blocking `stop_all` loop. Even
+    /// though each `ssh -O exit` is now bounded (~5 s, see
+    /// `control::master_exit`), holding the map lock across N×5 s would block
+    /// every other map access (heartbeat, host_toggle) for the whole teardown.
+    /// The torn-down state is written back under a brief re-acquisition.
     pub fn teardown_all(&self) {
-        let mut map = match self.map.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(), // recover from a poisoned lock
+        // 1. Snapshot every host's PoolState under a brief lock, then DROP it.
+        let mut pools: Vec<PoolState> = {
+            let map = match self.map.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(), // recover from a poisoned lock
+            };
+            map.values()
+                .map(|p| PoolState {
+                    host: p.host.clone(),
+                    slot_status: p.slot_status,
+                    active_index: p.active_index,
+                    consecutive_login_failures: p.consecutive_login_failures,
+                    cooldown_until: p.cooldown_until,
+                    last_rotate: p.last_rotate,
+                    probe_backoff_until: p.probe_backoff_until,
+                })
+                .collect()
         };
-        let count = map.len();
-        for (host, pool) in map.iter_mut() {
-            info!("[{host}] teardown_all: stopping all SSH master slots");
-            // stop_all runs `ssh -O exit` — fast, best-effort.
+        let count = pools.len();
+
+        // 2. Run the blocking `stop_all` per host OFF-LOCK. Each `ssh -O exit`
+        //    is bounded (~5 s) so a wedged socket can't hang the loop.
+        for pool in pools.iter_mut() {
+            info!("[{}] teardown_all: stopping all SSH master slots", pool.host);
             // Any subprocess errors are already absorbed inside stop_all.
             stop_all(pool);
+        }
+
+        // 3. Re-acquire briefly to write the torn-down state back.
+        for pool in &pools {
+            self.write_back(&pool.host, pool);
         }
         info!("teardown_all: tore down {count} host(s)");
     }
