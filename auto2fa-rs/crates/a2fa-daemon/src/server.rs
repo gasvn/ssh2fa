@@ -131,6 +131,19 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // 5a. Reap stray ssh -L tunnel processes left from a previous daemon run.
+    {
+        let ports: Vec<u16> = state
+            .lock()
+            .unwrap()
+            .tunnels
+            .iter()
+            .map(|t| t.local_port)
+            .collect();
+        let reaped = a2fa_core::tunnels::cleanup_orphans(&ports);
+        log::info!("cleanup_orphans: reaped {reaped} stray tunnel process(es)");
+    }
+
     // 5b. Create daemon-global persistent host managers + OTP registry.
     let managers = HostManagers::new();
     let registry = OtpRegistry::new();
