@@ -42,7 +42,6 @@ struct TunnelsView: View {
             }
         }
         .padding(Spacing.m)
-        .glassCard()
     }
 
     // MARK: - Header
@@ -142,7 +141,9 @@ struct TunnelsView: View {
             }
         }
         .padding(Spacing.s)
-        .glassChrome()
+        // The filter bar is chrome-ish but sits inline above content; a plain
+        // opaque bar reads cleaner than glass here and keeps glass off content.
+        .background(.bar, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     @ViewBuilder
@@ -179,6 +180,9 @@ struct TunnelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
+        // Content sits at the BASE layer in a quiet OPAQUE grouped surface —
+        // no glass. Rows read crisply against the solid control background.
+        .groupedContent()
         .sheet(item: $detailsForTunnel) { t in
             TunnelDetailsPopover(tunnel: t)
                 .environmentObject(appState)

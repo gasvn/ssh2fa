@@ -63,32 +63,14 @@ struct ContentView: View {
         .background(windowBackground)
     }
 
-    /// Subtle layered base so the glass cards float and read. On macOS 26 we
-    /// extend the window content beneath the toolbar; otherwise a gentle
-    /// gradient over the base material.
+    /// Plain opaque window base. Content is the base layer — no gradient, no
+    /// material wash. Liquid Glass lives only on the toolbar/chrome floating
+    /// above this, and the lists carry their own quiet grouped surface.
     @ViewBuilder
     private var windowBackground: some View {
-        let gradient = LinearGradient(
-            colors: [
-                Brand.accent.opacity(0.06),
-                Color.clear,
-                Color.black.opacity(0.04)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        if #available(macOS 26.0, *) {
-            Rectangle()
-                .fill(.regularMaterial)
-                .overlay(gradient)
-                .backgroundExtensionEffect()
-                .ignoresSafeArea()
-        } else {
-            Rectangle()
-                .fill(.regularMaterial)
-                .overlay(gradient)
-                .ignoresSafeArea()
-        }
+        Rectangle()
+            .fill(Color(nsColor: .windowBackgroundColor))
+            .ignoresSafeArea()
     }
 
     @ToolbarContentBuilder

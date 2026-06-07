@@ -39,9 +39,22 @@ extension Font {
         .system(.caption, design: .rounded).weight(.semibold)
     }
 
-    /// Row titles (host names, tunnel names) — rounded, medium.
+    /// Row titles (host names, tunnel names) — the most prominent element in a
+    /// row. Rounded, semibold, title3-sized so it clearly outranks the
+    /// secondary identifiers and tertiary metadata beneath it.
     static var rowTitle: Font {
-        .system(.body, design: .rounded).weight(.medium)
+        .system(.title3, design: .rounded).weight(.semibold)
+    }
+
+    /// Secondary technical identifiers (hostname, :port→:port, node). Monospaced
+    /// callout — legible, clearly a step below the row title.
+    static var rowIdentifier: Font {
+        .system(.callout, design: .monospaced)
+    }
+
+    /// Tertiary metadata (aliveSince, via, fails). Footnote weight regular.
+    static var rowMeta: Font {
+        .footnote
     }
 }
 
@@ -124,6 +137,22 @@ extension View {
                 )
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
         }
+    }
+
+    /// Quiet, OPAQUE grouped content surface for list sections — the BASE
+    /// layer. Continuous rounded corners + a hairline border, NO blur / NO
+    /// glass. This is what content (hosts/tunnels lists) sits in; glass is
+    /// reserved for floating chrome above content.
+    func groupedContent(cornerRadius: CGFloat = Radius.card) -> some View {
+        self
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
+            )
     }
 
     /// Lighter glass for chrome — toolbars / bars. Thinner material fallback.

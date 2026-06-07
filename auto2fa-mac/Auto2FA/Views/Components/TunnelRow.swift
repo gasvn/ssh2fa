@@ -40,7 +40,7 @@ struct TunnelRow: View {
             line1
             line2
         }
-        .padding(.vertical, Spacing.s)
+        .padding(.vertical, Spacing.m)
         .contentShape(Rectangle())
         // Flash yellow briefly whenever the tunnel's status string changes —
         // helps the eye catch quick transitions like starting → alive.
@@ -96,21 +96,22 @@ struct TunnelRow: View {
                 }
             }
 
-            // :local → :remote (secondary mono).
+            // :local → :remote (secondary technical identifier — mono callout).
             Text(":\(tunnel.localPort) → :\(tunnel.remotePort)")
-                .font(RowMetric.mono)
+                .font(.rowIdentifier)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
-            // Node (secondary; "(no node yet)" tertiary italic).
+            // Node (secondary technical identifier; "(no node yet)" tertiary).
             if let n = tunnel.lastNode {
                 Text(n)
-                    .font(RowMetric.mono)
+                    .font(.rowIdentifier)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             } else {
                 Text("(no node yet)")
+                    .font(.callout)
                     .foregroundStyle(.tertiary)
                     .italic()
                     .lineLimit(1)
@@ -194,10 +195,10 @@ struct TunnelRow: View {
 
     private var line2: some View {
         HStack(spacing: Spacing.s) {
-            // aliveSince text.
+            // aliveSince text (tertiary metadata).
             if let aliveTxt = tunnel.aliveSince() {
                 Text(aliveTxt)
-                    .font(.footnote)
+                    .font(.rowMeta)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

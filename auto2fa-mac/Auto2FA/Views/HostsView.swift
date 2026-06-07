@@ -13,7 +13,6 @@ struct HostsView: View {
             }
         }
         .padding(Spacing.m)
-        .glassCard()
     }
 
     // MARK: - Header
@@ -55,6 +54,9 @@ struct HostsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
+        // Content sits at the BASE layer in a quiet OPAQUE grouped surface —
+        // no glass. Rows read crisply against the solid control background.
+        .groupedContent()
     }
 
     // MARK: - Empty state

@@ -38,7 +38,7 @@ struct HostRow: View {
             line1
             if !isBusy, !friendlyMessage.isEmpty {
                 Text(friendlyMessage)
-                    .font(.footnote)
+                    .font(.rowMeta)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -46,7 +46,7 @@ struct HostRow: View {
                     .padding(.leading, RowMetric.iconSize + Spacing.xs)
             }
         }
-        .padding(.vertical, Spacing.s)
+        .padding(.vertical, Spacing.m)
         .contentShape(Rectangle())
         .changeHighlight(host.status)
         .hoverLift(hovering)
