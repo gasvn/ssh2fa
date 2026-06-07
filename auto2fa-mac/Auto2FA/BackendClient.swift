@@ -170,6 +170,10 @@ actor BackendClient {
             return 30
         case "host_test_credentials", "host_add":
             return 45
+        case "host_totp":
+            // Short timeout: the chip should fall back to its muted state fast
+            // rather than hang if a Keychain "Always Allow" prompt is pending.
+            return 6
         default:
             return 10
         }
@@ -323,6 +327,18 @@ actor BackendClient {
     func listHosts() async throws -> [SSHHost] {
         let data = try await sendRaw(method: "list_hosts", params: [:])
         return try JSONDecoder().decode([SSHHost].self, from: data)
+    }
+
+    /// Live TOTP code for a host. Returns ONLY the 6-digit code (never the
+    /// secret) plus the period and seconds remaining in the current window.
+    struct TOTPCode: Decodable {
+        let code: String
+        let period: Int
+        let seconds_remaining: Int
+    }
+    func hostTOTP(_ host: String) async throws -> TOTPCode {
+        let data = try await sendRaw(method: "host_totp", params: ["host": host])
+        return try JSONDecoder().decode(TOTPCode.self, from: data)
     }
 
     func listTunnels() async throws -> [Tunnel] {

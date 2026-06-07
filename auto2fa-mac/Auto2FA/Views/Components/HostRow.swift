@@ -84,6 +84,10 @@ struct HostRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
+            // Live 2FA (TOTP) code chip — every host has a 2FA secret. Secondary
+            // to the alias; falls back to a muted lock glyph if unavailable.
+            TOTPCodeChip(host: host.host)
+
             // Pool pips: poolAlive filled of 2, rest hollow.
             if !isBusy {
                 poolPips

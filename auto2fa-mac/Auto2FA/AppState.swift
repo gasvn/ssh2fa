@@ -517,6 +517,14 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    /// Live TOTP code for a host (6-digit, never the secret). Thin passthrough
+    /// to the backend client — the TOTP chip calls this and handles failure
+    /// itself (it shows a muted placeholder rather than a global banner), so
+    /// we deliberately rethrow instead of swallowing into connectionError.
+    func hostTOTP(_ host: String) async throws -> BackendClient.TOTPCode {
+        try await client.hostTOTP(host)
+    }
+
     // MARK: - Sheet helpers
 
     func presentNewTunnel() { activeSheet = .newTunnel }
