@@ -181,7 +181,9 @@ pub fn spawn_host_start(
     registry: Arc<OtpRegistry>,
     state: Arc<Mutex<State>>,
 ) {
-    std::thread::Builder::new()
+    let spawn_host = host_name.clone();
+    let spawn_state = Arc::clone(&state);
+    let spawn_res = std::thread::Builder::new()
         .name(format!("host-start:{host_name}"))
         .spawn(move || {
             // Build a PoolState for the single `start_master` call.  The
@@ -212,14 +214,26 @@ pub fn spawn_host_start(
                     warn!("[{host_name}] master failed — State updated");
                 }
             }
-        })
-        .expect("failed to spawn host-start thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the worker never ran. Reset the host status to
+        // Failed so the UI / maintenance reflects reality instead of a stuck
+        // "Connecting".
+        warn!("[{spawn_host}] failed to spawn host-start thread: {e}");
+        let mut guard = crate::lock_state(&spawn_state);
+        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == spawn_host) {
+            h.is_master_ready = false;
+            h.status = "Failed".into();
+            h.last_msg = format!("spawn failed: {e}");
+        }
+    }
 }
 
 /// Spawn a blocking OS thread that runs `stop_all` for `host`, then clears
 /// the host's status in State.
 pub fn spawn_host_stop(host_name: String, state: Arc<Mutex<State>>) {
-    std::thread::Builder::new()
+    let spawn_host = host_name.clone();
+    let spawn_res = std::thread::Builder::new()
         .name(format!("host-stop:{host_name}"))
         .spawn(move || {
             let mut pool = PoolState::new(&host_name);
@@ -234,8 +248,13 @@ pub fn spawn_host_stop(host_name: String, state: Arc<Mutex<State>>) {
                 h.status = "Idle".into();
                 h.last_msg = "Stopped".into();
             }
-        })
-        .expect("failed to spawn host-stop thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the stop worker never ran. Nothing is wedged (no
+        // in-flight token), so just log — the master, if any, is cleaned up on
+        // the next teardown / restart cycle.
+        warn!("[{spawn_host}] failed to spawn host-stop thread: {e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +343,9 @@ fn spawn_tunnel_start_inner(
     post_connect_running: Arc<Mutex<std::collections::HashSet<String>>>,
     runtime: Option<Arc<crate::tunnel_runtime::TunnelRuntime>>,
 ) {
-    std::thread::Builder::new()
+    let spawn_name = name.clone();
+    let spawn_state = Arc::clone(&state);
+    let spawn_res = std::thread::Builder::new()
         .name(format!("tunnel-start:{name}"))
         .spawn(move || {
             use a2fa_core::tunnels::forward::{probe_and_settle, start_forward};
@@ -431,8 +452,19 @@ fn spawn_tunnel_start_inner(
                     }
                 }
             }
-        })
-        .expect("failed to spawn tunnel-start thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the worker never ran, so the tunnel is stuck at the
+        // caller-set Starting status. Reset it to Failed (under the lock) so the
+        // maintenance loop's Recover picks it up on a later tick.
+        warn!("[tunnel:{spawn_name}] failed to spawn tunnel-start thread: {e}");
+        let mut guard = crate::lock_state(&spawn_state);
+        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == spawn_name) {
+            t.status = a2fa_core::model::TunnelStatus::Failed;
+            t.last_msg = format!("spawn failed: {e}");
+            t.active_jump = None;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

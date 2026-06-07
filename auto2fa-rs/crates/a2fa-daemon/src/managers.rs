@@ -469,7 +469,10 @@ pub fn spawn_managed_start(
     }
     let guard_managers = Arc::clone(&managers);
     let guard_host = host_name.clone();
-    std::thread::Builder::new()
+    // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
+    let err_managers = Arc::clone(&managers);
+    let err_host = host_name.clone();
+    let spawn_res = std::thread::Builder::new()
         .name(format!("managed-start:{host_name}:{slot}"))
         .spawn(move || {
             // RAII: release the in-flight guard on every exit path.
@@ -518,8 +521,14 @@ pub fn spawn_managed_start(
                     warn!("[{host_name}] managed-start: slot {slot} failed — State updated");
                 }
             }
-        })
-        .expect("failed to spawn managed-start thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient thread-exhaustion (EAGAIN). The closure (and its StartGuard)
+        // never ran, so release the in-flight token here or the (host, slot)
+        // would stay wedged for the daemon's life. The heartbeat loop retries.
+        warn!("[{err_host}] managed-start: failed to spawn worker thread: {e} — releasing token");
+        err_managers.end_start(&err_host, slot);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +561,10 @@ pub fn spawn_master_rebuild(
     }
     let guard_managers = Arc::clone(&managers);
     let guard_host = host_name.clone();
-    std::thread::Builder::new()
+    // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
+    let err_managers = Arc::clone(&managers);
+    let err_host = host_name.clone();
+    let spawn_res = std::thread::Builder::new()
         .name(format!("master-rebuild:{host_name}"))
         .spawn(move || {
             // RAII: release the slot-0 in-flight guard on every exit path.
@@ -612,8 +624,14 @@ pub fn spawn_master_rebuild(
                     warn!("[{host_name}] master-rebuild: slot 0 failed — State updated");
                 }
             }
-        })
-        .expect("failed to spawn master-rebuild thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the closure (and its slot-0 StartGuard) never ran.
+        // Release the token so the slot isn't wedged; next manual/auto retry
+        // can re-claim it.
+        warn!("[{err_host}] master-rebuild: failed to spawn worker thread: {e} — releasing token");
+        err_managers.end_start(&err_host, 0);
+    }
 }
 
 /// Force-rebuild the masters for every host in `hosts` that is `active` in
@@ -744,37 +762,49 @@ fn heartbeat_loop(
     let mut last_rotation_check = Instant::now();
 
     loop {
+        // Sleep is OUTSIDE the catch_unwind so the loop always paces itself,
+        // even if a tick panics.
         std::thread::sleep(HEARTBEAT_INTERVAL);
 
-        // Snapshot active host NAMES only (brief State lock).
-        // CRITICAL no-wedge invariant: do NOT read the Keychain here. The
-        // heartbeat thread must never touch the Keychain — a stalled "Always
-        // Allow" prompt would otherwise freeze ALL heartbeating. Each restart /
-        // warm worker reads its own creds in-thread via `load_creds`.
-        let active: Vec<String> = {
-            let guard = state.lock().unwrap();
-            guard
-                .hosts
-                .iter()
-                .filter(|h| h.active)
-                .map(|h| h.host.clone())
-                .collect()
-        };
+        // Wrap the whole per-interval heartbeat pass in catch_unwind so a panic
+        // in one host's tick is logged and the loop CONTINUES next interval,
+        // instead of the heartbeat thread dying and wedging all reconnection.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Snapshot active host NAMES only (brief State lock).
+            // CRITICAL no-wedge invariant: do NOT read the Keychain here. The
+            // heartbeat thread must never touch the Keychain — a stalled "Always
+            // Allow" prompt would otherwise freeze ALL heartbeating. Each restart /
+            // warm worker reads its own creds in-thread via `load_creds`.
+            let active: Vec<String> = {
+                let guard = crate::lock_state(&state);
+                guard
+                    .hosts
+                    .iter()
+                    .filter(|h| h.active)
+                    .map(|h| h.host.clone())
+                    .collect()
+            };
 
-        let now = Instant::now();
-        let do_rotation_check = now.duration_since(last_rotation_check) >= ROTATION_CHECK_INTERVAL;
-        if do_rotation_check {
-            last_rotation_check = now;
-        }
+            let now = Instant::now();
+            let do_rotation_check =
+                now.duration_since(last_rotation_check) >= ROTATION_CHECK_INTERVAL;
+            if do_rotation_check {
+                last_rotation_check = now;
+            }
 
-        for host_name in active {
-            tick_host(
-                &host_name,
-                do_rotation_check,
-                &state,
-                &managers,
-                &registry,
-            );
+            for host_name in active {
+                tick_host(
+                    &host_name,
+                    do_rotation_check,
+                    &state,
+                    &managers,
+                    &registry,
+                );
+            }
+        }));
+
+        if result.is_err() {
+            warn!("heartbeat: a tick panicked — recovered, continuing next interval");
         }
     }
 }
@@ -802,7 +832,7 @@ fn tick_host(
             .unwrap_or(0);
         info!("[{host_name}] heartbeat: in cooldown ({secs}s left) — skipping");
         // Update State with cooldown status.
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.status = format!("Cooldown ({secs}s)");
         }
@@ -833,7 +863,7 @@ fn tick_host(
                 });
                 // Update engine State.
                 {
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(state);
                     if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                         if slot == h.pool_index as usize {
                             h.is_master_ready = false;
@@ -867,7 +897,7 @@ fn tick_host(
                 let registry2 = Arc::clone(registry);
                 let guard_managers = Arc::clone(managers);
                 let guard_host = host_name.to_owned();
-                std::thread::Builder::new()
+                let spawn_res = std::thread::Builder::new()
                     .name(format!("hb-restart:{host_name}:{slot}"))
                     .spawn(move || {
                         // RAII: release the in-flight guard on every exit path
@@ -940,8 +970,17 @@ fn tick_host(
                                 managers2.with_pool_mut(&host_owned, |p| { p.try_rotate(); });
                             }
                         }
-                    })
-                    .expect("failed to spawn hb-restart thread");
+                    });
+                if let Err(e) = spawn_res {
+                    // Transient EAGAIN: the closure (and its StartGuard) never
+                    // ran. Release the in-flight token so the slot isn't wedged
+                    // Dead forever — the next heartbeat tick will retry.
+                    warn!(
+                        "[{host_name}] heartbeat: failed to spawn hb-restart thread for slot {slot}: {e} — releasing token"
+                    );
+                    managers.end_start(host_name, slot);
+                    continue;
+                }
             }
 
             MaintenanceAction::WarmSlot1 => {
@@ -961,7 +1000,7 @@ fn tick_host(
                 let registry2 = Arc::clone(registry);
                 let guard_managers = Arc::clone(managers);
                 let guard_host = host_name.to_owned();
-                std::thread::Builder::new()
+                let spawn_res = std::thread::Builder::new()
                     .name(format!("warmslot1:{host_name}"))
                     .spawn(move || {
                         // RAII: release the slot-1 in-flight guard on every exit
@@ -1010,8 +1049,17 @@ fn tick_host(
                                 h.pool_alive = h.pool_alive.max(1) + 1;
                             }
                         }
-                    })
-                    .expect("failed to spawn warm-slot-1 thread");
+                    });
+                if let Err(e) = spawn_res {
+                    // Transient EAGAIN: the closure (and its slot-1 StartGuard)
+                    // never ran. Release the token so slot 1 isn't wedged Init
+                    // forever — the next tick re-evaluates WarmSlot1.
+                    warn!(
+                        "[{host_name}] heartbeat: failed to spawn warm-slot-1 thread: {e} — releasing token"
+                    );
+                    managers.end_start(host_name, 1);
+                    continue;
+                }
             }
 
             MaintenanceAction::Rotate => {
@@ -1026,7 +1074,7 @@ fn tick_host(
                 let new_idx = managers
                     .with_pool(host_name, |p| p.active_index)
                     .unwrap_or(0);
-                let mut guard = state.lock().unwrap();
+                let mut guard = crate::lock_state(state);
                 if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                     h.pool_index = new_idx as u8;
                     h.is_master_ready = true;
@@ -1049,7 +1097,7 @@ fn tick_host(
             let new_idx = managers
                 .with_pool(host_name, |p| p.active_index)
                 .unwrap_or(0);
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.pool_index = new_idx as u8;
                 h.last_msg = format!("Rotated to slot {new_idx}");
@@ -1079,7 +1127,10 @@ pub fn spawn_warmup_slot1(
     }
     let guard_managers = Arc::clone(&managers);
     let guard_host = host_name.clone();
-    std::thread::Builder::new()
+    // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
+    let err_managers = Arc::clone(&managers);
+    let err_host = host_name.clone();
+    let spawn_res = std::thread::Builder::new()
         .name(format!("warmup-slot1:{host_name}"))
         .spawn(move || {
             // RAII: release the slot-1 in-flight guard on every exit path.
@@ -1124,8 +1175,14 @@ pub fn spawn_warmup_slot1(
             } else {
                 warn!("[{host_name}] warmup_slot1: slot 1 failed");
             }
-        })
-        .expect("failed to spawn warmup-slot1 thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the closure (and its slot-1 StartGuard) never ran.
+        // Release the token so slot 1 isn't wedged; the heartbeat loop will
+        // re-warm it on a later tick.
+        warn!("[{err_host}] warmup-slot1: failed to spawn worker thread: {e} — releasing token");
+        err_managers.end_start(&err_host, 1);
+    }
 }
 
 // ---------------------------------------------------------------------------

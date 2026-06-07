@@ -75,8 +75,20 @@ fn maintenance_loop(
     post_connect_running: Arc<Mutex<HashSet<String>>>,
 ) {
     loop {
+        // Sleep is OUTSIDE the catch_unwind so the loop always paces itself,
+        // even if a maintenance pass panics.
         std::thread::sleep(MAINTENANCE_INTERVAL);
-        maintenance_tick(&state, &runtime, &post_connect_running);
+
+        // Wrap the whole maintenance pass in catch_unwind so a panic in one
+        // tunnel's processing is logged and the loop CONTINUES next interval,
+        // instead of the maintenance thread dying and leaving all tunnels
+        // unmanaged.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            maintenance_tick(&state, &runtime, &post_connect_running);
+        }));
+        if result.is_err() {
+            warn!("tunnel-maintenance: a tick panicked — recovered, continuing next interval");
+        }
     }
 }
 
@@ -107,7 +119,7 @@ pub fn maintenance_tick(
 
     // Snapshot tunnel list + relevant host state under a brief lock.
     let tunnel_snapshots: Vec<TunnelSnapshot> = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard
             .tunnels
             .iter()
@@ -278,7 +290,7 @@ fn run_boot_autostart(
 
     // Snapshot candidate tunnels.
     let candidates: Vec<TunnelSnapshot> = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard
             .tunnels
             .iter()
@@ -496,7 +508,7 @@ fn accumulate_uptime(
 
     if let Some(since) = alive_since {
         let delta = (now - since).max(0.0);
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
             t.total_uptime_sec += delta;
         }
@@ -515,7 +527,7 @@ fn mark_tunnel_idle(
     wants_alive_stays: bool,
     msg: &str,
 ) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = crate::lock_state(state);
     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
         t.status = TunnelStatus::Idle;
         t.active_jump = None;
@@ -542,7 +554,7 @@ fn do_tunnel_start(
 ) {
     // Re-snapshot under lock to get fresh jump candidates / readiness.
     let start_info: Option<(String, String, String, u16, u16, Option<String>)> = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
 
         // Guard: re-check wants_alive under lock (concurrent user-stop may have
         // cleared it while we were deciding to recover off-lock — mirrors Python's
@@ -656,7 +668,10 @@ fn spawn_tunnel_start_with_runtime(
     post_connect_running: Arc<Mutex<HashSet<String>>>,
     runtime: Arc<TunnelRuntime>,
 ) {
-    std::thread::Builder::new()
+    let spawn_name = name.clone();
+    let spawn_state = Arc::clone(&state);
+    let spawn_runtime = Arc::clone(&runtime);
+    let spawn_res = std::thread::Builder::new()
         .name(format!("maintenance-start:{name}"))
         .spawn(move || {
             use a2fa_core::tunnels::forward::{probe_and_settle, start_forward};
@@ -751,6 +766,19 @@ fn spawn_tunnel_start_with_runtime(
                     }
                 }
             }
-        })
-        .expect("failed to spawn maintenance-start thread");
+        });
+    if let Err(e) = spawn_res {
+        // Transient EAGAIN: the worker never ran, so the tunnel is stuck at the
+        // Starting status that `do_tunnel_start` set. Reset it to Failed under
+        // the lock so the next maintenance tick's Recover arm retries it.
+        warn!("[tunnel:{spawn_name}] maintenance: failed to spawn start thread: {e}");
+        spawn_runtime.record(&spawn_name, now_unix(), format!("spawn failed: {e}"));
+        let mut guard = crate::lock_state(&spawn_state);
+        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == spawn_name) {
+            t.fail_count += 1;
+            t.status = TunnelStatus::Failed;
+            t.last_msg = format!("spawn failed: {e}");
+            t.active_jump = None;
+        }
+    }
 }
