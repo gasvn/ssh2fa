@@ -20,7 +20,7 @@ struct WelcomeSheet: View {
             Divider()
             footer
         }
-        .frame(width: 540)
+        .frame(width: 440)
     }
 
     private var header: some View {

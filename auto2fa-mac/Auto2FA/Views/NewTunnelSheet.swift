@@ -129,8 +129,8 @@ struct NewTunnelSheet: View {
                 .disabled(submitting)
             }
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(Spacing.l)
+        .frame(width: 440)
         .task {
             // Default-fill from the current template (Custom) and ask the
             // daemon for a sensible next-free port so the user doesn't have

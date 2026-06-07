@@ -55,10 +55,12 @@ struct ContentView: View {
 
     private var mainStack: some View {
         VStack(spacing: 0) {
-            sectionTitle("HOSTS", icon: "server.rack")
+            sectionTitle("HOSTS · \(appState.hosts.count)", icon: "server.rack")
+            Divider()
             HostsView().frame(minHeight: 100)
             Divider()
-            sectionTitle("TUNNELS", icon: "point.3.connected.trianglepath.dotted")
+            sectionTitle("TUNNELS · \(appState.tunnels.count)", icon: "point.3.connected.trianglepath.dotted")
+            Divider()
             TunnelsView().frame(minHeight: 200)
         }
         .frame(minWidth: 700, minHeight: 400)
@@ -73,7 +75,7 @@ struct ContentView: View {
             }
             .help("Register a new SSH host (with 2FA)")
             Button { appState.presentNewTunnel() } label: {
-                Label("New Tunnel", systemImage: "plus.circle.fill")
+                Label("New Tunnel", systemImage: "plus.circle")
             }
             .help("Create a new tunnel (⌘N)")
             Button { confirmingReset = true } label: {
@@ -87,36 +89,52 @@ struct ContentView: View {
     @ViewBuilder
     private var errorBanner: some View {
         if let err = appState.connectionError {
-            Text(FriendlyText.friendlyError(err))
-                .font(.callout.weight(.medium))
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.red.opacity(0.85), in: Capsule())
-                .foregroundStyle(.white)
-                .padding(.top, 8)
-                .onTapGesture { appState.connectionError = nil }
-                .help(err)  // hover for the raw underlying message
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.white)
+                Text(FriendlyText.friendlyError(err))
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, Spacing.m)
+            .padding(.vertical, Spacing.s)
+            .background(Color.red.opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.top, Spacing.s)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .onTapGesture { appState.connectionError = nil }
+            .help(err)  // hover for the raw underlying message
         }
     }
 
     @ViewBuilder
     private var undoSnackbar: some View {
         if let deleted = appState.undoableDelete {
-            HStack(spacing: 12) {
-                Image(systemName: "trash").foregroundStyle(.secondary)
-                Text("Deleted '\(deleted.name)'").font(.callout)
-                Spacer(minLength: 12)
+            HStack(spacing: Spacing.m) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+                Text("Deleted '\(deleted.name)'")
+                    .font(.callout)
+                Spacer(minLength: Spacing.m)
                 Button("Undo") { Task { await appState.undoDelete() } }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                Button { appState.undoableDelete = nil } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.borderless)
+                Button {
+                    appState.undoableDelete = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.gray.opacity(0.25), lineWidth: 1))
-            .padding(.bottom, 16)
-            .frame(maxWidth: 360)
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.m)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .padding(.bottom, Spacing.l)
+            .frame(maxWidth: 380)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -188,14 +206,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private func sectionTitle(_ text: String, icon: String) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.xs) {
             Image(systemName: icon)
-            Text(text).fontWeight(.semibold)
+            Text(text)
             Spacer()
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .sectionHeaderStyle()
         .background(.thickMaterial)
     }
 }

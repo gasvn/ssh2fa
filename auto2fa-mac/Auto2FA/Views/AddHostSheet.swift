@@ -43,7 +43,7 @@ struct AddHostSheet: View {
             Divider()
             footer
         }
-        .frame(width: 520)
+        .frame(width: 440)
         .onAppear { focused = .hostname }
     }
 

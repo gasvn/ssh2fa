@@ -148,7 +148,7 @@ struct TunnelDetailsPopover: View {
             }
             .padding(12)
         }
-        .frame(width: 480)
+        .frame(width: 720)
         .task {
             postConnectDraft = tunnel.postConnectCmd ?? ""
             urlPathDraft = tunnel.urlPath ?? ""

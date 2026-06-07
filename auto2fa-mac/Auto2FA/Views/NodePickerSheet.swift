@@ -94,7 +94,7 @@ struct NodePickerSheet: View {
                 .disabled(selection == nil || submitting)
             }
         }
-        .padding(20)
+        .padding(Spacing.l)
         .frame(width: 720)
         .task { await load() }
     }

@@ -55,8 +55,8 @@ struct CustomNodeSheet: View {
                 .disabled(submitting)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(Spacing.l)
+        .frame(width: 440)
         .onAppear { focused = .node }
     }
 
