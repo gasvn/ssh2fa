@@ -99,24 +99,29 @@ struct TunnelRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // via <jump> — the existing clickable jump-host Menu, compact.
-            viaMenu
-                .frame(width: 70, alignment: .leading)
+            // Hidden on hover (it lives in the `⋯` overflow as "Use jump host").
+            if !hovering {
+                viaMenu
+                    .frame(width: 70, alignment: .leading)
 
-            // Metadata: aliveSince + fail count — compact fixed column.
-            metadata
-                .frame(width: 92, alignment: .leading)
+                // Metadata: aliveSince + fail count — compact fixed column.
+                metadata
+                    .frame(width: 92, alignment: .leading)
+            }
 
             Spacer(minLength: Spacing.s)
 
-            // Hover actions — quick-action icons for power users.
+            // TRAILING ZONE: at rest the via-menu + metadata above are shown; on
+            // hover a right-aligned icon+TEXT action bar (primary actions) + a
+            // labeled `⋯` overflow menu replaces it. Row height stays fixed.
             if hovering {
                 actions
                     .transition(.opacity)
+                overflowMenu
+                    .transition(.opacity)
             }
-
-            // ALWAYS-VISIBLE labeled overflow menu — the discoverable path.
-            overflowMenu
         }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
         .padding(.vertical, compactRows ? 1 : 2)
         .frame(minHeight: compactRows ? 22 : RowMetric.minHeight)
         .contentShape(Rectangle())
@@ -191,28 +196,37 @@ struct TunnelRow: View {
 
     // MARK: - Actions (same calls / SF Symbols / disabled logic as old view)
 
+    /// Hover-revealed icon+TEXT action bar — primary actions as one short word
+    /// each. Same AppState calls + disabled logic as before; Details / Rename /
+    /// Clone / jump-host / Delete live in the `⋯` overflow menu. Row height
+    /// stays fixed.
     private var actions: some View {
         HStack(spacing: Spacing.xs) {
-            // Start / stop (toggle).
+            // Start / Stop (toggle).
             Button {
                 Task { await appState.toggleTunnel(tunnel) }
             } label: {
                 if isBusy {
-                    ProgressView().controlSize(.small).scaleEffect(0.6)
-                        .frame(width: 14, height: 14)
+                    HStack(spacing: Spacing.xs) {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                            .frame(width: 14, height: 14)
+                        Text(tunnel.displayState == .alive ? "Stop" : "Start")
+                            .font(.caption)
+                    }
                 } else {
-                    Image(systemName: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
+                    Label(tunnel.displayState == .alive ? "Stop" : "Start",
+                          systemImage: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
                 }
             }
             .help(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
             .accessibilityLabel(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
             .disabled(isBusy)
 
-            // Pick node.
+            // Node (pick compute node).
             Button {
                 appState.presentNodePicker(for: tunnel)
             } label: {
-                Image(systemName: "list.bullet.rectangle")
+                Label("Node", systemImage: "list.bullet.rectangle")
             }
             .help("Pick compute node")
             .accessibilityLabel("Pick compute node")
@@ -222,7 +236,7 @@ struct TunnelRow: View {
             Button {
                 openInBrowser(tunnel)
             } label: {
-                Image(systemName: "safari")
+                Label("Open", systemImage: "safari")
             }
             .help("Open in browser")
             .accessibilityLabel("Open in browser")
@@ -232,31 +246,12 @@ struct TunnelRow: View {
             Button {
                 copyURL(tunnel.url)
             } label: {
-                Image(systemName: "doc.on.doc")
+                Label("Copy", systemImage: "doc.on.doc")
             }
             .help("Copy localhost URL")
             .accessibilityLabel("Copy localhost URL")
-
-            // Details.
-            Button {
-                detailsForTunnel = tunnel
-            } label: {
-                Image(systemName: "info.circle")
-            }
-            .help("Tunnel details")
-            .accessibilityLabel("Tunnel details")
-
-            // Delete.
-            Button {
-                appState.presentConfirmDelete(for: tunnel)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .help("Delete tunnel")
-            .accessibilityLabel("Delete tunnel")
-            .disabled(isBusy)
         }
-        .buttonStyle(IconActionButton())
+        .buttonStyle(IconTextActionButton())
     }
 
     // MARK: - Always-visible overflow menu (discoverable, labeled)

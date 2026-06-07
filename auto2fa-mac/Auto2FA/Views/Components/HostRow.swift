@@ -85,33 +85,38 @@ struct HostRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Pool pips (filled/hollow) — fixed small.
-            if !isBusy {
+            // Pool pips (filled/hollow) — fixed small. Hidden on hover so the
+            // action bar can take the trailing zone (kept at rest).
+            if !isBusy && !hovering {
                 poolPips
             }
 
             // Mount indicator (green when mounted; hidden otherwise) — fixed.
-            if host.isMounted {
+            // Hidden on hover (the action bar shows Mount/Unmount instead).
+            if host.isMounted && !hovering {
                 Image(systemName: "externaldrive.connected.to.line.below.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.green)
                     .help("Remote filesystem mounted")
             }
 
-            // Live 2FA (TOTP) code chip — compact, kept verbatim.
+            // Live 2FA (TOTP) code chip — compact, kept verbatim. Stays
+            // visible at rest AND on hover (reveal-on-tap behaviour intact).
             TOTPCodeChip(host: host.host)
 
             Spacer(minLength: Spacing.s)
 
-            // Hover actions — quick-action icons for power users.
+            // TRAILING ZONE: at rest the metadata above is shown; on hover a
+            // right-aligned icon+TEXT action bar (primary actions) + a labeled
+            // `⋯` overflow menu replaces it. Row height stays fixed.
             if hovering {
                 actions
                     .transition(.opacity)
+                overflowMenu
+                    .transition(.opacity)
             }
-
-            // ALWAYS-VISIBLE labeled overflow menu — the discoverable path.
-            overflowMenu
         }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
         .padding(.vertical, 2)
         .frame(minHeight: RowMetric.minHeight)
         .contentShape(Rectangle())
@@ -141,56 +146,55 @@ struct HostRow: View {
 
     // MARK: - Actions (same calls / disabled logic as old HostsView)
 
+    /// Hover-revealed icon+TEXT action bar — primary actions as one short word
+    /// each. Same AppState calls + disabled logic as before; Rotate lives in
+    /// the `⋯` overflow menu. Row height stays fixed.
     private var actions: some View {
         HStack(spacing: Spacing.xs) {
-            // Start / stop (toggle active).
+            // Connect / Disconnect (toggle active).
             Button {
                 Task { await appState.toggleHost(host) }
             } label: {
                 if isBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.6)
-                        .frame(width: 14, height: 14)
+                    HStack(spacing: Spacing.xs) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.6)
+                            .frame(width: 14, height: 14)
+                        Text(host.active ? "Disconnect" : "Connect")
+                            .font(.caption)
+                    }
                 } else {
-                    Image(systemName: host.active ? "stop.fill" : "play.fill")
+                    Label(host.active ? "Disconnect" : "Connect",
+                          systemImage: host.active ? "stop.fill" : "play.fill")
                 }
             }
             .help(host.active ? "Disconnect host" : "Connect host")
             .accessibilityLabel(host.active ? "Disconnect host" : "Connect host")
             .disabled(isBusy)
 
-            // Mount / eject.
+            // Mount / Unmount.
             Button {
                 Task { await appState.toggleMount(host) }
             } label: {
-                Image(systemName: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
+                Label(host.isMounted ? "Unmount" : "Mount",
+                      systemImage: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
             }
             .disabled(isBusy || (!host.isMasterReady && !host.isMounted))
             .help(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
             .accessibilityLabel(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
 
-            // Rotate pool slot.
-            Button {
-                Task { await appState.rotateHost(host) }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-            }
-            .disabled(isBusy || !host.active)
-            .help("Rotate connection")
-            .accessibilityLabel("Rotate connection")
-
             // Open terminal.
             Button {
                 openTerminal(for: host)
             } label: {
-                Image(systemName: "terminal")
+                Label("Terminal", systemImage: "terminal")
             }
             .disabled(!host.isMasterReady)
             .help("Open Terminal")
             .accessibilityLabel("Open Terminal")
         }
-        .buttonStyle(IconActionButton())
+        .buttonStyle(IconTextActionButton())
     }
 
     // MARK: - Always-visible overflow menu (discoverable, labeled)

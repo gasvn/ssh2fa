@@ -123,6 +123,36 @@ struct IconActionButton: ButtonStyle {
     }
 }
 
+/// Shared button style for the hover-revealed icon+TEXT action labels in dense
+/// rows (the 2026 dense-row pattern). Same subtle rounded hover/press
+/// background as `IconActionButton`, but sized for a compact `Label` (icon +
+/// one short word) instead of an icon-only square. Disabled buttons dim and
+/// show no hover background. Presentation only — no behaviour change.
+struct IconTextActionButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let active = configuration.isPressed || hovering
+        configuration.label
+            .labelStyle(.titleAndIcon)
+            .font(.caption)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity((active && isEnabled) ? 0.10 : 0.0))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .onHover { if isEnabled { hovering = $0 } else { hovering = false } }
+            .animation(.easeOut(duration: 0.12), value: active)
+    }
+}
+
 // MARK: - View modifiers
 
 extension View {
