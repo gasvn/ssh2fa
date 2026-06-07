@@ -171,10 +171,13 @@ pub fn reset_all(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Va
 /// schedule — and avoids duplicating the maintenance loop (no over-engineering).
 ///
 /// # Lock discipline
-/// The State lock is taken only for brief snapshots and field updates; the
-/// 5s master probes run inside `HostManagers` (off both locks via `with_pool`,
-/// which only holds the map lock for the duration of the in-memory predicate),
-/// and master rebuilds + child kills run off-lock as in `reset_all`.
+/// The State lock is taken only for brief snapshots and field updates. The 5s
+/// master probes (`ssh -O check`) run fully OFF both locks: we snapshot each
+/// host's `active_index` under a brief map lock (`snapshot`, no I/O), drop the
+/// lock, then call `master_check` on the concrete control path. Holding the
+/// managers map lock across the blocking probe would stall the heartbeat loop
+/// for up to 5s per host — the same "never hold a lock across ssh I/O" rule the
+/// rest of the daemon follows. Master rebuilds + child kills also run off-lock.
 pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Value> {
     // 1. Snapshot the tunnels that were alive at wake time (name, active_jump).
     let alive_tunnels: Vec<(String, Option<String>)> = {
@@ -192,16 +195,18 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
             .collect()
     };
 
-    // 2. Probe each active host's master (off State lock).  `active_master_ready`
-    //    runs `ssh -O check` with a 5s timeout.
+    // 2. Probe each active host's master. The blocking `ssh -O check` (5s) MUST
+    //    run off both locks: snapshot the active slot index under a brief map
+    //    lock, then check the concrete control path with no lock held. (Using
+    //    `with_pool(.., active_master_ready)` would hold the map mutex across the
+    //    5s probe and stall the heartbeat loop — see the lock-discipline note.)
     let active_hosts = active_host_names(&ctx.state);
     let masters_failed: Vec<String> = active_hosts
         .iter()
         .filter(|host| {
-            let ready = ctx
-                .managers
-                .with_pool(host, |p| p.active_master_ready())
-                .unwrap_or(false);
+            let idx = ctx.managers.snapshot(host).active_index; // brief lock, no I/O
+            let path = a2fa_core::ssh::control::control_path(host, idx);
+            let ready = a2fa_core::ssh::control::master_check(&path, host); // off-lock 5s
             !ready
         })
         .cloned()
