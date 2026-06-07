@@ -59,6 +59,35 @@ xcodebuild \
 APP_PATH="build/Build/Products/$CONFIG/Auto2FA.app"
 echo "→ built: $APP_PATH"
 
+# ── Rust daemon embed (opt-in) ────────────────────────────────────────────────
+# Set AUTO2FA_EMBED_RUST=1 to include the Rust daemon in the app bundle.
+# Default is OFF so normal dev builds are unaffected.
+# This does NOT change how the app launches the daemon (see T16 / cutover).
+if [ "${AUTO2FA_EMBED_RUST:-0}" = "1" ]; then
+  RUST_DIR="$(cd "$(dirname "$0")/../auto2fa-rs" && pwd)"
+  DAEMON_SRC="$RUST_DIR/dist/auto2fa-daemon"
+
+  echo "→ AUTO2FA_EMBED_RUST=1: building Rust release binaries"
+  "$RUST_DIR/build-release.sh"
+
+  if [ ! -f "$DAEMON_SRC" ]; then
+    echo "ERROR: Rust daemon not found at $DAEMON_SRC after build" >&2
+    exit 1
+  fi
+
+  DAEMON_DST="$APP_PATH/Contents/Resources/daemon"
+  mkdir -p "$DAEMON_DST"
+  cp "$DAEMON_SRC" "$DAEMON_DST/auto2fa-daemon"
+  chmod +x "$DAEMON_DST/auto2fa-daemon"
+
+  echo "→ re-signing app bundle (ad-hoc) after embedding daemon"
+  codesign --force --deep --sign - "$APP_PATH"
+
+  echo "→ embedded: $DAEMON_DST/auto2fa-daemon"
+  ls -lh "$DAEMON_DST/auto2fa-daemon"
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
 if [ $RUN_AFTER -eq 1 ]; then
   echo "→ launching"
   open "$APP_PATH"
