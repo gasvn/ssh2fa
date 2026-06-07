@@ -230,8 +230,17 @@ pub fn tunnel_start(
             .find(|t| t.name == name)
             .ok_or_else(|| Error::NotFound(name.clone()))?;
 
-        if t.status == TunnelStatus::Alive {
-            return Ok(Value::Null); // idempotent
+        // Idempotent + in-flight latch: skip the spawn when the tunnel is
+        // already Alive OR already Starting.  The `Starting` status acts as the
+        // in-flight latch (same as the maintenance loop), so repeated
+        // `tunnel_start` IPC calls during the ~10s probe_and_settle window can't
+        // each spawn another `ssh -L` worker (unbounded ssh + thread pile-up).
+        //
+        // This check and the `= Starting` write below both happen under THIS
+        // single `guard` acquisition (no gap), so two concurrent IPC calls
+        // cannot both observe a non-Starting status and both proceed to spawn.
+        if matches!(t.status, TunnelStatus::Alive | TunnelStatus::Starting) {
+            return Ok(Value::Null); // idempotent / already in flight
         }
 
         // Pick the first ready jump host.
@@ -1070,6 +1079,50 @@ mod tests {
         tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
         let msg = state.lock().unwrap().tunnels[0].last_msg.clone();
         assert!(msg.contains("no node") || msg.contains("waiting") || msg.contains("jump"));
+    }
+
+    /// FIX (unbounded ssh -L spawn): calling `tunnel_start` on a tunnel that
+    /// is already `Alive` must be an idempotent no-op — no spawn, status stays
+    /// Alive, last_msg unchanged.
+    #[test]
+    fn tunnel_start_already_alive_is_noop() {
+        let state = make_alive_tunnel("nb", 9310);
+        let before = state.lock().unwrap().tunnels[0].last_msg.clone();
+        let v = tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
+        assert_eq!(v, Value::Null);
+        let guard = state.lock().unwrap();
+        let t = &guard.tunnels[0];
+        assert_eq!(t.status, TunnelStatus::Alive, "status must stay Alive");
+        assert_eq!(t.last_msg, before, "early-return must not touch last_msg");
+    }
+
+    /// FIX (unbounded ssh -L spawn): calling `tunnel_start` on a tunnel that is
+    /// already `Starting` must take the same idempotent early-return — the
+    /// `Starting` status is the in-flight latch, so a repeat IPC call during the
+    /// ~10s probe window must NOT spawn another worker.
+    ///
+    /// We assert the early-return path is taken by proving the handler did NOT
+    /// fall through to the node/jump-host resolution code: that code would, on
+    /// this host-less test state, rewrite status away from Starting (to Idle /
+    /// Failed) and overwrite last_msg. Since the guard early-returns first,
+    /// status stays Starting and last_msg is untouched.
+    #[test]
+    fn tunnel_start_already_starting_is_noop() {
+        let state = make_tunnel_with_status("nb", 9311, TunnelStatus::Starting);
+        let before = state.lock().unwrap().tunnels[0].last_msg.clone();
+        let v = tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
+        assert_eq!(v, Value::Null);
+        let guard = state.lock().unwrap();
+        let t = &guard.tunnels[0];
+        assert_eq!(
+            t.status,
+            TunnelStatus::Starting,
+            "Starting must stay Starting (early-return latch, no spawn)"
+        );
+        assert_eq!(
+            t.last_msg, before,
+            "early-return must not touch last_msg (proves no fall-through)"
+        );
     }
 
     // ---- tunnel_toggle -------------------------------------------------
