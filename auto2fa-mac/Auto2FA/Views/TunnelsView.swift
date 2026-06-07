@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Status dot that pulses (scale + opacity) when `animated` is true.
-/// Used for the .starting state so users can see the system is still
-/// working rather than wondering if it wedged.
+/// Kept for compatibility; the tunnels list now routes status through the
+/// shared `StatusDot`/`StatusBadge` components instead.
 struct PulsingDot: View {
     let color: Color
     let animated: Bool
@@ -53,39 +53,47 @@ struct TunnelsView: View {
 
     var body: some View {
         if appState.tunnels.isEmpty {
-            VStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.largeTitle)
-                    .foregroundStyle(.yellow)
-                Text("No tunnels yet")
-                    .font(.title3)
-                Text("Click  +  in the toolbar (or press ⌘N) to create one.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button {
-                    appState.presentNewTunnel()
-                } label: {
-                    Label("New tunnel", systemImage: "plus")
-                }
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding()
+            emptyState
         } else {
             VStack(spacing: 0) {
                 filterBar
                 Divider()
-                tunnelsTable
+                tunnelsList
                     .controlSize(compactRows ? .small : .regular)
                     .font(compactRows ? .caption : .body)
             }
         }
     }
 
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: Spacing.m) {
+            Image(systemName: "sparkles")
+                .font(.largeTitle)
+                .foregroundStyle(.yellow)
+            Text("No tunnels yet")
+                .font(.title3)
+            Text("Click  +  in the toolbar (or press ⌘N) to create one.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                appState.presentNewTunnel()
+            } label: {
+                Label("New tunnel", systemImage: "plus")
+            }
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    // MARK: - Filter bar
+
     private var filterBar: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(spacing: Spacing.s) {
+            HStack(spacing: Spacing.s) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("filter by name, node, jump, tag…", text: $filter)
                     .textFieldStyle(.roundedBorder)
@@ -117,7 +125,7 @@ struct TunnelsView: View {
             }
             if !allTags.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Spacing.xs + 2) {
                         tagChip("All", isActive: activeTagFilter == nil) {
                             activeTagFilter = nil
                         }
@@ -127,11 +135,11 @@ struct TunnelsView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, Spacing.s)
                 }
             }
         }
-        .padding(8)
+        .padding(Spacing.s)
         .background(.bar)
     }
 
@@ -140,7 +148,7 @@ struct TunnelsView: View {
         Button(action: action) {
             Text(label)
                 .font(.caption.weight(.medium))
-                .padding(.horizontal, 10).padding(.vertical, 4)
+                .padding(.horizontal, Spacing.s + 2).padding(.vertical, Spacing.xs)
                 .background(isActive ? Color.accentColor : Color.gray.opacity(0.15),
                             in: Capsule())
                 .foregroundColor(isActive ? .white : .primary)
@@ -148,269 +156,136 @@ struct TunnelsView: View {
         .buttonStyle(.plain)
     }
 
-    private var tunnelsTable: some View {
-        Table(visibleTunnels, selection: $selection) {
-                TableColumn("Name") { t in
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 4) {
-                            Text(t.name).fontDesign(.monospaced)
-                            if t.autoStart {
-                                Image(systemName: "bolt.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.yellow)
-                                    .help("Starts automatically when the daemon boots")
-                            }
-                            if t.postConnectCmd != nil {
-                                Image(systemName: "terminal.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.blue)
-                                    .help("Has a post-connect command")
-                            }
-                        }
-                        if let aliveTxt = t.aliveSince(), t.displayState != .alive {
-                            Text(aliveTxt)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                .width(min: 100, ideal: 130)
+    // MARK: - List
 
-                TableColumn("Local → Remote") { t in
-                    Text(":\(t.localPort) → :\(t.remotePort)")
-                        .fontDesign(.monospaced)
-                        .foregroundStyle(.secondary)
-                }
-                .width(min: 100, ideal: 130)
-
-                TableColumn("Node") { t in
-                    if let n = t.lastNode {
-                        Text(n).fontDesign(.monospaced).lineLimit(1)
-                    } else {
-                        Text("(no node yet)").foregroundStyle(.tertiary).italic()
-                    }
-                }
-
-                TableColumn("Via") { t in
-                    // Clickable Menu — left-click opens jump-picker so the
-                    // user can pin this tunnel to a specific login node OR
-                    // restore Auto. The label shows the CURRENT active
-                    // jump (with a small lock if pinned) so at-a-glance
-                    // status stays familiar.
-                    Menu {
-                        jumpPickerMenu(for: t)
-                    } label: {
-                        HStack(spacing: 4) {
-                            if let pinned = t.jumpCandidates, !pinned.isEmpty {
-                                Image(systemName: "pin.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.orange)
-                            }
-                            Text(t.activeJump ?? (t.jumpCandidates?.first ?? "—"))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help(t.jumpCandidates == nil
-                          ? "Auto — any ready host. Click to pin."
-                          : "Pinned to \(t.jumpCandidates!.joined(separator: ", ")). Click to change.")
-                }
-                .width(min: 80, ideal: 100)
-
-                TableColumn("Status") { t in
-                    HStack(spacing: 6) {
-                        if isBusy(t) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.7)
-                            Text(busyLabel(t))
-                                .fontWeight(.medium)
-                                .foregroundStyle(.orange)
-                        } else {
-                            PulsingDot(color: color(for: t.displayState),
-                                       animated: t.displayState == .starting)
-                            Text(displayName(for: t.displayState))
-                                .fontWeight(.medium)
-                        }
-                        Text(FriendlyText.tunnelStatusBlurb(t))
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .help(t.lastMsg)
-                    }
-                    // Flash yellow briefly whenever the tunnel's status
-                    // string changes — helps the eye catch quick
-                    // transitions like starting → alive on a busy table.
-                    .changeHighlight(t.status)
-                }
-                .width(min: 200)
-
-                TableColumn("") { t in
-                    let busy = isBusy(t)
-                    HStack(spacing: 4) {
-                        Button {
-                            Task { await appState.toggleTunnel(t) }
-                        } label: {
-                            if busy {
-                                ProgressView().controlSize(.small).scaleEffect(0.6)
-                                    .frame(width: 14, height: 14)
-                            } else {
-                                Image(systemName: t.displayState == .alive ? "stop.fill" : "play.fill")
-                            }
-                        }
-                        .help(t.displayState == .alive ? "Stop" : "Start")
-                        .disabled(busy)
-                        Button {
-                            appState.presentNodePicker(for: t)
-                        } label: {
-                            Image(systemName: "list.bullet.rectangle")
-                        }
-                        .help("Pick a node from squeue")
-                        .disabled(busy)
-                        Button {
-                            openInBrowser(t)
-                        } label: {
-                            Image(systemName: "safari")
-                        }
-                        .help("Open localhost:\(t.localPort) in browser")
-                        .disabled(busy || t.displayState != .alive)
-                        Button {
-                            copyURL(t.url)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .help("Copy localhost:\(t.localPort)")
-                        Button {
-                            detailsForTunnel = t
-                        } label: {
-                            Image(systemName: "info.circle")
-                        }
-                        .help("Activity log + post-connect command")
-                        Button {
-                            appState.presentConfirmDelete(for: t)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .help("Delete tunnel")
-                        .disabled(busy)
-                    }
-                    .buttonStyle(.borderless)
-                }
-                .width(min: 170, ideal: 190)
+    private var tunnelsList: some View {
+        List(selection: $selection) {
+            ForEach(visibleTunnels) { t in
+                TunnelRow(tunnel: t,
+                          detailsForTunnel: $detailsForTunnel,
+                          renamingTunnel: $renamingTunnel,
+                          renameDraft: $renameDraft)
+                    .tag(t.id)
+                    .listRowInsets(EdgeInsets(top: 0,
+                                              leading: Spacing.m,
+                                              bottom: 0,
+                                              trailing: Spacing.m))
             }
-            .sheet(item: $detailsForTunnel) { t in
-                TunnelDetailsPopover(tunnel: t)
-                    .environmentObject(appState)
+        }
+        .listStyle(.inset)
+        .environmentObject(appState)
+        .sheet(item: $detailsForTunnel) { t in
+            TunnelDetailsPopover(tunnel: t)
+                .environmentObject(appState)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .a2fShowTunnelDetails)) { note in
+            if let name = note.userInfo?["name"] as? String,
+               let t = appState.tunnels.first(where: { $0.name == name }) {
+                detailsForTunnel = t
             }
-            .onReceive(NotificationCenter.default.publisher(for: .a2fShowTunnelDetails)) { note in
-                if let name = note.userInfo?["name"] as? String,
-                   let t = appState.tunnels.first(where: { $0.name == name }) {
-                    detailsForTunnel = t
+        }
+        .sheet(item: $renamingTunnel) { t in
+            renameSheet(for: t)
+        }
+        .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
+            if let id = ids.first,
+               let t = appState.tunnels.first(where: { $0.id == id }) {
+                Button(t.displayState == .alive ? "Stop" : "Start") {
+                    Task { await appState.toggleTunnel(t) }
+                }
+                Button("Pick node…") {
+                    appState.presentNodePicker(for: t)
+                }
+                Menu("Use jump host") {
+                    jumpPickerMenu(for: t)
+                }
+                Button("Open in browser") {
+                    openInBrowser(t)
+                }
+                .disabled(t.displayState != .alive)
+                Button("Copy localhost:\(t.localPort)") {
+                    copyURL(t.url)
+                }
+                Divider()
+                Button("Clone…") {
+                    Task { await appState.cloneTunnel(t) }
+                }
+                Button("Rename…") {
+                    renameDraft = t.name
+                    renamingTunnel = t
+                }
+                Menu("Tags") {
+                    tagEditorMenu(for: t)
+                }
+                Toggle("Start on daemon launch", isOn: Binding(
+                    get: { t.autoStart },
+                    set: { newValue in
+                        Task { await appState.setTunnelAutostart(t, value: newValue) }
+                    }
+                ))
+                Divider()
+                Button("Delete tunnel", role: .destructive) {
+                    appState.presentConfirmDelete(for: t)
                 }
             }
-            .sheet(item: $renamingTunnel) { t in
-                renameSheet(for: t)
-            }
-            .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
-                if let id = ids.first,
-                   let t = appState.tunnels.first(where: { $0.id == id }) {
-                    Button(t.displayState == .alive ? "Stop" : "Start") {
-                        Task { await appState.toggleTunnel(t) }
-                    }
-                    Button("Pick node…") {
-                        appState.presentNodePicker(for: t)
-                    }
-                    Menu("Use jump host") {
-                        jumpPickerMenu(for: t)
-                    }
-                    Button("Open in browser") {
-                        openInBrowser(t)
-                    }
-                    .disabled(t.displayState != .alive)
-                    Button("Copy localhost:\(t.localPort)") {
-                        copyURL(t.url)
-                    }
-                    Divider()
-                    Button("Clone…") {
-                        Task { await appState.cloneTunnel(t) }
-                    }
-                    Button("Rename…") {
-                        renameDraft = t.name
-                        renamingTunnel = t
-                    }
-                    Menu("Tags") {
-                        tagEditorMenu(for: t)
-                    }
-                    Toggle("Start on daemon launch", isOn: Binding(
-                        get: { t.autoStart },
-                        set: { newValue in
-                            Task { await appState.setTunnelAutostart(t, value: newValue) }
-                        }
-                    ))
-                    Divider()
-                    Button("Delete tunnel", role: .destructive) {
-                        appState.presentConfirmDelete(for: t)
-                    }
-                }
-            }
-            // Keyboard handlers — fire when the table has focus and a row
-            // is selected. Cuts the rounds-trip-to-mouse loop in half for
-            // power users.
-            .onKeyPress(.space) {
-                guard let t = singleSelectedTunnel else { return .ignored }
-                Task { await appState.toggleTunnel(t) }
-                return .handled
-            }
-            .onKeyPress(.return) {
-                guard let t = singleSelectedTunnel else { return .ignored }
-                appState.presentNodePicker(for: t)
-                return .handled
-            }
-            .onKeyPress(.delete) {
-                guard let t = singleSelectedTunnel else { return .ignored }
-                appState.presentConfirmDelete(for: t)
-                return .handled
-            }
-            .onKeyPress(keys: ["c"]) { press in
-                guard press.modifiers.contains(.command),
-                      let t = singleSelectedTunnel else { return .ignored }
-                copyURL(t.url)
-                FriendlyText.haptic()
-                appState.notchPresenter.show(
-                    systemImage: "doc.on.doc",
-                    title: "Copied",
-                    description: t.url,
-                    tint: .blue
-                )
-                return .handled
-            }
-            .onKeyPress(keys: ["o"]) { press in
-                guard press.modifiers.contains(.command),
-                      let t = singleSelectedTunnel,
-                      t.displayState == .alive else { return .ignored }
-                openInBrowser(t)
-                return .handled
-            }
-            .onKeyPress(keys: ["d"]) { press in
-                guard press.modifiers.contains(.command),
-                      let t = singleSelectedTunnel else { return .ignored }
-                Task { await appState.cloneTunnel(t) }
-                return .handled
-            }
+        }
+        // Keyboard handlers — fire when the list has focus and a row is
+        // selected. Cuts the round-trip-to-mouse loop for power users.
+        .onKeyPress(.space) {
+            guard let t = singleSelectedTunnel else { return .ignored }
+            Task { await appState.toggleTunnel(t) }
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard let t = singleSelectedTunnel else { return .ignored }
+            appState.presentNodePicker(for: t)
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            guard let t = singleSelectedTunnel else { return .ignored }
+            appState.presentConfirmDelete(for: t)
+            return .handled
+        }
+        .onKeyPress(keys: ["c"]) { press in
+            guard press.modifiers.contains(.command),
+                  let t = singleSelectedTunnel else { return .ignored }
+            copyURL(t.url)
+            FriendlyText.haptic()
+            appState.notchPresenter.show(
+                systemImage: "doc.on.doc",
+                title: "Copied",
+                description: t.url,
+                tint: .blue
+            )
+            return .handled
+        }
+        .onKeyPress(keys: ["o"]) { press in
+            guard press.modifiers.contains(.command),
+                  let t = singleSelectedTunnel,
+                  t.displayState == .alive else { return .ignored }
+            openInBrowser(t)
+            return .handled
+        }
+        .onKeyPress(keys: ["d"]) { press in
+            guard press.modifiers.contains(.command),
+                  let t = singleSelectedTunnel else { return .ignored }
+            Task { await appState.cloneTunnel(t) }
+            return .handled
+        }
     }
 
     /// Convenience: returns the Tunnel iff EXACTLY one row is selected.
-    /// Multi-select keyboard ops are handled by the batch toolbar buttons
-    /// instead of these single-row shortcuts.
+    /// Multi-select keyboard ops are handled by the batch toolbar buttons.
     private var singleSelectedTunnel: Tunnel? {
         guard selection.count == 1, let id = selection.first else { return nil }
         return appState.tunnels.first { $0.id == id }
     }
 
+    // MARK: - Rename sheet
+
     @ViewBuilder
     private func renameSheet(for t: Tunnel) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Spacing.m) {
             Text("Rename tunnel").font(.headline)
             Text("Currently: \(t.name)").font(.caption).foregroundStyle(.secondary)
             TextField("new-name", text: $renameDraft)
@@ -436,12 +311,13 @@ struct TunnelsView: View {
         .frame(width: 340)
     }
 
+    // MARK: - Tag editor menu
+
     @ViewBuilder
     private func tagEditorMenu(for t: Tunnel) -> some View {
-        // Quick toggles for existing tags, plus a "New tag" form via prompt.
+        // Quick toggles for existing tags, plus a "Clear all".
         let existing = Set(t.tags)
-        // Known tags = union across all tunnels (so users can apply
-        // already-used ones quickly).
+        // Known tags = union across all tunnels.
         let known = Array(Set(appState.tunnels.flatMap { $0.tags })).sorted()
         if known.isEmpty {
             Text("No tags yet — add one from CLI or tunnels.json.")
@@ -467,15 +343,8 @@ struct TunnelsView: View {
         .disabled(t.tags.isEmpty)
     }
 
-    private func copyURL(_ url: String) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(url, forType: .string)
-    }
+    // MARK: - Jump-host picker (shared with the row's "via" menu)
 
-    /// Menu builder used by both the "Via" column dropdown and the right-
-    /// click "Use jump host" submenu. Currently-selected mode (auto vs.
-    /// pinned to a specific host) shows a leading checkmark via SF symbol.
     @ViewBuilder
     private func jumpPickerMenu(for t: Tunnel) -> some View {
         let isAuto = (t.jumpCandidates == nil) || (t.jumpCandidates?.isEmpty ?? true)
@@ -486,8 +355,6 @@ struct TunnelsView: View {
                   systemImage: isAuto ? "checkmark" : "circle")
         }
         Divider()
-        // Only list hosts that exist as managers — typos / disabled hosts
-        // would just wedge the tunnel.
         ForEach(appState.hosts, id: \.host) { host in
             let pinned = (t.jumpCandidates == [host.host])
             Button {
@@ -500,25 +367,15 @@ struct TunnelsView: View {
         }
     }
 
-    /// Busy = we just clicked something (inFlightTunnels) OR the daemon is
-    /// reporting starting. tunnel_toggle's RPC is slow (awaits the 10s probe)
-    /// so inFlightTunnels usually overlaps with .starting, but the pick_node
-    /// path can take longer than the RPC and only .starting catches that
-    /// tail end.
-    private func isBusy(_ t: Tunnel) -> Bool {
-        if appState.inFlightTunnels.contains(t.name) { return true }
-        return t.displayState == .starting
-    }
+    // MARK: - Helpers
 
-    private func busyLabel(_ t: Tunnel) -> String {
-        let msg = t.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
-        return msg.isEmpty ? "Working…" : msg
+    private func copyURL(_ url: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(url, forType: .string)
     }
 
     private func openInBrowser(_ t: Tunnel) {
-        // browserURL prepends http:// + appends per-tunnel url_path
-        // (e.g. "/?token=abc123" for jupyter), so the user lands on the
-        // actual usable page rather than a generic localhost:N.
         guard let url = URL(string: t.browserURL) else { return }
         NSWorkspace.shared.open(url)
         appState.notchPresenter.show(
@@ -527,29 +384,5 @@ struct TunnelsView: View {
             description: "opening \(t.browserURL)",
             tint: .blue
         )
-    }
-
-    private func color(for state: Tunnel.DisplayState) -> Color {
-        switch state {
-        case .alive: return .green
-        case .starting: return .yellow
-        case .stale: return .red
-        case .idle: return .secondary
-        case .portBusy: return .red
-        case .failed: return .red
-        case .unknown: return .secondary
-        }
-    }
-
-    private func displayName(for state: Tunnel.DisplayState) -> String {
-        switch state {
-        case .alive: return "Connected"
-        case .starting: return "Connecting…"
-        case .stale: return "Stale"
-        case .idle: return "Idle"
-        case .portBusy: return "Port busy"
-        case .failed: return "Failed"
-        case .unknown: return "—"
-        }
     }
 }
