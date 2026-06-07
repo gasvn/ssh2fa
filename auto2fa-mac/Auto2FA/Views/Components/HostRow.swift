@@ -38,7 +38,7 @@ struct HostRow: View {
             line1
             if !isBusy, !friendlyMessage.isEmpty {
                 Text(friendlyMessage)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -46,9 +46,10 @@ struct HostRow: View {
                     .padding(.leading, RowMetric.iconSize + Spacing.xs)
             }
         }
-        .dashboardRow()
+        .padding(.vertical, Spacing.s)
         .contentShape(Rectangle())
         .changeHighlight(host.status)
+        .hoverLift(hovering)
         .onHover { hovering = $0 }
     }
 
@@ -76,9 +77,9 @@ struct HostRow: View {
                     .layoutPriority(1)
             }
 
-            // Alias (mono, primary).
+            // Alias (rounded title, primary).
             Text(host.host)
-                .font(RowMetric.mono)
+                .font(.rowTitle)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)

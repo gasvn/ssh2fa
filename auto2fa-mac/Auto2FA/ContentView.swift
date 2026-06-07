@@ -54,17 +54,41 @@ struct ContentView: View {
     }
 
     private var mainStack: some View {
-        VStack(spacing: 0) {
-            sectionTitle("HOSTS · \(appState.hosts.count)", icon: "server.rack")
-            Divider()
+        VStack(spacing: Spacing.l) {
             HostsView().frame(minHeight: 100)
-            Divider()
-            sectionTitle("TUNNELS · \(appState.tunnels.count)", icon: "point.3.connected.trianglepath.dotted")
-            Divider()
             TunnelsView().frame(minHeight: 200)
         }
+        .padding(Spacing.l)
         .frame(minWidth: 700, minHeight: 400)
-        .background(.regularMaterial)
+        .background(windowBackground)
+    }
+
+    /// Subtle layered base so the glass cards float and read. On macOS 26 we
+    /// extend the window content beneath the toolbar; otherwise a gentle
+    /// gradient over the base material.
+    @ViewBuilder
+    private var windowBackground: some View {
+        let gradient = LinearGradient(
+            colors: [
+                Brand.accent.opacity(0.06),
+                Color.clear,
+                Color.black.opacity(0.04)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        if #available(macOS 26.0, *) {
+            Rectangle()
+                .fill(.regularMaterial)
+                .overlay(gradient)
+                .backgroundExtensionEffect()
+                .ignoresSafeArea()
+        } else {
+            Rectangle()
+                .fill(.regularMaterial)
+                .overlay(gradient)
+                .ignoresSafeArea()
+        }
     }
 
     @ToolbarContentBuilder
@@ -91,15 +115,19 @@ struct ContentView: View {
         if let err = appState.connectionError {
             HStack(spacing: Spacing.s) {
                 Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.red)
                 Text(FriendlyText.friendlyError(err))
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
-            .background(Color.red.opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-            .padding(.top, Spacing.s)
+            .glassChrome()
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+            )
+            .padding(.top, Spacing.m)
             .transition(.move(edge: .top).combined(with: .opacity))
             .onTapGesture { appState.connectionError = nil }
             .help(err)  // hover for the raw underlying message
@@ -128,11 +156,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, Spacing.l)
             .padding(.vertical, Spacing.m)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            )
+            .glassCard(cornerRadius: Radius.control)
             .padding(.bottom, Spacing.l)
             .frame(maxWidth: 380)
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -202,16 +226,5 @@ struct ContentView: View {
             },
             set: { newValue in if newValue == nil { appState.dismissSheet() } }
         )
-    }
-
-    @ViewBuilder
-    private func sectionTitle(_ text: String, icon: String) -> some View {
-        HStack(spacing: Spacing.xs) {
-            Image(systemName: icon)
-            Text(text)
-            Spacer()
-        }
-        .sectionHeaderStyle()
-        .background(.thickMaterial)
     }
 }

@@ -40,11 +40,12 @@ struct TunnelRow: View {
             line1
             line2
         }
-        .dashboardRow()
+        .padding(.vertical, Spacing.s)
         .contentShape(Rectangle())
         // Flash yellow briefly whenever the tunnel's status string changes —
         // helps the eye catch quick transitions like starting → alive.
         .changeHighlight(tunnel.status)
+        .hoverLift(hovering)
         .onHover { hovering = $0 }
     }
 
@@ -77,7 +78,7 @@ struct TunnelRow: View {
             // Name (mono, primary) + autostart / post-connect glyphs.
             HStack(spacing: Spacing.xs) {
                 Text(tunnel.name)
-                    .font(RowMetric.mono)
+                    .font(.rowTitle)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -196,7 +197,7 @@ struct TunnelRow: View {
             // aliveSince text.
             if let aliveTxt = tunnel.aliveSince() {
                 Text(aliveTxt)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -222,12 +223,16 @@ struct TunnelRow: View {
                   ? "Auto — any ready host. Click to pin."
                   : "Pinned to \(tunnel.jumpCandidates!.joined(separator: ", ")). Click to change.")
 
-            // Fail count — red/orange only when > 0.
+            // Fail count — tinted capsule, red/orange only when > 0.
             if tunnel.failCount > 0 {
+                let failTint: Color = tunnel.failCount >= 3 ? .red : .orange
                 Text("\(tunnel.failCount) fails")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(tunnel.failCount >= 3 ? .red : .orange)
+                    .font(.countBadge)
+                    .foregroundStyle(failTint)
                     .lineLimit(1)
+                    .padding(.horizontal, Spacing.xs + 2)
+                    .padding(.vertical, 1)
+                    .background(failTint.opacity(0.15), in: Capsule())
             }
 
             // Tags as small capsules.

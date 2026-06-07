@@ -30,17 +30,41 @@ struct TunnelsView: View {
     }
 
     var body: some View {
-        if appState.tunnels.isEmpty {
-            emptyState
-        } else {
-            VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            header
+            if appState.tunnels.isEmpty {
+                emptyState
+            } else {
                 filterBar
-                Divider()
                 tunnelsList
                     .controlSize(compactRows ? .small : .regular)
                     .font(compactRows ? .caption : .body)
             }
         }
+        .padding(Spacing.m)
+        .glassCard()
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: Spacing.s) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .foregroundStyle(.secondary)
+            Text("Tunnels")
+                .font(.dashTitle)
+            countPill(appState.tunnels.count)
+            Spacer()
+        }
+    }
+
+    private func countPill(_ n: Int) -> some View {
+        Text("\(n)")
+            .font(.countBadge)
+            .foregroundStyle(Brand.accent)
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, 2)
+            .background(Brand.accent.opacity(0.15), in: Capsule())
     }
 
     // MARK: - Empty state
@@ -64,7 +88,7 @@ struct TunnelsView: View {
             .keyboardShortcut(.defaultAction)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        .padding(Spacing.xl)
     }
 
     // MARK: - Filter bar
@@ -118,7 +142,7 @@ struct TunnelsView: View {
             }
         }
         .padding(Spacing.s)
-        .background(.bar)
+        .glassChrome()
     }
 
     @ViewBuilder
@@ -127,7 +151,7 @@ struct TunnelsView: View {
             Text(label)
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, Spacing.s + 2).padding(.vertical, Spacing.xs)
-                .background(isActive ? Color.accentColor : Color.gray.opacity(0.15),
+                .background(isActive ? Brand.accent.opacity(0.85) : Color.gray.opacity(0.12),
                             in: Capsule())
                 .foregroundColor(isActive ? .white : .primary)
         }
@@ -148,9 +172,12 @@ struct TunnelsView: View {
                                               leading: Spacing.m,
                                               bottom: 0,
                                               trailing: Spacing.m))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
         }
-        .listStyle(.inset)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .environmentObject(appState)
         .sheet(item: $detailsForTunnel) { t in
             TunnelDetailsPopover(tunnel: t)
