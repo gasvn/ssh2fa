@@ -9,6 +9,7 @@ dependencies = [
  "a2fa-core",
  "anyhow",
  "clap",
+ "serde_json",
 ]
 
 [[package]]
