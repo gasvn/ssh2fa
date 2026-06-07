@@ -17,6 +17,7 @@ name = "a2fa-core"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "libc",
  "log",
  "portable-pty",
  "regex",

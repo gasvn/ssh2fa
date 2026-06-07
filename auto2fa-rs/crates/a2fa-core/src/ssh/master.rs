@@ -255,17 +255,25 @@ pub fn start_master(
             false
         }
         Ok(LoginOutcome::Timeout) => {
+            // A perpetually-timing-out host must trip the breaker too —
+            // otherwise the heartbeat re-spawns a 60s login worker every cycle
+            // forever. Mirror the AuthFailed/Err arms.
             warn!("[{}] master slot {index} login timed out", state.host);
             state.slot_status[index] = SlotStatus::Failed;
+            state.record_login_failure();
             false
         }
         Ok(LoginOutcome::Eof { output }) => {
+            // Early EOF (ssh died before the prompt) is also a failed attempt;
+            // a host that keeps EOF-ing should likewise trip the breaker rather
+            // than be re-driven every cycle.
             let reason = failure_reason(&output);
             warn!(
                 "[{}] master slot {index} exited early: {reason}",
                 state.host
             );
             state.slot_status[index] = SlotStatus::Dead;
+            state.record_login_failure();
             false
         }
         Err(e) => {

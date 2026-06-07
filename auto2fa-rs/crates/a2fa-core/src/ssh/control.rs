@@ -88,15 +88,66 @@ fn control_base_from_ssh_g(host: &str, value: Option<&str>) -> PathBuf {
 fn run_ssh_g(host: &str) -> Option<String> {
     let (tx, rx) = mpsc::channel();
     let host_owned = host.to_string();
+    // Own the child INSIDE the worker thread and poll `try_wait` against the
+    // deadline so a wedged `ssh -G` (e.g. a hung `Match exec`/`ProxyCommand`)
+    // is killed+reaped instead of left running as an orphan. Mirrors
+    // `run_ssh_bounded`. (`Command::output()` would block until the child
+    // exits, leaking the process past our recv_timeout.)
     std::thread::spawn(move || {
-        let out = Command::new("ssh").args(["-G", &host_owned]).output();
-        let _ = tx.send(out);
-    });
-    match rx.recv_timeout(SSH_G_TIMEOUT) {
-        Ok(Ok(out)) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        let child = Command::new("ssh")
+            .args(["-G", &host_owned])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = tx.send(None);
+                return;
+            }
+        };
+
+        let deadline = Instant::now() + SSH_G_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let stdout = if status.success() {
+                        let mut s = String::new();
+                        if let Some(mut out) = child.stdout.take() {
+                            use std::io::Read;
+                            let _ = out.read_to_string(&mut s);
+                        }
+                        Some(s)
+                    } else {
+                        None
+                    };
+                    let _ = tx.send(stdout);
+                    return;
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = tx.send(None);
+                        return;
+                    }
+                    std::thread::sleep(BOUNDED_POLL_INTERVAL);
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = tx.send(None);
+                    return;
+                }
+            }
         }
-        _ => None,
+    });
+    // Give the worker a little slack beyond its own deadline to report back;
+    // if even that elapses, treat as no result (the worker still reaps).
+    match rx.recv_timeout(SSH_G_TIMEOUT + Duration::from_secs(1)) {
+        Ok(out) => out,
+        Err(_) => None,
     }
 }
 
