@@ -335,23 +335,27 @@ pub fn tunnel_stop(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 // ---------------------------------------------------------------------------
 
 /// Toggle a tunnel between started and stopped.
+///
+/// Mirrors the Python original: stop when status ∈ {Alive, Starting};
+/// start otherwise. Stopping a "Starting" tunnel is useful when the user
+/// wants to abort a connection attempt that is still in progress.
 pub fn tunnel_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?;
 
-    let is_alive = {
+    let should_stop = {
         let guard = state.lock().unwrap();
-        guard
+        let status = &guard
             .tunnels
             .iter()
             .find(|t| t.name == name)
             .ok_or_else(|| Error::NotFound(name.to_owned()))?
-            .status
-            == TunnelStatus::Alive
+            .status;
+        matches!(status, TunnelStatus::Alive | TunnelStatus::Starting)
     };
 
-    if is_alive {
+    if should_stop {
         tunnel_stop(state, params)
     } else {
         tunnel_start(state, params)
@@ -413,8 +417,9 @@ pub fn tunnel_set_node(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
     let params_with_name = json!({"name": name});
 
     match old_status {
-        TunnelStatus::Idle | TunnelStatus::Failed => {
-            // Was idle — just start.
+        TunnelStatus::Idle | TunnelStatus::Failed | TunnelStatus::Stale | TunnelStatus::PortBusy => {
+            // Was idle / stuck — just start.
+            // Mirrors Python: status ∈ {idle, stale, failed, port_busy} → start.
             tunnel_start(state, &params_with_name)?;
         }
         TunnelStatus::Alive | TunnelStatus::Starting => {
@@ -424,7 +429,6 @@ pub fn tunnel_set_node(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
                 tunnel_start(state, &params_with_name)?;
             }
         }
-        _ => {} // Stale, etc. — do nothing for now.
     }
 
     Ok(Value::Null)
@@ -873,6 +877,30 @@ mod tests {
         Arc::new(Mutex::new(State::with_tunnels(vec![t])))
     }
 
+    fn make_tunnel_with_status(name: &str, port: u16, status: TunnelStatus) -> Arc<Mutex<State>> {
+        let t = Tunnel {
+            name: name.into(),
+            local_port: port,
+            remote_port: port,
+            jump_candidates: None,
+            last_node: Some("holygpu01".into()),
+            last_user: Some("jdoe".into()),
+            auto_start: false,
+            post_connect_cmd: None,
+            tags: vec![],
+            url_path: None,
+            wants_alive: true,
+            status,
+            active_jump: Some("k6".into()),
+            last_msg: "In progress".into(),
+            last_alive_at: 0.0,
+            total_uptime_sec: 0.0,
+            connect_count: 0,
+            fail_count: 0,
+        };
+        Arc::new(Mutex::new(State::with_tunnels(vec![t])))
+    }
+
     // ---- list_tunnels --------------------------------------------------
 
     #[test]
@@ -963,6 +991,18 @@ mod tests {
         assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
     }
 
+    /// Toggle on a Starting tunnel must stop it (FIX 3 — parity with Python).
+    #[test]
+    fn tunnel_toggle_starting_stops() {
+        let state = make_tunnel_with_status("nb", 9401, TunnelStatus::Starting);
+        tunnel_toggle(&state, &json!({"name": "nb"})).unwrap();
+        assert_eq!(
+            state.lock().unwrap().tunnels[0].status,
+            TunnelStatus::Idle,
+            "toggle on Starting tunnel must stop it"
+        );
+    }
+
     // ---- tunnel_set_node -----------------------------------------------
 
     #[test]
@@ -987,6 +1027,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    /// set_node on a Stale tunnel must attempt a start (FIX 4 — parity with Python).
+    #[test]
+    fn tunnel_set_node_stale_attempts_start() {
+        let state = make_tunnel_with_status("nb", 9502, TunnelStatus::Stale);
+        tunnel_set_node(
+            &state,
+            &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+        )
+        .unwrap();
+        let guard = state.lock().unwrap();
+        // After set_node on a stale tunnel, the tunnel should no longer be Stale;
+        // it will be Idle (no ready jump host in test state) or Starting.
+        assert_ne!(
+            guard.tunnels[0].status,
+            TunnelStatus::Stale,
+            "stale tunnel must not stay Stale after set_node"
+        );
+    }
+
+    /// set_node on a PortBusy tunnel must attempt a start (FIX 4 — parity with Python).
+    #[test]
+    fn tunnel_set_node_port_busy_attempts_start() {
+        let state = make_tunnel_with_status("nb", 9503, TunnelStatus::PortBusy);
+        tunnel_set_node(
+            &state,
+            &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+        )
+        .unwrap();
+        let guard = state.lock().unwrap();
+        // After set_node on a PortBusy tunnel, it must not remain PortBusy.
+        assert_ne!(
+            guard.tunnels[0].status,
+            TunnelStatus::PortBusy,
+            "port_busy tunnel must not stay PortBusy after set_node"
+        );
     }
 
     // ---- tunnel_rename -------------------------------------------------

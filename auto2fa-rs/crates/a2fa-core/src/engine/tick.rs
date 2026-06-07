@@ -37,13 +37,7 @@ use log::{debug, warn};
 use crate::engine::change_key::{host_change_key, tunnel_change_key};
 use crate::engine::schedule::TICK_INTERVAL;
 use crate::engine::State;
-
-// ---------------------------------------------------------------------------
-// Event constants (wire-format parity with daemon.py / proto/event.rs)
-// ---------------------------------------------------------------------------
-
-const EVENT_TUNNEL_STATUS_CHANGED: &str = "TUNNEL_STATUS_CHANGED";
-const EVENT_HOST_STATUS_CHANGED: &str = "HOST_STATUS_CHANGED";
+use crate::proto::{encode_event, Event};
 
 // ---------------------------------------------------------------------------
 // run_tick
@@ -81,11 +75,12 @@ pub fn run_tick(state: &Mutex<State>) {
     for (host_name, new_key) in changed_hosts {
         // Build the event payload (snapshot of the matching host).
         if let Some(host) = guard.hosts.iter().find(|h| h.host == host_name) {
-            let payload = serde_json::json!({
-                "event": EVENT_HOST_STATUS_CHANGED,
-                "data":  host,
-            });
-            guard.emit(payload.to_string());
+            // encode_event returns JSON + '\n' — the wire protocol requires the newline.
+            let line = encode_event(
+                Event::HostStatusChanged.as_str(),
+                serde_json::to_value(host).unwrap_or(serde_json::Value::Null),
+            );
+            guard.emit(line);
         }
         guard.last_host_keys.insert(host_name, new_key);
     }
@@ -104,11 +99,12 @@ pub fn run_tick(state: &Mutex<State>) {
 
     for (tname, new_key) in changed_tunnels {
         if let Some(tunnel) = guard.tunnels.iter().find(|t| t.name == tname) {
-            let payload = serde_json::json!({
-                "event": EVENT_TUNNEL_STATUS_CHANGED,
-                "data":  tunnel,
-            });
-            guard.emit(payload.to_string());
+            // encode_event returns JSON + '\n' — the wire protocol requires the newline.
+            let line = encode_event(
+                Event::TunnelStatusChanged.as_str(),
+                serde_json::to_value(tunnel).unwrap_or(serde_json::Value::Null),
+            );
+            guard.emit(line);
         }
         guard.last_tunnel_keys.insert(tname, new_key);
     }
@@ -127,11 +123,12 @@ pub fn run_tick(state: &Mutex<State>) {
 
     for name in removed {
         guard.last_tunnel_keys.remove(&name);
-        let payload = serde_json::json!({
-            "event": EVENT_TUNNEL_STATUS_CHANGED,
-            "data":  { "name": name, "status": "removed" },
-        });
-        guard.emit(payload.to_string());
+        // encode_event returns JSON + '\n' — the wire protocol requires the newline.
+        let line = encode_event(
+            Event::TunnelStatusChanged.as_str(),
+            serde_json::json!({ "name": name, "status": "removed" }),
+        );
+        guard.emit(line);
     }
 
     // ---- DEFERRED: SSH / tunnel maintenance ----------------------------
@@ -193,6 +190,7 @@ mod tests {
     use super::*;
     use crate::engine::State;
     use crate::model::{Host, Tunnel, TunnelStatus};
+    use crate::proto::Event;
     use std::sync::{mpsc, Mutex};
 
     fn make_tunnel(name: &str, status: TunnelStatus) -> Tunnel {
@@ -232,6 +230,7 @@ mod tests {
     }
 
     /// First tick emits an event for each tunnel (no previous bookmark).
+    /// The emitted event must use the lowercase wire name (tunnel_status_changed).
     #[test]
     fn first_tick_emits_tunnel_event() {
         let (tx, rx) = mpsc::channel();
@@ -243,7 +242,17 @@ mod tests {
 
         let msg = rx.try_recv().expect("expected event on first tick");
         assert!(msg.contains("nb"), "event should mention tunnel name");
-        assert!(msg.contains(EVENT_TUNNEL_STATUS_CHANGED));
+        // Wire protocol requires lowercase event name.
+        assert!(
+            msg.contains(Event::TunnelStatusChanged.as_str()),
+            "expected lowercase '{}' in: {msg}",
+            Event::TunnelStatusChanged.as_str()
+        );
+        // Must NOT contain the old UPPERCASE name.
+        assert!(
+            !msg.contains("TUNNEL_STATUS_CHANGED"),
+            "must not emit UPPERCASE event name, got: {msg}"
+        );
     }
 
     /// Second tick with unchanged state emits NO event.
@@ -316,7 +325,7 @@ mod tests {
         assert!(msg.contains("removed"), "expected 'removed' in event: {msg}");
     }
 
-    /// Host changes are also detected.
+    /// Host changes are also detected; event name must be lowercase on the wire.
     #[test]
     fn host_status_change_emits_event() {
         let (tx, rx) = mpsc::channel();
@@ -332,7 +341,38 @@ mod tests {
         run_tick(&state);
 
         let msg = rx.try_recv().expect("expected host event");
-        assert!(msg.contains(EVENT_HOST_STATUS_CHANGED), "got: {msg}");
+        assert!(
+            msg.contains(Event::HostStatusChanged.as_str()),
+            "expected lowercase '{}' in: {msg}",
+            Event::HostStatusChanged.as_str()
+        );
+        assert!(
+            !msg.contains("HOST_STATUS_CHANGED"),
+            "must not emit UPPERCASE event name, got: {msg}"
+        );
+    }
+
+    /// Emitted JSON must have the shape: {"event":"tunnel_status_changed","data":{...}}\n
+    #[test]
+    fn emitted_event_json_shape_is_correct() {
+        let (tx, rx) = mpsc::channel();
+        let mut inner = State::with_tunnels(vec![make_tunnel("myconn", TunnelStatus::Idle)]);
+        inner.subscribe(tx);
+        let state = Mutex::new(inner);
+
+        run_tick(&state);
+
+        let msg = rx.try_recv().expect("expected event");
+        // Wire protocol: must end with newline for framing.
+        assert!(msg.ends_with('\n'), "event line must be newline-terminated: {msg:?}");
+        let v: serde_json::Value =
+            serde_json::from_str(msg.trim_end()).expect("event must be valid JSON");
+        assert_eq!(
+            v["event"].as_str().unwrap(),
+            "tunnel_status_changed",
+            "event field must be lowercase: {msg}"
+        );
+        assert!(v["data"].is_object(), "data field must be an object: {msg}");
     }
 
     /// last_msg change on a host must NOT emit an event.

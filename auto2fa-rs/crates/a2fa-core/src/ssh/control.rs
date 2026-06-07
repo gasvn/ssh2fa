@@ -5,8 +5,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use log::{info, warn};
+
+/// Maximum time to wait for `ssh -O check` to respond.
+///
+/// A wedged control socket can hang the call indefinitely; we cap it at 5 s
+/// and treat timeout as "master not alive".
+const MASTER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // ControlPath scheme
@@ -90,8 +97,12 @@ pub fn remove_symlink(host: &str) {
 /// This is the *local* check used by the heartbeat — it does NOT send a
 /// network round-trip; it just asks the local ControlMaster process for
 /// its status. Normally returns in milliseconds.
+///
+/// A [`MASTER_CHECK_TIMEOUT`] (5 s) is enforced: if the child has not exited
+/// within that window (e.g. wedged control socket), the process is killed and
+/// `false` is returned. This prevents the tick thread from hanging forever.
 pub fn master_check(control_path: &Path, host: &str) -> bool {
-    let status = Command::new("ssh")
+    let mut child = match Command::new("ssh")
         .args([
             "-O",
             "check",
@@ -101,9 +112,35 @@ pub fn master_check(control_path: &Path, host: &str) -> bool {
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[{host}] ssh -O check spawn failed: {e}");
+            return false;
+        }
+    };
 
-    matches!(status, Ok(s) if s.success())
+    let deadline = Instant::now() + MASTER_CHECK_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    warn!("[{host}] ssh -O check timed out after {MASTER_CHECK_TIMEOUT:?} — killing");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                warn!("[{host}] ssh -O check wait error: {e}");
+                let _ = child.kill();
+                return false;
+            }
+        }
+    }
 }
 
 /// Send `ssh -O exit` to cleanly shut down the ControlMaster for a pool slot.
@@ -210,5 +247,22 @@ mod tests {
     #[test]
     fn control_path_different_hosts_differ() {
         assert_ne!(control_path("k6", 0), control_path("cannon", 0));
+    }
+
+    /// `master_check` with a bogus (non-existent) control socket must return
+    /// `false` quickly — well within the 5 s timeout.
+    #[test]
+    fn master_check_bogus_path_returns_false_quickly() {
+        use std::time::Instant;
+        let bogus = std::path::Path::new("/tmp/bogus-auto2fa-test-socket-does-not-exist");
+        let t0 = Instant::now();
+        let result = master_check(bogus, "localhost");
+        let elapsed = t0.elapsed();
+        assert!(!result, "bogus path must return false");
+        // ssh -O check fails immediately for a missing socket — must be << 5 s.
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "master_check took too long: {elapsed:?}"
+        );
     }
 }
