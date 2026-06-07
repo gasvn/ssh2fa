@@ -303,11 +303,39 @@ fn run_squeue_check(
     // trigger multiple concurrent checks.
     runtime.with_rt_mut(name, |r| r.last_squeue_check_ts = now);
 
+    // A down tunnel has no active_jump, so pick a ready jump host the same way
+    // recovery does (see `do_tunnel_start`): the first ready host matching the
+    // tunnel's jump_candidates, or any ready host if candidates is None.  This
+    // lets us run a squeue check even while the tunnel is down, so we can notice
+    // its node has ended instead of recovering against it forever.
     let jump = match &snap.active_jump {
         Some(j) => j.clone(),
         None => {
-            warn!("[tunnel:{name}] squeue check: no active_jump");
-            return;
+            let guard = state.lock().unwrap();
+            let candidates = guard
+                .tunnels
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.jump_candidates.clone());
+            let picked = guard
+                .hosts
+                .iter()
+                .find(|h| {
+                    h.is_master_ready
+                        && match &candidates {
+                            Some(cs) => cs.contains(&h.host),
+                            None => true,
+                        }
+                })
+                .map(|h| h.host.clone());
+            drop(guard);
+            match picked {
+                Some(j) => j,
+                None => {
+                    info!("[tunnel:{name}] squeue check: no ready jump, skipping");
+                    return;
+                }
+            }
         }
     };
 
@@ -367,15 +395,28 @@ fn run_squeue_check(
     );
 
     if misses >= STALE_MISS_THRESHOLD {
-        // Re-check child identity + status under the lock before terminating
-        // (mirrors Python's per-tunnel lock re-check).
+        // Re-check status under the lock before marking stale (mirrors Python's
+        // per-tunnel lock re-check).  Mark stale when the tunnel is currently
+        // Alive (the original case) OR when it is down but still wants to be
+        // alive — i.e. it is stuck in the recover loop against a node that has
+        // left squeue.  Marking it Stale stops that futile loop (the new
+        // `tunnel_action` Stale arm returns Skip).
         let should_mark_stale = {
             let guard = state.lock().unwrap();
             guard
                 .tunnels
                 .iter()
                 .find(|t| t.name == name)
-                .map(|t| t.status == TunnelStatus::Alive)
+                .map(|t| {
+                    t.status == TunnelStatus::Alive
+                        || (t.wants_alive
+                            && matches!(
+                                t.status,
+                                TunnelStatus::Idle
+                                    | TunnelStatus::Failed
+                                    | TunnelStatus::PortBusy
+                            ))
+                })
                 .unwrap_or(false)
         };
 

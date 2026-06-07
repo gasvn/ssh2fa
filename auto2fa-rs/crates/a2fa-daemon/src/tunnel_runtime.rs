@@ -357,9 +357,21 @@ pub fn tunnel_action(
     use TunnelStatusKind::*;
 
     match status {
-        // --- Tunnel wants to be alive but isn't ---
-        Idle | Failed | Stale | PortBusy if wants_alive => {
-            if now - last_recovery_ts >= AUTO_RECOVERY_INTERVAL_SEC {
+        // --- Stale + wants_alive: node confirmed gone from squeue ---
+        // Stop the futile recover loop.  The tunnel stays Stale until the user
+        // repicks a node (which restarts it).  Recovering would just churn
+        // against a node that no longer exists.
+        Stale if wants_alive => TunnelAction::Skip,
+
+        // --- Tunnel wants to be alive but isn't (down) ---
+        // Prioritise a due squeue check so we can detect a node that left
+        // squeue even while the tunnel is down — otherwise a Failed tunnel
+        // would recover forever and never notice its node ended.  Otherwise
+        // fall back to a throttled recovery attempt.
+        Idle | Failed | PortBusy if wants_alive => {
+            if now - last_squeue_ts >= SQUEUE_INTERVAL_SEC {
+                TunnelAction::SqueueCheck
+            } else if now - last_recovery_ts >= AUTO_RECOVERY_INTERVAL_SEC {
                 TunnelAction::Recover
             } else {
                 TunnelAction::Skip
@@ -422,7 +434,8 @@ mod tests {
     // ---- tunnel_action: Case 0 — auto-recovery --------------------------
 
     #[test]
-    fn wants_alive_idle_throttle_elapsed_gives_recover() {
+    fn wants_alive_idle_recovery_due_squeue_not_due_gives_recover() {
+        let recent_squeue = NOW - 5.0; // squeue not due → recovery wins
         let action = tunnel_action(
             TunnelStatusKind::Idle,
             /*wants_alive=*/ true,
@@ -430,60 +443,116 @@ mod tests {
             /*port_bound=*/ false,
             None,
             /*last_recovery_ts=*/ OLD,
-            OLD,
+            /*last_squeue_ts=*/ recent_squeue,
             NOW,
         );
         assert_eq!(action, TunnelAction::Recover);
     }
 
     #[test]
-    fn wants_alive_failed_throttle_elapsed_gives_recover() {
+    fn wants_alive_idle_squeue_due_gives_squeue_check() {
+        // When squeue is due it takes priority over recovery for a down tunnel.
         let action = tunnel_action(
-            TunnelStatusKind::Failed,
-            true,
+            TunnelStatusKind::Idle,
+            /*wants_alive=*/ true,
             None,
             false,
             None,
-            OLD,
-            OLD,
+            /*last_recovery_ts=*/ OLD,
+            /*last_squeue_ts=*/ OLD, // due
             NOW,
         );
-        assert_eq!(action, TunnelAction::Recover);
+        assert_eq!(action, TunnelAction::SqueueCheck);
     }
 
     #[test]
-    fn wants_alive_stale_throttle_elapsed_gives_recover() {
+    fn wants_alive_stale_gives_skip_not_recover() {
+        // Regression guard: a Stale tunnel whose node is confirmed gone must
+        // NOT keep recovering forever.  Even with both throttles elapsed it
+        // must Skip (waiting for the user to repick a node).
         let action = tunnel_action(
             TunnelStatusKind::Stale,
-            true,
+            /*wants_alive=*/ true,
             None,
             false,
             None,
-            OLD,
-            OLD,
+            /*last_recovery_ts=*/ OLD,
+            /*last_squeue_ts=*/ OLD,
             NOW,
         );
-        assert_eq!(action, TunnelAction::Recover);
+        assert_eq!(action, TunnelAction::Skip);
     }
 
     #[test]
-    fn wants_alive_port_busy_throttle_elapsed_gives_recover() {
+    fn wants_alive_port_busy_squeue_not_due_recovery_due_gives_recover() {
+        let recent_squeue = NOW - 5.0; // squeue checked recently → not due
         let action = tunnel_action(
             TunnelStatusKind::PortBusy,
             true,
             None,
             false,
             None,
-            OLD,
-            OLD,
+            /*last_recovery_ts=*/ OLD,
+            /*last_squeue_ts=*/ recent_squeue,
+            NOW,
+        );
+        assert_eq!(action, TunnelAction::Recover);
+    }
+
+    // ---- tunnel_action: DOWN tunnels now run squeue checks --------------
+
+    #[test]
+    fn wants_alive_failed_squeue_due_gives_squeue_check() {
+        // The key fix: a down (Failed) tunnel that wants to be alive must run
+        // a squeue check when one is due, so it can detect its node ended.
+        let action = tunnel_action(
+            TunnelStatusKind::Failed,
+            /*wants_alive=*/ true,
+            None,
+            false,
+            None,
+            /*last_recovery_ts=*/ OLD,
+            /*last_squeue_ts=*/ OLD, // squeue due
+            NOW,
+        );
+        assert_eq!(action, TunnelAction::SqueueCheck);
+    }
+
+    #[test]
+    fn wants_alive_failed_squeue_not_due_recovery_due_gives_recover() {
+        let recent_squeue = NOW - 5.0; // not due (threshold 30 s)
+        let action = tunnel_action(
+            TunnelStatusKind::Failed,
+            /*wants_alive=*/ true,
+            None,
+            false,
+            None,
+            /*last_recovery_ts=*/ OLD, // recovery due
+            /*last_squeue_ts=*/ recent_squeue,
             NOW,
         );
         assert_eq!(action, TunnelAction::Recover);
     }
 
     #[test]
+    fn wants_alive_failed_both_throttled_gives_skip() {
+        let recent = NOW - 5.0; // both within their thresholds
+        let action = tunnel_action(
+            TunnelStatusKind::Failed,
+            /*wants_alive=*/ true,
+            None,
+            false,
+            None,
+            /*last_recovery_ts=*/ recent,
+            /*last_squeue_ts=*/ recent,
+            NOW,
+        );
+        assert_eq!(action, TunnelAction::Skip);
+    }
+
+    #[test]
     fn wants_alive_idle_throttle_not_elapsed_gives_skip() {
-        let recent = NOW - 5.0; // only 5 s ago, threshold is 15 s
+        let recent = NOW - 5.0; // both throttles within their thresholds
         let action = tunnel_action(
             TunnelStatusKind::Idle,
             true,
@@ -491,7 +560,7 @@ mod tests {
             false,
             None,
             /*last_recovery_ts=*/ recent,
-            OLD,
+            /*last_squeue_ts=*/ recent,
             NOW,
         );
         assert_eq!(action, TunnelAction::Skip);
