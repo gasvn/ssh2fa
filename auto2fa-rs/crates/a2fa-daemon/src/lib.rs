@@ -6,6 +6,7 @@
 
 pub mod dispatch;
 pub mod handlers;
+pub mod log_rotation;
 pub mod managers;
 pub mod server;
 pub mod singleton;

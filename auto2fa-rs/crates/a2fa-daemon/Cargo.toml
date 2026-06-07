@@ -18,6 +18,7 @@ serde_json.workspace = true
 log.workspace = true
 simplelog.workspace = true
 fs2 = "0.4"
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"

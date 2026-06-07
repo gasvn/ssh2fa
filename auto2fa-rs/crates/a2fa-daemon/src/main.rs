@@ -6,6 +6,9 @@ use simplelog::{Config, LevelFilter, WriteLogger};
 use std::fs::OpenOptions;
 
 fn main() {
+    // Rotate the log before the logger opens the file (mirrors daemon.py).
+    a2fa_daemon::log_rotation::rotate_daemon_log();
+
     // Log to /tmp/auto2fa_daemon.log (append mode, matching daemon.py).
     let log_file = OpenOptions::new()
         .create(true)
