@@ -378,6 +378,149 @@ pub fn spawn_managed_start(
 }
 
 // ---------------------------------------------------------------------------
+// spawn_master_rebuild — single-thread stop-then-start (force rebuild)
+// ---------------------------------------------------------------------------
+
+/// Spawn ONE thread that force-rebuilds a host's master: tear down every slot,
+/// then bring slot 0 back up — guaranteeing stop-before-start within a single
+/// thread (mirrors Python `force_master_rebuild`).
+///
+/// Lock discipline: both the managers map lock and the engine `State` lock are
+/// fully released across all blocking ssh I/O (`stop_all`, `start_master`).
+/// The pattern is snapshot → off-lock I/O → write_back, repeated for the stop
+/// and start phases.
+pub fn spawn_master_rebuild(
+    host_name: String,
+    password: String,
+    secret: String,
+    registry: Arc<OtpRegistry>,
+    state: Arc<Mutex<State>>,
+    managers: Arc<HostManagers>,
+) {
+    std::thread::Builder::new()
+        .name(format!("master-rebuild:{host_name}"))
+        .spawn(move || {
+            // --- Phase 1: stop every slot (off-lock) ---
+            let mut pool = managers.snapshot(&host_name);
+            pool.reset_circuit_breakers();
+            info!("[{host_name}] master-rebuild: stopping all slots");
+            stop_all(&mut pool);
+            managers.write_back(&host_name, &pool);
+
+            // Reflect the torn-down state in engine State immediately so the UI
+            // doesn't show a stale "Connected" while the rebuild is in flight.
+            {
+                let mut guard = state.lock().unwrap();
+                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                    h.is_master_ready = false;
+                    h.pool_alive = 0;
+                    h.status = "Reconnecting".into();
+                    h.last_msg = "Master rebuild in progress".into();
+                }
+            }
+
+            // --- Phase 2: start slot 0 fresh (off-lock) ---
+            let mut pool = managers.snapshot(&host_name);
+            let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
+            info!("[{host_name}] master-rebuild: starting slot 0");
+            let ready = start_master(&mut pool, 0, &password, otp_closure);
+            managers.write_back(&host_name, &pool);
+
+            // --- Phase 3: update engine State (mirrors spawn_managed_start) ---
+            let mut guard = state.lock().unwrap();
+            if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                if ready {
+                    h.is_master_ready = true;
+                    h.pool_alive = 1;
+                    h.pool_index = 0;
+                    h.status = "Connected".into();
+                    h.last_msg = "Master rebuilt (slot 0 ready)".into();
+                    info!("[{host_name}] master-rebuild: slot 0 Ready — State updated");
+                } else {
+                    h.is_master_ready = false;
+                    h.status = if pool.in_cooldown() {
+                        "Cooldown".into()
+                    } else {
+                        "Failed".into()
+                    };
+                    h.last_msg = "Master rebuild failed (slot 0)".into();
+                    warn!("[{host_name}] master-rebuild: slot 0 failed — State updated");
+                }
+            }
+        })
+        .expect("failed to spawn master-rebuild thread");
+}
+
+/// Force-rebuild the masters for every host in `hosts` that is `active` in
+/// `State`.  Loads credentials per host (same path as `boot_autostart`) and
+/// kicks off one [`spawn_master_rebuild`] thread per host.
+///
+/// Returns the number of rebuilds actually kicked off (i.e. hosts that were
+/// both requested AND currently active).
+pub fn rebuild_masters(
+    hosts: &[String],
+    state: &Arc<Mutex<State>>,
+    managers: &Arc<HostManagers>,
+    registry: &Arc<OtpRegistry>,
+) -> usize {
+    use a2fa_core::creds::keychain::KeychainStore;
+    use a2fa_core::creds::{get_otpauth, get_password};
+    use a2fa_core::totp::extract_secret;
+
+    // Filter the requested hosts down to those currently active (brief lock).
+    let to_rebuild: Vec<String> = {
+        let guard = state.lock().unwrap();
+        hosts
+            .iter()
+            .filter(|name| {
+                guard
+                    .hosts
+                    .iter()
+                    .any(|h| &&h.host == name && h.active)
+            })
+            .cloned()
+            .collect()
+    };
+
+    let mut count = 0;
+    for host_name in to_rebuild {
+        let ks = KeychainStore;
+        let password = get_password(&ks, &host_name)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let otpauth = get_otpauth(&ks, &host_name)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let secret = extract_secret(&otpauth).unwrap_or_default();
+
+        info!("[{host_name}] rebuild_masters: spawning master rebuild");
+        spawn_master_rebuild(
+            host_name,
+            password,
+            secret,
+            Arc::clone(registry),
+            Arc::clone(state),
+            Arc::clone(managers),
+        );
+        count += 1;
+    }
+    count
+}
+
+/// Return the names of every host currently `active` in `State`.
+pub fn active_host_names(state: &Arc<Mutex<State>>) -> Vec<String> {
+    let guard = state.lock().unwrap();
+    guard
+        .hosts
+        .iter()
+        .filter(|h| h.active)
+        .map(|h| h.host.clone())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // spawn_managed_stop — stop_all on the persistent PoolState
 // ---------------------------------------------------------------------------
 
@@ -1009,5 +1152,69 @@ mod tests {
         // slot_status[0] == Init by default
         let action = next_action(&pool, 0, true, None, Instant::now());
         assert_eq!(action, MaintenanceAction::Healthy);
+    }
+
+    // -----------------------------------------------------------------------
+    // active_host_names / rebuild_masters — pure selection logic (no ssh I/O)
+    // -----------------------------------------------------------------------
+
+    use a2fa_core::model::Host;
+
+    fn host(name: &str, active: bool) -> Host {
+        Host {
+            host: name.into(),
+            status: "Idle".into(),
+            active,
+            is_master_ready: false,
+            pool_index: 0,
+            pool_alive: 0,
+            is_mounted: false,
+            last_msg: String::new(),
+        }
+    }
+
+    fn state_with_hosts(hosts: Vec<Host>) -> Arc<Mutex<State>> {
+        let mut s = State::with_tunnels(vec![]);
+        s.hosts = hosts;
+        Arc::new(Mutex::new(s))
+    }
+
+    #[test]
+    fn active_host_names_returns_only_active() {
+        let state = state_with_hosts(vec![
+            host("k6", true),
+            host("cannon", false),
+            host("holy", true),
+        ]);
+        let names = active_host_names(&state);
+        assert_eq!(names, vec!["k6".to_string(), "holy".to_string()]);
+    }
+
+    #[test]
+    fn active_host_names_empty_when_no_hosts() {
+        let state = state_with_hosts(vec![]);
+        assert!(active_host_names(&state).is_empty());
+    }
+
+    /// `rebuild_masters` with an empty host list must do nothing and return 0
+    /// (no ssh, no panic).
+    #[test]
+    fn rebuild_masters_empty_list_returns_zero() {
+        let state = state_with_hosts(vec![host("k6", true)]);
+        let managers = HostManagers::new();
+        let registry = OtpRegistry::new();
+        let n = rebuild_masters(&[], &state, &managers, &registry);
+        assert_eq!(n, 0);
+    }
+
+    /// `rebuild_masters` filters out inactive hosts — passing an inactive host
+    /// name kicks off nothing.
+    #[test]
+    fn rebuild_masters_filters_inactive_hosts() {
+        let state = state_with_hosts(vec![host("cannon", false)]);
+        let managers = HostManagers::new();
+        let registry = OtpRegistry::new();
+        let n = rebuild_masters(&["cannon".to_string()], &state, &managers, &registry);
+        assert_eq!(n, 0, "inactive host must not be rebuilt");
     }
 }

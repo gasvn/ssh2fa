@@ -167,8 +167,8 @@ fn route_with_ctx(
         // --- System / utility ---
         Method::Ping              => hosts::ping(state),
         Method::LogTail           => system::log_tail(state, params),
-        Method::WakeRecover       => system::wake_recover(state, params),
-        Method::ResetAll          => system::reset_all(state, params),
+        Method::WakeRecover       => system::wake_recover(ctx, params),
+        Method::ResetAll          => system::reset_all(ctx, params),
         Method::SubscribeEvents   => Ok(system::subscribe_events_ack()),
 
         // --- Hosts ---
