@@ -30,12 +30,28 @@
 //! * `alive_since` — Option<f64>.  Set when the tunnel enters Alive; folded
 //!   into `total_uptime_sec` when it leaves Alive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 
 use a2fa_core::tunnels::forward::stop_forward;
 use log::{info, warn};
+
+// ---------------------------------------------------------------------------
+// Event ring buffer
+// ---------------------------------------------------------------------------
+
+/// Maximum number of events retained per tunnel (mirrors Python EVENT_BUFFER_LIMIT = 200).
+pub const EVENT_BUFFER_LIMIT: usize = 200;
+
+/// A single status-transition event recorded at runtime.
+#[derive(Debug, Clone)]
+pub struct TunnelEvent {
+    /// Unix timestamp (seconds, floating-point) when this event was recorded.
+    pub ts: f64,
+    /// Human-readable description of the transition.
+    pub msg: String,
+}
 
 // ---------------------------------------------------------------------------
 // Per-tunnel runtime counters
@@ -104,6 +120,8 @@ struct RuntimeInner {
     children: HashMap<String, Child>,
     /// Per-tunnel throttle / uptime counters, keyed by tunnel name.
     rt: HashMap<String, TunnelRtState>,
+    /// Per-tunnel status-transition event ring buffers, keyed by tunnel name.
+    events: HashMap<String, VecDeque<TunnelEvent>>,
     /// Unix timestamp when the daemon started.  `0.0` = not yet set.
     pub startup_ts: f64,
     /// Whether the one-shot boot auto-start has already fired.
@@ -201,6 +219,34 @@ impl TunnelRuntime {
             stop_forward(child);
         }
         inner.rt.remove(name);
+        inner.events.remove(name);
+    }
+
+    // ---- Event ring buffer ---------------------------------------------
+
+    /// Record a status-transition event for `name`.
+    ///
+    /// Appends `{ts, msg}` to the tunnel's deque and trims the front so the
+    /// buffer never exceeds [`EVENT_BUFFER_LIMIT`] entries (oldest dropped).
+    pub fn record(&self, name: &str, ts: f64, msg: impl Into<String>) {
+        let event = TunnelEvent { ts, msg: msg.into() };
+        let mut inner = self.inner.lock().unwrap();
+        let deque = inner.events.entry(name.to_owned()).or_default();
+        deque.push_back(event);
+        while deque.len() > EVENT_BUFFER_LIMIT {
+            deque.pop_front();
+        }
+    }
+
+    /// Return the recorded events for `name` as a `Vec` (oldest → newest).
+    ///
+    /// Returns an empty `Vec` if no events have been recorded for this tunnel.
+    pub fn events(&self, name: &str) -> Vec<TunnelEvent> {
+        let inner = self.inner.lock().unwrap();
+        match inner.events.get(name) {
+            Some(deque) => deque.iter().cloned().collect(),
+            None => vec![],
+        }
     }
 
     /// Kill every registered `ssh -L` child and drain the children map.
@@ -719,5 +765,68 @@ mod tests {
 
         assert!(rt.take_child("nb").is_none());
         assert!(rt.with_rt("nb", |_| ()).is_none());
+    }
+
+    // ---- Event ring buffer -----------------------------------------------------
+
+    #[test]
+    fn event_record_and_events_round_trip_in_order() {
+        let rt = TunnelRuntime::new();
+        rt.record("t1", 1000.0, "connected");
+        rt.record("t1", 1001.0, "probe ok");
+        rt.record("t1", 1002.0, "alive");
+
+        let evs = rt.events("t1");
+        assert_eq!(evs.len(), 3);
+        assert_eq!(evs[0].msg, "connected");
+        assert_eq!(evs[0].ts, 1000.0);
+        assert_eq!(evs[1].msg, "probe ok");
+        assert_eq!(evs[2].msg, "alive");
+        assert_eq!(evs[2].ts, 1002.0);
+    }
+
+    #[test]
+    fn event_buffer_trims_to_limit_keeping_newest() {
+        let rt = TunnelRuntime::new();
+        for i in 0..250u32 {
+            rt.record("t2", i as f64, format!("event-{i}"));
+        }
+        let evs = rt.events("t2");
+        assert_eq!(evs.len(), EVENT_BUFFER_LIMIT, "buffer must be capped at EVENT_BUFFER_LIMIT");
+        // The oldest 50 events (0..50) must have been dropped; newest 200 (50..250) retained.
+        assert_eq!(evs[0].msg, "event-50", "oldest retained event should be event-50");
+        assert_eq!(evs[199].msg, "event-249", "newest event should be event-249");
+    }
+
+    #[test]
+    fn events_on_unknown_tunnel_returns_empty_vec() {
+        let rt = TunnelRuntime::new();
+        let evs = rt.events("ghost");
+        assert!(evs.is_empty(), "events() for unknown tunnel must be empty");
+    }
+
+    #[test]
+    fn remove_clears_event_buffer() {
+        use std::process::Command;
+        let rt = TunnelRuntime::new();
+
+        // Record some events.
+        rt.record("t3", 100.0, "started");
+        rt.record("t3", 101.0, "alive");
+        assert_eq!(rt.events("t3").len(), 2);
+
+        // Spawn a child so remove() has something to kill.
+        let child = Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn sleep");
+        rt.store_child("t3", child);
+
+        rt.remove("t3");
+
+        assert!(rt.events("t3").is_empty(), "remove() must clear the event buffer");
     }
 }

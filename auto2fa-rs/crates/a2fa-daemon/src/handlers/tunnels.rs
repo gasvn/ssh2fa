@@ -782,21 +782,35 @@ pub fn tunnels_batch(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
 // tunnel_events
 // ---------------------------------------------------------------------------
 
-pub fn tunnel_events(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_events(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?;
 
-    let guard = state.lock().unwrap();
-    guard
-        .tunnels
-        .iter()
-        .find(|t| t.name == name)
-        .ok_or_else(|| Error::NotFound(name.to_owned()))?;
+    // Validate tunnel exists.
+    {
+        let guard = state.lock().unwrap();
+        guard
+            .tunnels
+            .iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| Error::NotFound(name.to_owned()))?;
+    }
 
-    // The Rust Tunnel model doesn't yet carry a ring-buffer of events; return
-    // an empty list (matches the shape from daemon.py).
-    Ok(json!({ "events": [] }))
+    let events: Vec<Value> = match runtime {
+        Some(rt) => rt
+            .events(name)
+            .into_iter()
+            .map(|e| json!({"ts": e.ts, "msg": e.msg}))
+            .collect(),
+        None => vec![],
+    };
+
+    Ok(json!({ "events": events }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,6 +1257,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["tags"], json!(["ml", "gpu"]));
+    }
+
+    // ---- tunnel_events -------------------------------------------------
+
+    #[test]
+    fn tunnel_events_unknown_tunnel_returns_not_found() {
+        let state = make_state();
+        let err = tunnel_events(&state, &json!({"name": "ghost"}), None).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn tunnel_events_no_runtime_returns_empty_events() {
+        let state = make_state_with_tunnel("nb", 9900);
+        let v = tunnel_events(&state, &json!({"name": "nb"}), None).unwrap();
+        let evs = v["events"].as_array().unwrap();
+        assert!(evs.is_empty());
+    }
+
+    #[test]
+    fn tunnel_events_with_runtime_returns_recorded_events() {
+        use crate::tunnel_runtime::TunnelRuntime;
+
+        let state = make_state_with_tunnel("nb", 9901);
+        let rt = TunnelRuntime::new();
+        rt.record("nb", 1000.0, "connected");
+        rt.record("nb", 1001.0, "alive");
+
+        let v = tunnel_events(&state, &json!({"name": "nb"}), Some(Arc::clone(&rt))).unwrap();
+        let evs = v["events"].as_array().unwrap();
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0]["ts"], 1000.0);
+        assert_eq!(evs[0]["msg"], "connected");
+        assert_eq!(evs[1]["ts"], 1001.0);
+        assert_eq!(evs[1]["msg"], "alive");
     }
 
     // ---- tunnels_batch -------------------------------------------------

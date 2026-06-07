@@ -337,10 +337,15 @@ fn spawn_tunnel_start_inner(
                 Ok(c) => c,
                 Err(e) => {
                     warn!("[tunnel:{name}] spawn failed: {e}");
+                    let msg = format!("spawn failed: {e}");
+                    if let Some(rt) = &runtime {
+                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                        rt.record(&name, ts, &msg);
+                    }
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = format!("spawn failed: {e}");
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                     return;
@@ -360,6 +365,7 @@ fn spawn_tunnel_start_inner(
                     if let Some(rt) = &runtime {
                         rt.store_child(&name, child);
                         rt.with_rt_mut(&name, |r| r.alive_since = Some(now));
+                        rt.record(&name, now, format!("connected via {jump} → {node}:{remote_port}"));
                     }
 
                     let mut guard = state.lock().unwrap();
@@ -397,6 +403,10 @@ fn spawn_tunnel_start_inner(
                 }
                 Ok((false, _child)) => {
                     warn!("[tunnel:{name}] probe timed out");
+                    if let Some(rt) = &runtime {
+                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                        rt.record(&name, ts, "probe timed out");
+                    }
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
@@ -407,11 +417,16 @@ fn spawn_tunnel_start_inner(
                 }
                 Err(e) => {
                     warn!("[tunnel:{name}] probe error: {e}");
+                    let msg = format!("probe error: {e}");
+                    if let Some(rt) = &runtime {
+                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                        rt.record(&name, ts, &msg);
+                    }
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = format!("probe error: {e}");
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                 }

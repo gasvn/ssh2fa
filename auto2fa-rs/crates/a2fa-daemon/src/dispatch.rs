@@ -184,7 +184,7 @@ fn route_with_ctx(
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),
         Method::PortSuggest       => tunnels::port_suggest(state, params),
-        Method::TunnelEvents      => tunnels::tunnel_events(state, params),
+        Method::TunnelEvents      => tunnels::tunnel_events(state, params, Some(Arc::clone(&ctx.runtime))),
 
         // --- Tunnels (write/persist) ---
         Method::TunnelAdd         => tunnels::tunnel_add(state, params),
@@ -349,5 +349,25 @@ mod tests {
         let resp = dispatch(&state, line);
         let v = parse_result(&resp);
         assert!(v["result"]["port"].as_u64().unwrap() >= 1024);
+    }
+
+    #[test]
+    fn tunnel_events_dispatch_returns_events_shape() {
+        let state = state_with_tunnel("nb", 9902);
+        let line = b"{\"id\":\"ev1\",\"method\":\"tunnel_events\",\"params\":{\"name\":\"nb\"}}\n";
+        let resp = dispatch(&state, line);
+        let v = parse_result(&resp);
+        // Must have result.events as an array (empty since the legacy dispatch path
+        // creates a fresh TunnelRuntime with no recorded events).
+        assert!(v["result"]["events"].as_array().is_some(), "tunnel_events must return {{events:[...]}}");
+    }
+
+    #[test]
+    fn tunnel_events_dispatch_unknown_tunnel_returns_not_found() {
+        let state = empty_state();
+        let line = b"{\"id\":\"ev2\",\"method\":\"tunnel_events\",\"params\":{\"name\":\"ghost\"}}\n";
+        let resp = dispatch(&state, line);
+        let v = parse_result(&resp);
+        assert_eq!(v["error"]["code"], "not_found");
     }
 }

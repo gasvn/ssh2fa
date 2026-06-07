@@ -214,6 +214,7 @@ fn process_tunnel(
                 "port not bound (ghost alive)"
             };
             warn!("[tunnel:{name}] {reason}, respawning");
+            runtime.record(name, now, reason);
             // Accumulate uptime before marking non-alive.
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
@@ -228,6 +229,7 @@ fn process_tunnel(
                 "[tunnel:{name}] jump {:?} disabled, stopping",
                 snap.active_jump
             );
+            runtime.record(name, now, "jump disabled");
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
             mark_tunnel_idle(name, state, /*wants_alive_stays=*/ false, "jump disabled");
@@ -381,6 +383,7 @@ fn run_squeue_check(
             info!(
                 "[tunnel:{name}] node {node} gone from squeue, marking stale"
             );
+            runtime.record(name, now, "compute node ended");
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
 
@@ -602,11 +605,13 @@ fn spawn_tunnel_start_with_runtime(
                 Ok(c) => c,
                 Err(e) => {
                     warn!("[tunnel:{name}] maintenance: spawn failed: {e}");
+                    let msg = format!("spawn failed: {e}");
+                    runtime.record(&name, now_unix(), &msg);
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = format!("spawn failed: {e}");
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                     return;
@@ -623,6 +628,9 @@ fn spawn_tunnel_start_with_runtime(
 
                     // Set alive_since in the runtime.
                     runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));
+
+                    // Record connect event.
+                    runtime.record(&name, now, format!("connected via {jump} → {node}:{remote_port}"));
 
                     // Update State.
                     {
@@ -657,6 +665,7 @@ fn spawn_tunnel_start_with_runtime(
                 }
                 Ok((false, _child)) => {
                     warn!("[tunnel:{name}] maintenance: probe timed out");
+                    runtime.record(&name, now_unix(), "probe timed out");
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
@@ -667,11 +676,13 @@ fn spawn_tunnel_start_with_runtime(
                 }
                 Err(e) => {
                     warn!("[tunnel:{name}] maintenance: probe error: {e}");
+                    let msg = format!("probe error: {e}");
+                    runtime.record(&name, now_unix(), &msg);
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = format!("probe error: {e}");
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                 }
