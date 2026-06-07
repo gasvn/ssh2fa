@@ -120,7 +120,11 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
             "squeue",
             "-h",
             "-o",
-            "%i|%P|%j|%T|%M|%R",
+            // Single-quote the format so the REMOTE shell treats it as ONE
+            // token. ssh concatenates argv with spaces and the remote shell
+            // re-parses it; without quotes the `|` separators become shell
+            // pipes (observed live: `bash: %T: command not found`).
+            "'%i|%P|%j|%T|%M|%R'",
         ])
         .output()
         .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
@@ -163,7 +167,11 @@ pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) ->
             "squeue",
             "-h",
             "-o",
-            "%i|%P|%j|%T|%M|%R",
+            // Single-quote the format so the REMOTE shell treats it as ONE
+            // token. ssh concatenates argv with spaces and the remote shell
+            // re-parses it; without quotes the `|` separators become shell
+            // pipes (observed live: `bash: %T: command not found`).
+            "'%i|%P|%j|%T|%M|%R'",
         ])
         .output()
         .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
