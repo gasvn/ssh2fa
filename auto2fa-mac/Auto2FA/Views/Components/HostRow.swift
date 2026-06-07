@@ -1,13 +1,14 @@
 import SwiftUI
 
-/// Two-line, native-minimal row for a single SSH host.
+/// Single-line, dense row for a single SSH host — aligned columns like a
+/// clean compact table.
 ///
-/// Line 1: status badge · alias (mono) · pool pips · mount indicator ·
-///         hover actions (start/stop, mount/eject, rotate, terminal).
-/// Line 2: friendly last message (only when meaningful); tooltip = raw msg.
+/// `[dot] alias  hostname  poolPips  [fsIcon]  [TOTPCodeChip]  <Spacer>  [hover actions]`
 ///
-/// All actions route through the shared `AppState` (same calls as the old
-/// `Table`-based `HostsView`). Presentation only — zero functional change.
+/// The friendly last-message lives in the row's `.help(...)` tooltip so the
+/// row stays one line but the info is still accessible. All actions route
+/// through the shared `AppState` (same calls as before) — presentation only,
+/// zero functional change.
 struct HostRow: View {
     let host: SSHHost
     @EnvironmentObject var appState: AppState
@@ -33,74 +34,74 @@ struct HostRow: View {
         FriendlyText.hostLastMsg(host.lastMsg)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            line1
-            if !isBusy, !friendlyMessage.isEmpty {
-                Text(friendlyMessage)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(host.lastMsg)
-                    .padding(.leading, RowMetric.iconSize + Spacing.xs)
-            }
-        }
-        .padding(.vertical, Spacing.m)
-        .contentShape(Rectangle())
-        .changeHighlight(host.status)
-        .hoverLift(hovering)
-        .onHover { hovering = $0 }
+    /// Tooltip text for the whole row — the friendly last-message (moved off
+    /// the row to keep it single-line), falling back to status.
+    private var rowTooltip: String {
+        let f = friendlyMessage
+        if !f.isEmpty { return f }
+        return FriendlyText.hostStatus(host.status)
     }
 
-    // MARK: - Line 1
-
-    private var line1: some View {
+    var body: some View {
         HStack(spacing: Spacing.s) {
-            // Status: spinner + progress text while busy, else badge.
-            if isBusy {
-                HStack(spacing: Spacing.xs) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: RowMetric.iconSize, height: RowMetric.iconSize)
-                    Text(busyLabel)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .layoutPriority(1)
-            } else {
-                StatusBadge(host: host.displayState,
-                            text: FriendlyText.hostStatus(host.status))
-                    .layoutPriority(1)
-            }
+            // Leading status dot (compact — not the wide pill). Pulses while
+            // busy via the .connecting display state.
+            StatusDot(host: host.displayState)
+                .frame(width: RowMetric.iconSize, height: RowMetric.iconSize)
 
-            // Alias (rounded title, primary).
+            // Alias (rounded title, primary) — fixed-ish leading column so the
+            // following columns line up across rows.
             Text(host.host)
                 .font(.rowTitle)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
+                .frame(minWidth: 56, alignment: .leading)
 
-            // Live 2FA (TOTP) code chip — every host has a 2FA secret. Secondary
-            // to the alias; falls back to a muted lock glyph if unavailable.
-            TOTPCodeChip(host: host.host)
+            // Spinner + progress text while busy, else flexible hostname column.
+            if isBusy {
+                HStack(spacing: Spacing.xs) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
+                        .frame(width: 12, height: 12)
+                    Text(busyLabel)
+                        .font(.rowMeta)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                // Resolved hostname (secondary), flexible column. The model only
+                // carries the alias (`host.host`); there is no separate resolved
+                // name, so this is blank but the column still reserves flexible
+                // width to keep the following columns aligned across rows.
+                Text(hostnameText)
+                    .font(.rowIdentifier)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
-            // Pool pips: poolAlive filled of 2, rest hollow.
+            // Pool pips (filled/hollow) — fixed small.
             if !isBusy {
                 poolPips
             }
 
-            Spacer(minLength: Spacing.s)
-
-            // Mount indicator (green when mounted; hidden otherwise).
+            // Mount indicator (green when mounted; hidden otherwise) — fixed.
             if host.isMounted {
                 Image(systemName: "externaldrive.connected.to.line.below.fill")
+                    .font(.system(size: 11))
                     .foregroundStyle(.green)
                     .help("Remote filesystem mounted")
             }
+
+            // Live 2FA (TOTP) code chip — compact, kept verbatim.
+            TOTPCodeChip(host: host.host)
+
+            Spacer(minLength: Spacing.s)
 
             // Hover actions.
             if hovering {
@@ -108,7 +109,20 @@ struct HostRow: View {
                     .transition(.opacity)
             }
         }
+        .padding(.vertical, 2)
+        .frame(minHeight: RowMetric.minHeight)
+        .contentShape(Rectangle())
+        .help(rowTooltip)
+        .changeHighlight(host.status)
+        .hoverLift(hovering)
+        .onHover { hovering = $0 }
     }
+
+    // MARK: - Hostname column
+
+    /// The resolved hostname, if present. The model only carries `host` (the
+    /// SSH alias), so there is no distinct resolved name to show — blank.
+    private var hostnameText: String { "" }
 
     private var poolPips: some View {
         HStack(spacing: 2) {

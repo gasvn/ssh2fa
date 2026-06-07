@@ -1,15 +1,14 @@
 import SwiftUI
 
-/// Two-line, native-minimal row for a single tunnel.
+/// Single-line, dense row for a single tunnel — aligned columns like a clean
+/// compact table.
 ///
-/// Line 1: status badge · name (mono) + autostart/post-connect glyphs ·
-///         :local→:remote · node · trailing hover actions.
-/// Line 2: aliveSince caption · clickable "via <jump>" menu · fail count ·
-///         tag capsules.
+/// `[dot] name [⚡][🖥]  :local→:remote  node  via  metadata  <Spacer> [hover actions]`
 ///
-/// All actions route through the shared `AppState` — same SF Symbols, same
-/// calls, same disabled logic as the old `Table`-based `TunnelsView`.
-/// Presentation only; zero functional change.
+/// Status (Connected/Idle/etc.) is conveyed by the dot colour + the metadata
+/// (aliveSince), so no wide status pill is needed. All actions route through
+/// the shared `AppState` — same SF Symbols, same calls, same disabled logic as
+/// before. Presentation only; zero functional change.
 struct TunnelRow: View {
     let tunnel: Tunnel
     /// Bindings owned by the parent so context-menu / sheet state stays
@@ -19,6 +18,7 @@ struct TunnelRow: View {
     @Binding var renameDraft: String
 
     @EnvironmentObject var appState: AppState
+    @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @State private var hovering = false
 
     // MARK: - Busy logic (verbatim from old TunnelsView)
@@ -35,53 +35,29 @@ struct TunnelRow: View {
         return msg.isEmpty ? "Working…" : msg
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            line1
-            line2
-        }
-        .padding(.vertical, Spacing.m)
-        .contentShape(Rectangle())
-        // Flash yellow briefly whenever the tunnel's status string changes —
-        // helps the eye catch quick transitions like starting → alive.
-        .changeHighlight(tunnel.status)
-        .hoverLift(hovering)
-        .onHover { hovering = $0 }
+    /// Tooltip for the whole row — the friendly status blurb + raw last message.
+    private var rowTooltip: String {
+        let blurb = FriendlyText.tunnelStatusBlurb(tunnel)
+        let msg = tunnel.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
+        if msg.isEmpty || msg == blurb { return blurb }
+        return "\(blurb)\n\(msg)"
     }
 
-    // MARK: - Line 1
-
-    private var line1: some View {
+    var body: some View {
         HStack(spacing: Spacing.s) {
-            // Status: spinner + progress text while busy, else badge.
-            if isBusy {
-                HStack(spacing: Spacing.xs) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: RowMetric.iconSize, height: RowMetric.iconSize)
-                    Text(busyLabel)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .help(tunnel.lastMsg)
-                .layoutPriority(1)
-            } else {
-                StatusBadge(tunnel: tunnel.displayState,
-                            text: FriendlyText.tunnelStatusBlurb(tunnel))
-                    .help(tunnel.lastMsg)
-                    .layoutPriority(1)
-            }
+            // Leading status dot (compact — not the wide pill). Pulses while
+            // the tunnel is starting.
+            StatusDot(tunnel: tunnel.displayState)
+                .frame(width: RowMetric.iconSize, height: RowMetric.iconSize)
 
-            // Name (mono, primary) + autostart / post-connect glyphs.
+            // Name (rounded title) + inline autostart / post-connect glyphs.
+            // Fixed-ish leading column so the following columns align.
             HStack(spacing: Spacing.xs) {
                 Text(tunnel.name)
                     .font(.rowTitle)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                 if tunnel.autoStart {
                     Image(systemName: "bolt.fill")
                         .font(.caption2)
@@ -95,27 +71,40 @@ struct TunnelRow: View {
                         .help("Has a post-connect command")
                 }
             }
+            .frame(minWidth: 90, alignment: .leading)
 
-            // :local → :remote (secondary technical identifier — mono callout).
+            // Ports :local → :remote — fixed column (mono).
             Text(":\(tunnel.localPort) → :\(tunnel.remotePort)")
                 .font(.rowIdentifier)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .frame(width: 110, alignment: .leading)
 
-            // Node (secondary technical identifier; "(no node yet)" tertiary).
-            if let n = tunnel.lastNode {
-                Text(n)
-                    .font(.rowIdentifier)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Text("(no node yet)")
-                    .font(.callout)
-                    .foregroundStyle(.tertiary)
-                    .italic()
-                    .lineLimit(1)
+            // Node (secondary; "(no node)" tertiary) — flexible column.
+            Group {
+                if let n = tunnel.lastNode {
+                    Text(n)
+                        .font(.rowIdentifier)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("(no node)")
+                        .font(.rowMeta)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                        .lineLimit(1)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // via <jump> — the existing clickable jump-host Menu, compact.
+            viaMenu
+                .frame(width: 70, alignment: .leading)
+
+            // Metadata: aliveSince + fail count — compact fixed column.
+            metadata
+                .frame(width: 92, alignment: .leading)
 
             Spacer(minLength: Spacing.s)
 
@@ -123,6 +112,76 @@ struct TunnelRow: View {
             if hovering {
                 actions
                     .transition(.opacity)
+            }
+        }
+        .padding(.vertical, compactRows ? 1 : 2)
+        .frame(minHeight: compactRows ? 22 : RowMetric.minHeight)
+        .contentShape(Rectangle())
+        // Flash yellow briefly whenever the tunnel's status string changes —
+        // helps the eye catch quick transitions like starting → alive.
+        .changeHighlight(tunnel.status)
+        .help(rowTooltip)
+        .hoverLift(hovering)
+        .onHover { hovering = $0 }
+    }
+
+    // MARK: - via jump-host menu (compact; verbatim behaviour)
+
+    private var viaMenu: some View {
+        Menu {
+            jumpPickerMenu(for: tunnel)
+        } label: {
+            HStack(spacing: 2) {
+                if let pinned = tunnel.jumpCandidates, !pinned.isEmpty {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Text("via \(tunnel.activeJump ?? (tunnel.jumpCandidates?.first ?? "Auto"))")
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help(tunnel.jumpCandidates == nil
+              ? "Auto — any ready host. Click to pin."
+              : "Pinned to \(tunnel.jumpCandidates!.joined(separator: ", ")). Click to change.")
+    }
+
+    // MARK: - Metadata column (aliveSince + fails)
+
+    private var metadata: some View {
+        HStack(spacing: Spacing.xs) {
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+                Text(busyLabel)
+                    .font(.rowMeta)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                if let aliveTxt = tunnel.aliveSince() {
+                    Text(aliveTxt)
+                        .font(.rowMeta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                // Fail count — compact "3✗", tinted red/orange when > 0.
+                if tunnel.failCount > 0 {
+                    let failTint: Color = tunnel.failCount >= 3 ? .red : .orange
+                    Text("\(tunnel.failCount)✗")
+                        .font(.countBadge)
+                        .foregroundStyle(failTint)
+                        .lineLimit(1)
+                        .help("\(tunnel.failCount) failed connection attempt\(tunnel.failCount == 1 ? "" : "s")")
+                }
             }
         }
     }
@@ -189,68 +248,6 @@ struct TunnelRow: View {
             .disabled(isBusy)
         }
         .buttonStyle(.borderless)
-    }
-
-    // MARK: - Line 2 (secondary metadata caption)
-
-    private var line2: some View {
-        HStack(spacing: Spacing.s) {
-            // aliveSince text (tertiary metadata).
-            if let aliveTxt = tunnel.aliveSince() {
-                Text(aliveTxt)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            // via <jump> — same clickable jump-host Menu as before.
-            Menu {
-                jumpPickerMenu(for: tunnel)
-            } label: {
-                HStack(spacing: Spacing.xs) {
-                    if let pinned = tunnel.jumpCandidates, !pinned.isEmpty {
-                        Image(systemName: "pin.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                    Text("via \(tunnel.activeJump ?? (tunnel.jumpCandidates?.first ?? "Auto"))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help(tunnel.jumpCandidates == nil
-                  ? "Auto — any ready host. Click to pin."
-                  : "Pinned to \(tunnel.jumpCandidates!.joined(separator: ", ")). Click to change.")
-
-            // Fail count — tinted capsule, red/orange only when > 0.
-            if tunnel.failCount > 0 {
-                let failTint: Color = tunnel.failCount >= 3 ? .red : .orange
-                Text("\(tunnel.failCount) fails")
-                    .font(.countBadge)
-                    .foregroundStyle(failTint)
-                    .lineLimit(1)
-                    .padding(.horizontal, Spacing.xs + 2)
-                    .padding(.vertical, 1)
-                    .background(failTint.opacity(0.15), in: Capsule())
-            }
-
-            // Tags as small capsules.
-            if !tunnel.tags.isEmpty {
-                ForEach(tunnel.tags, id: \.self) { tag in
-                    Text(tag)
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, Spacing.xs + 2)
-                        .padding(.vertical, 1)
-                        .background(Color.gray.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.leading, RowMetric.iconSize + Spacing.xs)
     }
 
     // MARK: - Jump-host picker (verbatim from old TunnelsView)

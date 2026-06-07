@@ -43,9 +43,9 @@ struct HostsView: View {
         List {
             ForEach(appState.hosts) { host in
                 HostRow(host: host)
-                    .listRowInsets(EdgeInsets(top: 0,
+                    .listRowInsets(EdgeInsets(top: 1,
                                               leading: Spacing.m,
-                                              bottom: 0,
+                                              bottom: 1,
                                               trailing: Spacing.m))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)

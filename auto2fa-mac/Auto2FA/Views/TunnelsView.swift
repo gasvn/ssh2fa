@@ -169,9 +169,9 @@ struct TunnelsView: View {
                           renamingTunnel: $renamingTunnel,
                           renameDraft: $renameDraft)
                     .tag(t.id)
-                    .listRowInsets(EdgeInsets(top: 0,
+                    .listRowInsets(EdgeInsets(top: 1,
                                               leading: Spacing.m,
-                                              bottom: 0,
+                                              bottom: 1,
                                               trailing: Spacing.m))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
