@@ -65,11 +65,20 @@ pub fn start_forward(
     remote_port: u16,
 ) -> Result<Child> {
     let argv = build_forward_argv(jump, user, node, local_port, remote_port);
+    // The retained `ssh -N` child is long-lived and nobody ever drains its
+    // output pipes.  If stderr (or stdout) were PIPED, a chatty ssh could fill
+    // the ~64KB kernel pipe buffer and block on write — silently stalling the
+    // forward while `try_wait` still reports the child alive (health check
+    // fooled).  Discard all output to /dev/null so the kernel drops it and the
+    // child can never block on I/O.  Short-lived probe/login paths that need
+    // ssh's stderr for diagnostics (see tunnels/discovery.rs,
+    // tunnels/post_connect.rs) use their own Command invocations and are
+    // unaffected.
     Command::new("ssh")
         .args(&argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| Error::Internal(format!("ssh spawn failed: {e}")))
 }

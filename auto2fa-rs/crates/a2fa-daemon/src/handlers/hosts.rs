@@ -666,13 +666,36 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         }
     }
 
-    // Read the otpauth URL from the Keychain.
-    let otpauth = get_otpauth(&KeychainStore, &host_name)?
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_name}")))?;
+    // INVARIANT (see crate::managers::load_creds, ~lines 59-67): Keychain reads
+    // MUST NOT happen on a shared/handler thread. macOS serializes Keychain
+    // access process-wide, so an unanswered "Always Allow" prompt would block
+    // the calling thread indefinitely — and this runs on the connection-handler
+    // thread, so a hung prompt would wedge the whole handler. Push the Keychain
+    // read + TOTP computation onto a short-lived worker thread and join it with
+    // a BOUNDED timeout (mirroring run_ssh_g in ssh/control.rs). This caps the
+    // handler's exposure to a hung prompt; on timeout we return an error rather
+    // than blocking forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let host_owned = host_name.clone();
+    std::thread::spawn(move || {
+        // Read the otpauth URL from the Keychain and compute the code + timing
+        // entirely on this worker thread. Do NOT log the code or secret.
+        let result = (|| -> Result<(String, u32, u32)> {
+            let otpauth = get_otpauth(&KeychainStore, &host_owned)?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
+            let (code, period, remaining) = totp_now_detailed(&otpauth)?;
+            Ok((code, period, remaining))
+        })();
+        let _ = tx.send(result);
+    });
 
-    // Compute the current code + timing. Do NOT log the code or secret.
-    let (code, period, remaining) = totp_now_detailed(&otpauth)?;
+    let (code, period, remaining) = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(inner) => inner?,
+        Err(_) => {
+            return Err(Error::Internal("totp read timed out".into()));
+        }
+    };
 
     Ok(json!({
         "code": code,
@@ -762,6 +785,27 @@ mod tests {
             h.last_msg = "Deactivating…".into();
         }
         assert!(!state.lock().unwrap().hosts[0].active);
+    }
+
+    #[test]
+    fn bounded_recv_timeout_returns_error_without_hanging() {
+        // Mirrors the host_totp bounded-thread pattern: if the worker (a hung
+        // Keychain "Always Allow" prompt) never sends, recv_timeout must return
+        // an error promptly instead of blocking the handler forever.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
+        std::thread::spawn(move || {
+            // Never sends within the timeout window — simulates a wedged read.
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let _ = tx.send(Ok(()));
+        });
+        let start = std::time::Instant::now();
+        let outcome: Result<()> = match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(inner) => inner,
+            Err(_) => Err(Error::Internal("totp read timed out".into())),
+        };
+        let elapsed = start.elapsed();
+        assert!(matches!(outcome, Err(Error::Internal(_))), "expected timeout error");
+        assert!(elapsed < std::time::Duration::from_secs(2), "must not block past the bound");
     }
 
     #[test]
