@@ -6,24 +6,27 @@ import SwiftUI
 /// (`832 194`) next to a small countdown ring that drains over the 30s
 /// window and shifts colour as time runs out. Tap to copy the code.
 ///
-/// REFRESH STRATEGY (minimise IPC + Keychain reads):
-///   - Fetch the code ONCE per ~30s window via `appState.hostTOTP(host)`,
-///     storing an absolute `expiry` Date and the period.
-///   - A `TimelineView(.periodic(by: 0.5))` animates the ring LOCALLY off
-///     that stored expiry — no IPC per tick. When the window elapses
-///     (fraction hits 0) we re-fetch the next window's code.
-///   - So: at most one daemon/Keychain round-trip per 30s window per host,
-///     plus a cheap 0.5s local ring tick.
+/// ON-DEMAND (tap to reveal): the chip does NOT fetch anything until the user
+/// taps "reveal" for that specific host. Auto-fetching a code for every host on
+/// appear caused a Keychain "Always Allow" prompt storm (the daemon reads each
+/// host's secret, and an unsigned daemon binary re-prompts per item) — and the
+/// pile of unanswered prompts even wedged the daemon. So: nothing is read until
+/// you explicitly ask for one host's code → at most ONE prompt, on your terms.
 ///
-/// GRACEFUL FAILURE: if the fetch throws — no secret, daemon error, or a
-/// pending/denied Keychain "Always Allow" prompt that makes the first read
-/// slow and times out (6s, see BackendClient.defaultTimeout) — the chip
-/// drops to a muted placeholder (a small lock glyph). No crash, no infinite
-/// spinner. A later fetch (once the user allows the prompt) succeeds and the
-/// real code appears.
+/// REFRESH (only while revealed): fetch the code once per ~30s window via
+/// `appState.hostTOTP(host)` storing an absolute `expiry`; a 0.5s `TimelineView`
+/// tick animates the ring LOCALLY (no IPC per tick) and re-fetches only at
+/// window rollover. Collapsing (or the row disappearing) stops all activity.
+///
+/// GRACEFUL FAILURE: if a fetch throws (no secret / daemon error / a pending or
+/// denied Keychain prompt that times out at 6s) the chip shows a muted "code
+/// unavailable" glyph — no crash, no infinite spinner.
 struct TOTPCodeChip: View {
     let host: String
     @EnvironmentObject var appState: AppState
+
+    // Reveal gate — nothing is fetched until the user taps to reveal.
+    @State private var revealed = false
 
     // Successful fetch state.
     @State private var code: String?
@@ -37,21 +40,46 @@ struct TOTPCodeChip: View {
     @State private var copyResetTask: Task<Void, Never>?
 
     var body: some View {
-        // 0.5s local tick drives the ring; we never poll the daemon faster
-        // than this — re-fetch only happens at window rollover.
-        TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            let fraction = fraction(at: context.date)
-            content(fraction: fraction)
-                .onChange(of: tick(context.date)) {
-                    // Window elapsed → fetch the next window's code. Guarded
-                    // by `loading` so a slow fetch can't stack requests.
-                    if code != nil, expiry.timeIntervalSinceNow <= 0, !loading {
-                        Task { await fetch() }
-                    }
+        Group {
+            if revealed {
+                // 0.5s local tick drives the ring; re-fetch only at rollover.
+                TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                    let fraction = fraction(at: context.date)
+                    content(fraction: fraction)
+                        .onChange(of: tick(context.date)) {
+                            if code != nil, expiry.timeIntervalSinceNow <= 0, !loading {
+                                Task { await fetch() }
+                            }
+                        }
                 }
+                .task { await fetch() }   // first fetch happens only after reveal
+            } else {
+                revealButton
+            }
         }
-        .task { await fetch() }
-        .onDisappear { copyResetTask?.cancel() }
+        .onDisappear {
+            copyResetTask?.cancel()
+            // Stop refreshing + drop the code when the row goes away.
+            revealed = false
+            code = nil
+            failed = false
+        }
+    }
+
+    /// Default state: a quiet "show code" affordance. No Keychain read until tapped.
+    private var revealButton: some View {
+        Button {
+            revealed = true   // the revealed branch's .task does the (single) fetch
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "key.horizontal.fill")
+                Text("•• ••")
+                    .font(.system(.callout, design: .monospaced))
+            }
+            .foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.plain)
+        .help("Show 2FA code (reads this host's secret once)")
     }
 
     // MARK: - Content
