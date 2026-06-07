@@ -26,12 +26,13 @@
 //!      mpsc fan-out channel.
 //! 8. On SIGINT / SIGTERM: set the stop flag and join the tick thread.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Hard cap on concurrently-handled connections. Each connection holds a
 /// thread for its lifetime, so a buggy/looping local client must not be able
@@ -59,7 +60,7 @@ impl Drop for ConnGuard {
 use anyhow::{Context, Result};
 use a2fa_core::config::{config_dir, passwords_path};
 use a2fa_core::engine::{tick::poll_loop, State};
-use a2fa_core::proto::{encode_response, Method};
+use a2fa_core::proto::{encode_error, encode_response, ErrCode, Method};
 
 use crate::dispatch::{dispatch_with_ctx, DaemonCtx};
 use crate::managers::{boot_autostart, start_heartbeat, HostManagers};
@@ -291,17 +292,29 @@ pub fn run() -> Result<()> {
                 }
                 let ctx2 = ctx.clone();
                 let counter = Arc::clone(&conn_count);
-                std::thread::Builder::new()
+                // A transient spawn failure (e.g. EAGAIN under fd/thread
+                // pressure) must NOT kill the daemon: drop this connection,
+                // log a warning, and keep accepting. Never `?`/propagate.
+                if let Err(e) = std::thread::Builder::new()
                     .name("conn".into())
                     .spawn(move || {
                         let _guard = ConnGuard::new(counter);
                         handle_connection(stream, ctx2);
                     })
-                    .context("spawn connection thread")?;
+                {
+                    log::warn!("failed to spawn connection thread (dropping connection): {e}");
+                    continue;
+                }
             }
             Err(e) => {
-                log::error!("accept error: {e}");
-                break;
+                // A transient accept error (EMFILE/ENFILE/EAGAIN) must NOT
+                // permanently stop the accept loop. Log, briefly back off to
+                // avoid a tight error-spin on a persistent condition, then
+                // keep accepting. The loop only ends when the listener is
+                // intentionally closed.
+                log::error!("accept error (continuing): {e}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
             }
         }
     }
@@ -328,6 +341,19 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
         }
     };
 
+    // Socket timeouts: a slow-loris (never finishes a line) or a non-reading
+    // client (its recv buffer fills so our write_all blocks) must not pin a
+    // bounded handler thread forever. A read timeout makes read_line return
+    // WouldBlock/TimedOut (handled as non-fatal below so idle subscribers
+    // survive); a write timeout eventually fails a stuck write and frees the
+    // thread.
+    if let Err(e) = reader_stream.set_read_timeout(Some(Duration::from_secs(30))) {
+        log::warn!("set_read_timeout failed: {e}");
+    }
+    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(10))) {
+        log::warn!("set_write_timeout failed: {e}");
+    }
+
     let mut reader = BufReader::new(reader_stream);
     let mut writer = stream;
 
@@ -338,16 +364,38 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
     // connection could register unbounded subscribers/threads.
     let mut subscribed = false;
 
+    // Hard cap on a single request line. A client streaming bytes with no
+    // newline must not be able to grow `line_buf` without bound.
+    const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
+
     let mut line_buf = String::new();
     loop {
         line_buf.clear();
         match reader.read_line(&mut line_buf) {
             Ok(0) => break, // EOF
             Ok(_) => {}
+            // A read timeout fires on idle connections — notably subscriber
+            // connections that block on read_line while events are pushed by
+            // the separate forwarder thread. Treat it as NON-fatal: keep the
+            // connection alive and retry. (BufReader retains any bytes already
+            // buffered, so a subsequent newline still completes the line; the
+            // wedged-write protection comes from the write timeout.)
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                continue;
+            }
             Err(e) => {
                 log::warn!("read error: {e}");
                 break;
             }
+        }
+
+        // Length cap: bail if a single line grows past the sane maximum
+        // without a terminating newline.
+        if line_buf.len() > MAX_LINE_BYTES {
+            log::warn!(
+                "request line exceeded {MAX_LINE_BYTES} bytes without a newline; closing connection"
+            );
+            break;
         }
 
         let line_bytes = line_buf.as_bytes();
@@ -390,7 +438,20 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
             }
         }
 
-        let response = dispatch_with_ctx(&ctx, line_bytes);
+        // Guard the handler dispatch: a panic inside a handler must not unwind
+        // (and kill) this connection thread. If a handler panicked while
+        // holding the State lock the lock is already poisoned — the loops are
+        // poison-tolerant for that — but catching here keeps the IPC surface
+        // alive and returns a clean internal error to the client.
+        let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_with_ctx(&ctx, line_bytes)
+        })) {
+            Ok(resp) => resp,
+            Err(_) => {
+                log::error!("handler panicked during dispatch; returning internal_error");
+                encode_error("", ErrCode::Internal, "internal error")
+            }
+        };
         if writer.write_all(response.as_bytes()).is_err() {
             break;
         }
