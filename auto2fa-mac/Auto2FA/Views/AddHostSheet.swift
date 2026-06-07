@@ -39,7 +39,7 @@ struct AddHostSheet: View {
                     stepConfirm
                 }
             }
-            .padding(20)
+            .padding(Spacing.xl)
             Divider()
             footer
         }
@@ -48,65 +48,70 @@ struct AddHostSheet: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.m) {
             Image(systemName: "server.rack")
                 .font(.title2)
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Add SSH host")
-                    .font(.headline)
+                    .font(.dashTitle)
                 Text("Step \(step + 1) of 2")
-                    .font(.caption)
+                    .font(.countBadge)
                     .foregroundStyle(.secondary)
             }
             Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.m)
         .background(.bar)
     }
 
     private var stepConnection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            field("Hostname or SSH alias",
-                  TextField("login01.example.edu", text: $hostname)
-                    .focused($focused, equals: .hostname)
-                    .onSubmit { focused = .user })
-            field("SSH username",
-                  TextField(NSUserName(), text: $user)
-                    .focused($focused, equals: .user)
-                    .onSubmit { focused = .password })
-            field("Password",
-                  HStack {
-                    Group {
-                        if showingPassword {
-                            TextField("password", text: $password)
-                        } else {
-                            SecureField("password", text: $password)
+        VStack(alignment: .leading, spacing: Spacing.m) {
+            // Fields wrapped in a glass card panel
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                field("Hostname or SSH alias",
+                      TextField("login01.example.edu", text: $hostname)
+                        .focused($focused, equals: .hostname)
+                        .onSubmit { focused = .user })
+                field("SSH username",
+                      TextField(NSUserName(), text: $user)
+                        .focused($focused, equals: .user)
+                        .onSubmit { focused = .password })
+                field("Password",
+                      HStack {
+                        Group {
+                            if showingPassword {
+                                TextField("password", text: $password)
+                            } else {
+                                SecureField("password", text: $password)
+                            }
                         }
-                    }
-                    .focused($focused, equals: .password)
-                    .onSubmit { focused = .otpauth }
-                    Button {
-                        showingPassword.toggle()
-                    } label: {
-                        Image(systemName: showingPassword ? "eye.slash" : "eye")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(showingPassword ? "Hide" : "Show")
-                  })
-            field("OTP secret (otpauth:// URL)",
-                  VStack(alignment: .leading, spacing: 4) {
-                    TextField("otpauth://totp/SiteName:user?secret=...",
-                              text: $otpauthURL)
-                        .focused($focused, equals: .otpauth)
-                    Text("Paste the full URL from your 2FA setup page. We extract the secret automatically.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                  })
+                        .focused($focused, equals: .password)
+                        .onSubmit { focused = .otpauth }
+                        Button {
+                            showingPassword.toggle()
+                        } label: {
+                            Image(systemName: showingPassword ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(showingPassword ? "Hide" : "Show")
+                      })
+                field("OTP secret (otpauth:// URL)",
+                      VStack(alignment: .leading, spacing: Spacing.xs) {
+                        TextField("otpauth://totp/SiteName:user?secret=...",
+                                  text: $otpauthURL)
+                            .focused($focused, equals: .otpauth)
+                        Text("Paste the full URL from your 2FA setup page. We extract the secret automatically.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                      })
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
 
-            // Reassurance line — users care about where the password ends up.
-            HStack(spacing: 6) {
+            // Reassurance line
+            HStack(spacing: Spacing.s) {
                 Image(systemName: "lock.shield.fill")
                     .foregroundColor(.green)
                 Text("Password and OTP secret are stored in your macOS Keychain. Never written to disk in plaintext.")
@@ -114,7 +119,8 @@ struct AddHostSheet: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.top, 6)
+            .padding(.top, Spacing.xs)
+
             if let error {
                 Text(error).foregroundStyle(.red).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -123,35 +129,40 @@ struct AddHostSheet: View {
     }
 
     private var stepConfirm: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label {
-                HStack(spacing: 0) {
-                    Text("Host: ").foregroundStyle(.secondary)
-                    Text("\(user)@\(hostname)").fontDesign(.monospaced)
-                }
-            } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+        VStack(alignment: .leading, spacing: Spacing.m) {
+            // Summary card
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                Label {
+                    HStack(spacing: 0) {
+                        Text("Host: ").foregroundStyle(.secondary)
+                        Text("\(user)@\(hostname)").fontDesign(.monospaced)
+                    }
+                } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
-            Label {
-                HStack(spacing: 0) {
-                    Text("Password: ").foregroundStyle(.secondary)
-                    Text(String(repeating: "•", count: min(password.count, 12)))
-                        .fontDesign(.monospaced)
-                }
-            } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                Label {
+                    HStack(spacing: 0) {
+                        Text("Password: ").foregroundStyle(.secondary)
+                        Text(String(repeating: "•", count: min(password.count, 12)))
+                            .fontDesign(.monospaced)
+                    }
+                } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
-            let otpOk = otpauthURL.lowercased().contains("secret=")
-            Label {
-                HStack(spacing: 0) {
-                    Text("OTP secret: ").foregroundStyle(.secondary)
-                    Text(otpOk ? "extracted" : "(missing secret= param)")
-                        .foregroundColor(otpOk ? .primary : .red)
+                let otpOk = otpauthURL.lowercased().contains("secret=")
+                Label {
+                    HStack(spacing: 0) {
+                        Text("OTP secret: ").foregroundStyle(.secondary)
+                        Text(otpOk ? "extracted" : "(missing secret= param)")
+                            .foregroundColor(otpOk ? .primary : .red)
+                    }
+                } icon: {
+                    Image(systemName: otpOk ? "checkmark.circle.fill" : "xmark.octagon")
+                        .foregroundColor(otpOk ? .green : .red)
                 }
-            } icon: {
-                Image(systemName: otpOk ? "checkmark.circle.fill" : "xmark.octagon")
-                    .foregroundColor(otpOk ? .green : .red)
             }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
 
-            Divider().padding(.vertical, 4)
+            Divider()
 
             // Test-login block — refuses to enable Add Host until we've
             // confirmed creds work. This prevents the "17 failed logins
@@ -180,7 +191,7 @@ struct AddHostSheet: View {
                 }
                 .disabled(testing)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, Spacing.xs)
 
             Toggle("Connect automatically on startup", isOn: $autoConnect)
                 .toggleStyle(.checkbox)
@@ -191,7 +202,7 @@ struct AddHostSheet: View {
             if let error {
                 Text(error).foregroundStyle(.red).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
+                    .padding(.top, Spacing.xs)
             }
         }
     }
@@ -213,14 +224,14 @@ struct AddHostSheet: View {
             // On step 1, only allow Add Host after a successful test login.
             .disabled(submitting || (step == 1 && (testResult?.ok != true)))
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.m)
         .background(.bar)
     }
 
     @ViewBuilder
     private func field<Content: View>(_ label: String, _ content: Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             content
                 .textFieldStyle(.roundedBorder)

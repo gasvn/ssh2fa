@@ -14,10 +14,11 @@ struct NodePickerSheet: View {
     @State private var loadedJumpName: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Pick a compute node for ‘\(tunnelName)’")
-                    .font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: Spacing.l) {
+            // Title row
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+                Text("Pick a compute node for '\(tunnelName)'")
+                    .font(.dashTitle)
                 if let jump = loadedJumpName {
                     Text("via \(jump)")
                         .foregroundStyle(.secondary)
@@ -26,43 +27,47 @@ struct NodePickerSheet: View {
                 Spacer()
             }
 
-            if loading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading jobs from squeue…")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 20)
-            } else if let error {
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text(error)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-            } else if jobs.isEmpty {
-                Text("No running jobs found. Use a custom node, or start a SLURM job first.")
-                    .foregroundStyle(.secondary)
+            // Table / state container — glassCard for layered look
+            Group {
+                if loading {
+                    HStack(spacing: Spacing.s) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading jobs from squeue…")
+                            .foregroundStyle(.secondary)
+                    }
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-            } else {
-                Table(jobs, selection: $selection) {
-                    TableColumn("JobID") { Text($0.jobid).fontDesign(.monospaced) }
-                        .width(min: 70)
-                    TableColumn("Partition") { Text($0.partition) }
-                        .width(min: 80, ideal: 110)
-                    TableColumn("Name") { Text($0.name).lineLimit(1) }
-                        .width(min: 80, ideal: 120)
-                    TableColumn("Time") { Text($0.time).fontDesign(.monospaced) }
-                        .width(min: 80, ideal: 110)
-                    TableColumn("Node") { Text($0.node).fontDesign(.monospaced) }
+                    .padding(.vertical, Spacing.xl)
+                } else if let error {
+                    VStack(spacing: Spacing.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.xl)
+                } else if jobs.isEmpty {
+                    Text("No running jobs found. Use a custom node, or start a SLURM job first.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, Spacing.xl)
+                } else {
+                    Table(jobs, selection: $selection) {
+                        TableColumn("JobID") { Text($0.jobid).fontDesign(.monospaced) }
+                            .width(min: 70)
+                        TableColumn("Partition") { Text($0.partition) }
+                            .width(min: 80, ideal: 110)
+                        TableColumn("Name") { Text($0.name).lineLimit(1) }
+                            .width(min: 80, ideal: 120)
+                        TableColumn("Time") { Text($0.time).fontDesign(.monospaced) }
+                            .width(min: 80, ideal: 110)
+                        TableColumn("Node") { Text($0.node).fontDesign(.monospaced) }
+                    }
+                    .frame(minHeight: 200)
                 }
-                .frame(minHeight: 200)
             }
+            .glassCard(cornerRadius: Radius.control)
 
             HStack {
                 Button {
@@ -94,7 +99,7 @@ struct NodePickerSheet: View {
                 .disabled(selection == nil || submitting)
             }
         }
-        .padding(Spacing.l)
+        .padding(Spacing.xl)
         .frame(width: 720)
         .task { await load() }
     }

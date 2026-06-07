@@ -15,24 +15,29 @@ struct CustomNodeSheet: View {
     enum Field { case node, user }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Custom node for ‘\(tunnelName)’")
-                .font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: Spacing.l) {
+            Text("Custom node for '\(tunnelName)'")
+                .font(.dashTitle)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Node").font(.caption).foregroundStyle(.secondary)
-                TextField("holygpu8a11103.rc.fas.harvard.edu", text: $node)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focused, equals: .node)
-                    .onSubmit { focused = .user }
+            // Fields wrapped in a glass card panel
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Node").font(.caption).foregroundStyle(.secondary)
+                    TextField("holygpu8a11103.rc.fas.harvard.edu", text: $node)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused, equals: .node)
+                        .onSubmit { focused = .user }
+                }
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("User").font(.caption).foregroundStyle(.secondary)
+                    TextField(NSUserName(), text: $user)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused, equals: .user)
+                        .onSubmit { submit() }
+                }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("User").font(.caption).foregroundStyle(.secondary)
-                TextField(NSUserName(), text: $user)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focused, equals: .user)
-                    .onSubmit { submit() }
-            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
 
             if let error {
                 Text(error)
@@ -55,7 +60,7 @@ struct CustomNodeSheet: View {
                 .disabled(submitting)
             }
         }
-        .padding(Spacing.l)
+        .padding(Spacing.xl)
         .frame(width: 440)
         .onAppear { focused = .node }
     }

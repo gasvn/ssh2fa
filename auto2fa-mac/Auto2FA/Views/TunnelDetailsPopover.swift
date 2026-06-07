@@ -18,22 +18,27 @@ struct TunnelDetailsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            // Header
+            HStack(spacing: Spacing.s) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(tunnel.name).font(.headline)
+                    Text(tunnel.name).font(.dashTitle)
                     Text(":\(tunnel.localPort) → \(tunnel.lastNode ?? "—"):\(tunnel.remotePort)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                // Status pill
+                StatusBadge(tunnel: tunnel.displayState,
+                            text: FriendlyText.tunnelStatusBlurb(tunnel))
             }
-            .padding([.horizontal, .top])
-            .padding(.bottom, 8)
+            .padding(.horizontal, Spacing.l)
+            .padding(.top, Spacing.l)
+            .padding(.bottom, Spacing.s)
 
             Divider()
 
-            // Stats strip — cheap glance summary above the activity feed.
-            HStack(spacing: 16) {
+            // Stats strip — tinted capsule cells for a layered look
+            HStack(spacing: Spacing.s) {
                 statCell(label: "Connects",
                          value: "\(tunnel.connectCount)",
                          color: .blue)
@@ -48,9 +53,8 @@ struct TunnelDetailsPopover: View {
                          color: .primary)
                 Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.gray.opacity(0.04))
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.s)
 
             Divider()
 
@@ -61,11 +65,11 @@ struct TunnelDetailsPopover: View {
                         Text("No events yet.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, Spacing.m)
+                            .padding(.vertical, Spacing.s)
                     } else {
                         ForEach(events.reversed()) { e in
-                            HStack(alignment: .top, spacing: 8) {
+                            HStack(alignment: .top, spacing: Spacing.s) {
                                 Text(e.date, format: .dateTime.hour().minute().second())
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
@@ -76,19 +80,21 @@ struct TunnelDetailsPopover: View {
                                     .lineLimit(nil)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, Spacing.m)
                             .padding(.vertical, 2)
                         }
                     }
                 }
             }
             .frame(minHeight: 160, maxHeight: 220)
-            .background(Color.gray.opacity(0.05))
+            .glassCard(cornerRadius: Radius.control)
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.xs)
 
             Divider()
 
             sectionHeader("Browser URL suffix")
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.s) {
                 Text("Appended after `http://localhost:\(tunnel.localPort)` when you click 🧭 or auto-open fires. Use this for jupyter `?token=…`, tensorboard `/#scalars`, etc.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -108,19 +114,20 @@ struct TunnelDetailsPopover: View {
                 Text("Preview: ").font(.caption).foregroundStyle(.secondary) +
                 Text(previewURL()).font(.caption.monospaced())
             }
-            .padding(12)
+            .padding(.horizontal, Spacing.l)
+            .padding(.bottom, Spacing.s)
 
             Divider()
 
             sectionHeader("Run on connect")
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.s) {
                 Text("Runs each time this tunnel transitions to alive. Env: AUTO2FA_TUNNEL_NAME, AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $postConnectDraft)
                     .font(.body.monospaced())
                     .frame(height: 60)
-                    .overlay(RoundedRectangle(cornerRadius: 4)
+                    .overlay(RoundedRectangle(cornerRadius: Radius.control)
                         .stroke(Color.gray.opacity(0.3), lineWidth: 1))
                 HStack {
                     Button("Clear") {
@@ -133,7 +140,7 @@ struct TunnelDetailsPopover: View {
                     .disabled(postConnectDraft.isEmpty && tunnel.postConnectCmd == nil)
                     Spacer()
                     if let s = saveStatus {
-                        Text(s).font(.caption).foregroundStyle(.secondary)
+                        Text(s).font(.countBadge).foregroundStyle(.secondary)
                     }
                     Button("Save") {
                         Task {
@@ -146,7 +153,8 @@ struct TunnelDetailsPopover: View {
                     .disabled(postConnectDraft == (tunnel.postConnectCmd ?? ""))
                 }
             }
-            .padding(12)
+            .padding(.horizontal, Spacing.l)
+            .padding(.bottom, Spacing.l)
         }
         .frame(width: 720)
         .task {
@@ -165,26 +173,27 @@ struct TunnelDetailsPopover: View {
         return "http://localhost:\(tunnel.localPort)\(suffix)"
     }
 
+    /// Tinted capsule stat cell matching the dashboard's count-pill pattern.
     @ViewBuilder
     private func statCell(label: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.callout.weight(.medium))
+                .font(.countBadge)
                 .foregroundColor(color)
         }
+        .padding(.horizontal, Spacing.s)
+        .padding(.vertical, Spacing.xs)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     private func sectionHeader(_ t: String) -> some View {
         Text(t.uppercased())
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
+            .sectionHeaderStyle()
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, Spacing.xs)
     }
 
     private func refresh() async {

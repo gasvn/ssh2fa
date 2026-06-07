@@ -24,48 +24,53 @@ struct WelcomeSheet: View {
     }
 
     private var header: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.s) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
-                .padding(.top, 20)
+                .padding(.top, Spacing.xl)
             Text("Welcome to Auto2FA")
-                .font(.title.weight(.semibold))
+                .font(.dashTitle)
             Text("Two-factor SSH login + auto-rotating ControlMaster pool + SLURM-aware port forwarding")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-                .padding(.bottom, 16)
+                .padding(.bottom, Spacing.l)
         }
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            row(icon: "server.rack",
-                title: "1. Add an SSH host",
-                body: "Hostname, user, password, and your TOTP secret URL. We do a one-shot test login before saving so wrong creds never trigger a rate-limit cascade.")
-            row(icon: "point.3.connected.trianglepath.dotted",
-                title: "2. The daemon keeps a connection pool warm",
-                body: "Two SSH ControlMaster processes per host. New sessions reuse them instantly — no 2FA prompt every time you `ssh`.")
-            row(icon: "arrow.triangle.branch",
-                title: "3. Create tunnels that ride the pool",
-                body: "Pick a SLURM compute node, the tunnel runs `ssh -L localhost:<port>:<node>:<port> via your warm jump`. Auto-recovers on Mac sleep/wake.")
-            row(icon: "menubar.dock.rectangle",
-                title: "Lives in your menu bar + Dock",
-                body: "Tunnel count badge. Right-click for quick actions. ⌘, for Settings, ⌘⇧L for daemon logs.")
+        VStack(alignment: .leading, spacing: Spacing.m) {
+            // Feature rows wrapped in a glass card for a cohesive panel look
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                row(icon: "server.rack",
+                    title: "1. Add an SSH host",
+                    body: "Hostname, user, password, and your TOTP secret URL. We do a one-shot test login before saving so wrong creds never trigger a rate-limit cascade.")
+                row(icon: "point.3.connected.trianglepath.dotted",
+                    title: "2. The daemon keeps a connection pool warm",
+                    body: "Two SSH ControlMaster processes per host. New sessions reuse them instantly — no 2FA prompt every time you `ssh`.")
+                row(icon: "arrow.triangle.branch",
+                    title: "3. Create tunnels that ride the pool",
+                    body: "Pick a SLURM compute node, the tunnel runs `ssh -L localhost:<port>:<node>:<port> via your warm jump`. Auto-recovers on Mac sleep/wake.")
+                row(icon: "menubar.dock.rectangle",
+                    title: "Lives in your menu bar + Dock",
+                    body: "Tunnel count badge. Right-click for quick actions. ⌘, for Settings, ⌘⇧L for daemon logs.")
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
         }
-        .padding(20)
+        .padding(Spacing.xl)
     }
 
     private func row(icon: String, title: String, body: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: Spacing.m) {
             Image(systemName: icon)
                 .font(.title2)
                 .foregroundStyle(.tint)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                Text(title).font(.rowTitle)
                 Text(body).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -93,7 +98,7 @@ struct WelcomeSheet: View {
             .controlSize(.large)
             .buttonStyle(.borderedProminent)
         }
-        .padding(20)
+        .padding(Spacing.xl)
         .background(.bar)
     }
 }

@@ -45,10 +45,11 @@ struct NewTunnelSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(alignment: .leading, spacing: Spacing.l) {
+            // Title row
+            HStack(spacing: Spacing.s) {
                 Text("New Tunnel")
-                    .font(.title2.weight(.semibold))
+                    .font(.dashTitle)
                 Spacer()
                 Button {
                     pasteFromClipboard()
@@ -61,52 +62,58 @@ struct NewTunnelSheet: View {
                 .help("If your clipboard has `ssh -L 8888:host:8888 user@node` or a localhost URL, prefill from it")
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Template").font(.caption).foregroundStyle(.secondary)
-                Picker("Template", selection: $template) {
-                    ForEach(TunnelTemplate.allCases) { t in
-                        Label(t.rawValue, systemImage: t.symbol).tag(t)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .onChange(of: template) { _, new in applyTemplate(new) }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Name").font(.caption).foregroundStyle(.secondary)
-                TextField("jupyter", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focused, equals: .name)
-                    .onSubmit { focused = .port }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Local port").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        Task { await suggestPort() }
-                    } label: {
-                        if suggestingPort {
-                            ProgressView().controlSize(.small).scaleEffect(0.7)
-                        } else {
-                            Label("Next free", systemImage: "sparkles")
-                                .labelStyle(.titleAndIcon)
-                                .font(.caption)
+            // Form fields wrapped in a glass card for a layered look
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                fieldGroup("Template") {
+                    Picker("Template", selection: $template) {
+                        ForEach(TunnelTemplate.allCases) { t in
+                            Label(t.rawValue, systemImage: t.symbol).tag(t)
                         }
                     }
-                    .buttonStyle(.borderless)
-                    .help("Ask the daemon for the next unused local port")
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: template) { _, new in applyTemplate(new) }
                 }
-                TextField("8888", text: $portText)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focused, equals: .port)
-                    .onSubmit { submit() }
-            }
 
-            Toggle("Start automatically when daemon boots", isOn: $autoStart)
-                .toggleStyle(.checkbox)
+                fieldGroup("Name") {
+                    TextField("jupyter", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused, equals: .name)
+                        .onSubmit { focused = .port }
+                }
+
+                fieldGroup {
+                    HStack {
+                        Text("Local port")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            Task { await suggestPort() }
+                        } label: {
+                            if suggestingPort {
+                                ProgressView().controlSize(.small).scaleEffect(0.7)
+                            } else {
+                                Label("Next free", systemImage: "sparkles")
+                                    .labelStyle(.titleAndIcon)
+                                    .font(.caption)
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Ask the daemon for the next unused local port")
+                    }
+                } content: {
+                    TextField("8888", text: $portText)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused, equals: .port)
+                        .onSubmit { submit() }
+                }
+
+                Toggle("Start automatically when daemon boots", isOn: $autoStart)
+                    .toggleStyle(.checkbox)
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
 
             if let error {
                 Text(error)
@@ -129,7 +136,7 @@ struct NewTunnelSheet: View {
                 .disabled(submitting)
             }
         }
-        .padding(Spacing.l)
+        .padding(Spacing.xl)
         .frame(width: 440)
         .task {
             // Default-fill from the current template (Custom) and ask the
@@ -142,6 +149,29 @@ struct NewTunnelSheet: View {
             focused = .name
         }
     }
+
+    // MARK: - Field helpers
+
+    @ViewBuilder
+    private func fieldGroup<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func fieldGroup<L: View, C: View>(@ViewBuilder label: () -> L,
+                                               @ViewBuilder content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            label()
+            content()
+        }
+    }
+
+    // MARK: - Logic (unchanged)
 
     private func applyTemplate(_ t: TunnelTemplate) {
         let d = t.defaults
