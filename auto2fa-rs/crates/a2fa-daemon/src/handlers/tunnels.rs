@@ -24,7 +24,7 @@ use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::{Tunnel, TunnelStatus};
 use a2fa_core::ssh::control::active_symlink_path;
-use a2fa_core::tunnels::discover_nodes_via_control;
+use a2fa_core::tunnels::{discover_nodes_via_control, expand_first_node};
 use serde_json::{json, Value};
 
 use crate::tunnel_runtime::TunnelRuntime;
@@ -448,10 +448,16 @@ pub fn tunnel_set_node(
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?
         .to_owned();
-    let node = params["node"]
-        .as_str()
-        .ok_or_else(|| Error::BadParams("node required".into()))?
-        .to_owned();
+    // Normalize the raw SLURM nodelist (e.g. "holygpu[01-03]") to the first
+    // concrete hostname ("holygpu01").  Plain hostnames pass through unchanged.
+    // Mirrors daemon.py line 378: `node, _is_range = expand_first_node(node)`.
+    let node = {
+        let raw = params["node"]
+            .as_str()
+            .ok_or_else(|| Error::BadParams("node required".into()))?;
+        let (expanded, _is_range) = expand_first_node(raw);
+        expanded
+    };
     let user = params
         .get("user")
         .and_then(|v| v.as_str())
@@ -1087,6 +1093,25 @@ mod tests {
         let guard = state.lock().unwrap();
         assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu01"));
         assert_eq!(guard.tunnels[0].last_user.as_deref(), Some("jdoe"));
+    }
+
+    /// SLURM range strings must be normalised to the first concrete node before
+    /// being stored (mirrors daemon.py line 378).
+    #[test]
+    fn tunnel_set_node_expands_slurm_range() {
+        let state = make_state_with_tunnel("nb", 9501);
+        tunnel_set_node(
+            &state,
+            &json!({"name": "nb", "node": "holygpu[01-03]", "user": "jdoe"}),
+            None,
+        )
+        .unwrap();
+        let guard = state.lock().unwrap();
+        assert_eq!(
+            guard.tunnels[0].last_node.as_deref(),
+            Some("holygpu01"),
+            "SLURM range must be expanded to first node before storage"
+        );
     }
 
     #[test]

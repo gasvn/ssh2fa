@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use regex::Regex;
 
 /// A single SLURM job row from `squeue -h -o '%i|%P|%j|%T|%M|%R'`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,62 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
         });
     }
     jobs
+}
+
+/// Expand a SLURM nodelist string to its first concrete node.
+///
+/// SLURM often returns a compressed nodelist such as `holygpu[01-03]` or
+/// `holygpu[01,03,05]` rather than a single hostname.  This function extracts
+/// the first node from the list so it can be used directly as an SSH target.
+///
+/// # Return value
+///
+/// Returns `(first_node, is_range)`:
+/// - `is_range` is `true` when bracket notation was present (the caller may
+///   want to surface that to the user).
+/// - `is_range` is `false` when the input looks like a plain hostname.
+///
+/// # Examples
+///
+/// ```
+/// use a2fa_core::tunnels::expand_first_node;
+///
+/// assert_eq!(expand_first_node("holygpu01"),          ("holygpu01".into(),                   false));
+/// assert_eq!(expand_first_node("holygpu[01-03]"),     ("holygpu01".into(),                   true));
+/// assert_eq!(expand_first_node("holygpu[01,03,05]"),  ("holygpu01".into(),                   true));
+/// assert_eq!(
+///     expand_first_node("holygpu[01-03].rc.fas.harvard.edu"),
+///     ("holygpu01.rc.fas.harvard.edu".into(), true)
+/// );
+/// ```
+///
+/// # Fallback
+///
+/// Any input that does not contain a well-formed bracket expression is returned
+/// unchanged with `is_range = false`.  This mirrors the Python reference
+/// implementation in `auto2fa/tunnels.py`.
+pub fn expand_first_node(nodelist: &str) -> (String, bool) {
+    // Pattern mirrors the Python reference:
+    //   ^([a-zA-Z0-9_.-]+)\[([^\]]+)\](.*)$
+    // Group 1 — prefix (e.g. "holygpu")
+    // Group 2 — bracket contents (e.g. "01-03" or "01,03,05")
+    // Group 3 — optional suffix after the bracket (e.g. ".rc.fas.harvard.edu")
+    let re = Regex::new(r"^([a-zA-Z0-9_.\\-]+)\[([^\]]+)\](.*)$")
+        .expect("expand_first_node regex is valid");
+
+    match re.captures(nodelist) {
+        None => (nodelist.to_owned(), false),
+        Some(caps) => {
+            let prefix = &caps[1];
+            let inside = &caps[2];
+            let suffix = &caps[3];
+            // Take the first comma-separated chunk, then the first dash-separated
+            // element from that chunk (handles both ranges and comma lists).
+            let first_chunk = inside.split(',').next().unwrap_or("").trim();
+            let first_num  = first_chunk.split('-').next().unwrap_or("").trim();
+            (format!("{prefix}{first_num}{suffix}"), true)
+        }
+    }
 }
 
 /// Run `squeue` on the jump host via a plain `ssh` call.
@@ -126,6 +183,39 @@ pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- expand_first_node ---------------------------------------------
+
+    #[test]
+    fn expand_first_node_table() {
+        // Each tuple: (input, expected_node, expected_is_range)
+        let cases: &[(&str, &str, bool)] = &[
+            // Plain hostname — no brackets → returned unchanged, not a range.
+            ("holygpu01",                          "holygpu01",                          false),
+            // Dash range → first element extracted, is_range = true.
+            ("holygpu[01-03]",                     "holygpu01",                          true),
+            // Comma list → first element extracted.
+            ("holygpu[01,03,05]",                  "holygpu01",                          true),
+            // Suffix after the closing bracket must be preserved.
+            ("holygpu[01-03].rc.fas.harvard.edu",  "holygpu01.rc.fas.harvard.edu",       true),
+            // Malformed / no brackets → returned unchanged, not a range.
+            ("holygpu[unclosed",                   "holygpu[unclosed",                   false),
+            // Empty string → returned unchanged.
+            ("",                                   "",                                   false),
+        ];
+
+        for (input, want_node, want_range) in cases {
+            let (got_node, got_range) = expand_first_node(input);
+            assert_eq!(
+                got_node, *want_node,
+                "node mismatch for input {input:?}"
+            );
+            assert_eq!(
+                got_range, *want_range,
+                "is_range mismatch for input {input:?}"
+            );
+        }
+    }
 
     #[test]
     fn parses_squeue_rows() {
