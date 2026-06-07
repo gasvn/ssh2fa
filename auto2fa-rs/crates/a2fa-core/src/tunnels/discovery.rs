@@ -80,6 +80,49 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
     Ok(parse_squeue(&stdout))
 }
 
+/// Run `squeue` on the jump host, **reusing an existing SSH ControlMaster**.
+///
+/// This is the variant used by the daemon's `discover_nodes` handler: it passes
+/// `ControlPath=<path>` so `ssh` multiplexes over the already-authenticated
+/// master socket instead of opening a new connection (which would trigger 2FA
+/// again).
+///
+/// `control_path` must be the path returned by
+/// `a2fa_core::ssh::control::active_symlink_path(host)`.
+///
+/// Returns `Err(Error::Discovery(_))` on any failure.
+pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) -> Result<Vec<Job>> {
+    use std::process::Command;
+    let cp = control_path.to_string_lossy();
+    let output = Command::new("ssh")
+        .args([
+            "-o",
+            &format!("ControlPath={cp}"),
+            // Disable ControlMaster so we don't accidentally try to become a
+            // new master if the socket has vanished.
+            "-o",
+            "ControlMaster=no",
+            jump,
+            "squeue",
+            "-h",
+            "-o",
+            "%i|%P|%j|%T|%M|%R",
+        ])
+        .output()
+        .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Discovery(format!(
+            "squeue via control failed on {jump}: {}",
+            stderr.trim().chars().take(200).collect::<String>()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_squeue(&stdout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

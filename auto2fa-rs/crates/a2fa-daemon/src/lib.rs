@@ -9,5 +9,6 @@ pub mod handlers;
 pub mod server;
 pub mod singleton;
 pub mod subscribers;
+pub mod workers;
 
 pub use a2fa_core::engine::State;

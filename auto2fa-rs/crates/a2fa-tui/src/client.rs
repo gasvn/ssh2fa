@@ -167,9 +167,15 @@ pub fn subscribe(tx: Sender<Value>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Tests that mutate AUTO2FA_SOCK must hold this lock to avoid race
+    // conditions when `cargo test` runs test threads in parallel.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn socket_path_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
         assert!(
@@ -180,6 +186,7 @@ mod tests {
 
     #[test]
     fn socket_path_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("AUTO2FA_SOCK", "/tmp/tui_test.sock");
         let p = socket_path();
         assert_eq!(p, PathBuf::from("/tmp/tui_test.sock"));
@@ -188,6 +195,7 @@ mod tests {
 
     #[test]
     fn rpc_missing_socket_returns_err() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("AUTO2FA_SOCK", "/tmp/a2fa_tui_test_nonexistent.sock");
         let r = rpc("ping", serde_json::json!({}));
         std::env::remove_var("AUTO2FA_SOCK");
