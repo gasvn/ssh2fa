@@ -20,7 +20,7 @@ use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
 use a2fa_core::ssh::control::update_symlink;
-use a2fa_core::totp::extract_secret;
+use a2fa_core::totp::{extract_secret, totp_now_detailed};
 use serde_json::{json, Value};
 
 use crate::managers::{spawn_managed_start, spawn_managed_stop, spawn_warmup_slot1, HostManagers};
@@ -650,6 +650,48 @@ fn test_login(host: &str, password: &str, secret: &str) -> (bool, String) {
 }
 
 // ---------------------------------------------------------------------------
+// host_totp
+// ---------------------------------------------------------------------------
+
+/// Compute the current 6-digit TOTP code for a host, for live display in the
+/// app (authenticator-style rotating code).
+///
+/// READ-ONLY: this only computes the code that the user's authenticator would
+/// currently show. It has NO side effects — it does not consume, submit, or
+/// replay-guard the OTP (that registry path is reserved for the login flow).
+/// It returns ONLY the code + timing and NEVER the secret.
+///
+/// Returns `{ "code": "123456", "period": 30, "seconds_remaining": <1..=30> }`.
+pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = params["host"]
+        .as_str()
+        .ok_or_else(|| Error::BadParams("host required".into()))?
+        .to_owned();
+
+    // Verify the host exists in State.
+    {
+        let guard = state.lock().unwrap();
+        if !guard.hosts.iter().any(|h| h.host == host_name) {
+            return Err(Error::NotFound(format!("host {host_name}")));
+        }
+    }
+
+    // Read the otpauth URL from the Keychain.
+    let otpauth = get_otpauth(&KeychainStore, &host_name)?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_name}")))?;
+
+    // Compute the current code + timing. Do NOT log the code or secret.
+    let (code, period, remaining) = totp_now_detailed(&otpauth)?;
+
+    Ok(json!({
+        "code": code,
+        "period": period,
+        "seconds_remaining": remaining,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -834,6 +876,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["ok"], false);
+    }
+
+    // host_totp — verify the param-validation paths WITHOUT touching the real
+    // Keychain (host-not-found and missing-host-param both return before any
+    // Keychain read). The TOTP math itself is covered by the core
+    // totp_now_detailed tests in a2fa-core.
+    #[test]
+    fn host_totp_not_found_returns_not_found() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_totp(&state, &json!({"host": "ghost"})).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn host_totp_missing_host_param_returns_bad_params() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_totp(&state, &json!({})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
     }
 
     // host_mount_toggle — can't run sshfs in tests; verify error on

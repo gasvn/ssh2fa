@@ -180,6 +180,7 @@ fn route_with_ctx(
         Method::HostRotate        => hosts::host_rotate(state, params),
         Method::HostAdd           => hosts::host_add(state, params),
         Method::HostTestCredentials => hosts::host_test_credentials(state, params),
+        Method::HostTotp          => hosts::host_totp(state, params),
 
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),
