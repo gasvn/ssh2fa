@@ -214,6 +214,27 @@ impl HostManagers {
         })
     }
 
+    /// Tear down every SSH master in the registry.
+    ///
+    /// Calls `stop_all` on each `PoolState` in the map (which runs
+    /// `ssh -O exit` and cleans up the control-path symlink for each slot).
+    /// Errors from individual hosts are logged and swallowed so teardown
+    /// continues for the remaining hosts.  Panic-safe.
+    pub fn teardown_all(&self) {
+        let mut map = match self.map.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(), // recover from a poisoned lock
+        };
+        let count = map.len();
+        for (host, pool) in map.iter_mut() {
+            info!("[{host}] teardown_all: stopping all SSH master slots");
+            // stop_all runs `ssh -O exit` — fast, best-effort.
+            // Any subprocess errors are already absorbed inside stop_all.
+            stop_all(pool);
+        }
+        info!("teardown_all: tore down {count} host(s)");
+    }
+
     /// Write back a subset of mutable fields from `src` into the stored state
     /// for `host`.  Only the fields that the ssh worker is authorised to update
     /// (slot_status, consecutive_login_failures, cooldown, backoff) are copied;
@@ -822,6 +843,36 @@ mod tests {
                 "cannon must start with 0 failures, independent of k6"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // teardown_all — panic-safety and basic coverage
+    // -----------------------------------------------------------------------
+
+    /// `teardown_all` on an empty registry must not panic.
+    #[test]
+    fn teardown_all_empty_does_not_panic() {
+        let managers = HostManagers::new();
+        // No hosts registered — should be a no-op.
+        managers.teardown_all();
+    }
+
+    /// `teardown_all` with a freshly-created (but never connected) PoolState
+    /// must not panic.  `stop_all` will call `ssh -O exit` on a nonexistent
+    /// control path; that subprocess error is absorbed inside `stop_all`, so
+    /// no panic should surface here.
+    ///
+    /// Note: we intentionally do NOT test teardown with a real live SSH master
+    /// in a unit test — that would require an actual SSH daemon running during
+    /// `cargo test`.  The no-op path (Init-status slots, bogus control path)
+    /// exercises the lock/iterate/call path without network I/O.
+    #[test]
+    fn teardown_all_with_one_entry_does_not_panic() {
+        let managers = HostManagers::new();
+        // Insert a pool state for a host (control path points nowhere).
+        managers.with_pool_mut("testhost", |_p| {});
+        // Must not panic even though ssh -O exit will fail.
+        managers.teardown_all();
     }
 
     /// `with_pool_mut` creates a new entry for an unknown host.

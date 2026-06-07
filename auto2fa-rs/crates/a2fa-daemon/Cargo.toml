@@ -19,6 +19,7 @@ log.workspace = true
 simplelog.workspace = true
 fs2 = "0.4"
 flate2 = "1"
+signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

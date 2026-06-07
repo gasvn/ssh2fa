@@ -37,6 +37,7 @@ dependencies = [
  "fs2",
  "log",
  "serde_json",
+ "signal-hook",
  "simplelog",
  "tempfile",
 ]

@@ -220,6 +220,34 @@ pub fn run() -> Result<()> {
         runtime: Arc::clone(&runtime),
     };
 
+    // 6d. Spawn signal-handler thread.
+    //     Blocks on the next SIGINT or SIGTERM, then tears down SSH masters,
+    //     kills tunnel children, removes the socket, and exits.
+    {
+        use signal_hook::consts::{SIGINT, SIGTERM};
+        use signal_hook::iterator::Signals;
+
+        let mut signals = Signals::new([SIGINT, SIGTERM]).context("install signal handler")?;
+        let stop_sig = Arc::clone(&stop);
+        let managers_sig = Arc::clone(&managers);
+        let runtime_sig = Arc::clone(&runtime);
+        let sock_sig = sock_p.clone();
+        std::thread::Builder::new()
+            .name("signal".into())
+            .spawn(move || {
+                if let Some(sig) = signals.forever().next() {
+                    log::info!("received signal {sig}; shutting down gracefully");
+                    stop_sig.store(true, std::sync::atomic::Ordering::Relaxed);
+                    managers_sig.teardown_all();
+                    runtime_sig.kill_all_children();
+                    let _ = std::fs::remove_file(&sock_sig);
+                    log::info!("graceful shutdown complete");
+                    std::process::exit(0);
+                }
+            })
+            .context("spawn signal thread")?;
+    }
+
     // 7. Accept loop.
     for stream in listener.incoming() {
         match stream {

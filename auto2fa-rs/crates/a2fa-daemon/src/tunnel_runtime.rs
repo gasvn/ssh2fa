@@ -203,6 +203,33 @@ impl TunnelRuntime {
         inner.rt.remove(name);
     }
 
+    /// Kill every registered `ssh -L` child and drain the children map.
+    ///
+    /// Sends SIGKILL (via `child.kill()`) to every live child, then `wait()`s
+    /// to reap the process.  Both steps are best-effort — errors are logged and
+    /// swallowed so teardown continues for the remaining children.  Panic-safe
+    /// (recovers a poisoned mutex).
+    pub fn kill_all_children(&self) {
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let names: Vec<String> = inner.children.keys().cloned().collect();
+        let count = names.len();
+        for name in &names {
+            if let Some(mut child) = inner.children.remove(name) {
+                info!("[tunnel:{name}] kill_all_children: sending SIGKILL");
+                if let Err(e) = child.kill() {
+                    warn!("[tunnel:{name}] kill_all_children: kill() error: {e}");
+                }
+                if let Err(e) = child.wait() {
+                    warn!("[tunnel:{name}] kill_all_children: wait() error: {e}");
+                }
+            }
+        }
+        info!("kill_all_children: killed {count} tunnel child(ren)");
+    }
+
     // ---- Boot auto-start bookkeeping ----------------------------------
 
     /// Returns `(startup_ts, auto_started)`.
@@ -635,6 +662,41 @@ mod tests {
     fn registry_child_alive_none_when_not_registered() {
         let rt = TunnelRuntime::new();
         assert_eq!(rt.child_alive("ghost"), None);
+    }
+
+    // ---- kill_all_children -----------------------------------------------
+
+    #[test]
+    fn kill_all_children_empty_does_not_panic() {
+        let rt = TunnelRuntime::new();
+        // No children registered — must be a no-op.
+        rt.kill_all_children();
+    }
+
+    #[test]
+    fn kill_all_children_kills_and_drains_registry() {
+        use std::process::Command;
+        let rt = TunnelRuntime::new();
+
+        // Spawn a real long-lived child (mirrors existing child tests).
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn sleep");
+
+        rt.store_child("t1", child);
+
+        // Confirm it is registered and alive.
+        assert_eq!(rt.child_alive("t1"), Some(true));
+
+        // kill_all_children should remove it and not panic.
+        rt.kill_all_children();
+
+        // After teardown the registry must be empty.
+        assert!(rt.take_child("t1").is_none(), "child should be drained after kill_all_children");
     }
 
     #[test]
