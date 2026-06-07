@@ -29,6 +29,19 @@ use a2fa_core::proto::{encode_error, encode_response, ErrCode, Method, Request};
 use serde_json::Value;
 
 use crate::handlers::{hosts, system, tunnels};
+use crate::managers::HostManagers;
+use crate::workers::OtpRegistry;
+
+/// Shared daemon-wide context threaded through the dispatch layer.
+///
+/// Bundles the three Arc-wrapped objects that handlers may need so we can add
+/// new context objects in one place without changing every function signature.
+#[derive(Clone)]
+pub struct DaemonCtx {
+    pub state: Arc<Mutex<State>>,
+    pub managers: Arc<HostManagers>,
+    pub registry: Arc<OtpRegistry>,
+}
 
 /// Dispatch one request line (raw bytes) and return the response line.
 ///
@@ -74,7 +87,64 @@ pub fn dispatch(state: &Arc<Mutex<State>>, line: &[u8]) -> String {
         }
     };
 
-    let result = route(state, method, params);
+    let result = route_with_ctx(&DaemonCtx {
+        state: Arc::clone(state),
+        managers: HostManagers::new(),
+        registry: OtpRegistry::new(),
+    }, method, params);
+
+    match result {
+        Ok(value) => encode_response(id, value),
+        Err(e) => encode_error(id, e.to_errcode(), &e.to_string()),
+    }
+}
+
+/// Full dispatch with daemon context (persistent managers + OTP registry).
+///
+/// This is used by the production server path. `dispatch` (above) is kept for
+/// backward compatibility with existing unit tests that don't supply a context.
+pub fn dispatch_with_ctx(ctx: &DaemonCtx, line: &[u8]) -> String {
+    // 1. UTF-8 decode.
+    let text = match std::str::from_utf8(line) {
+        Ok(s) => s,
+        Err(_) => {
+            return encode_error("", ErrCode::InvalidRequest, "invalid UTF-8");
+        }
+    };
+
+    // 2. JSON parse.
+    let raw: Value = match serde_json::from_str(text.trim_end()) {
+        Ok(v) => v,
+        Err(_) => {
+            return encode_error("", ErrCode::InvalidRequest, "bad JSON");
+        }
+    };
+
+    // 3. Must be an object.
+    if !raw.is_object() {
+        return encode_error("", ErrCode::InvalidRequest, "request must be a JSON object");
+    }
+
+    // 4. Deserialize into Request.
+    let req: Request = match serde_json::from_value(raw) {
+        Ok(r) => r,
+        Err(e) => {
+            return encode_error("", ErrCode::InvalidRequest, &e.to_string());
+        }
+    };
+
+    let id = &req.id;
+    let params = &req.params;
+
+    // 5. Route method.
+    let method = match Method::from_str(&req.method) {
+        Some(m) => m,
+        None => {
+            return encode_error(id, ErrCode::UnknownMethod, &format!("unknown method {}", req.method));
+        }
+    };
+
+    let result = route_with_ctx(ctx, method, params);
 
     match result {
         Ok(value) => encode_response(id, value),
@@ -83,11 +153,13 @@ pub fn dispatch(state: &Arc<Mutex<State>>, line: &[u8]) -> String {
 }
 
 /// Route a parsed, validated request to the correct handler.
-fn route(
-    state: &Arc<Mutex<State>>,
+/// Used by the legacy `dispatch` path (unit tests).
+fn route_with_ctx(
+    ctx: &DaemonCtx,
     method: Method,
     params: &Value,
 ) -> Result<Value, Error> {
+    let state = &ctx.state;
     match method {
         // --- System / utility ---
         Method::Ping              => hosts::ping(state),
@@ -98,7 +170,9 @@ fn route(
 
         // --- Hosts ---
         Method::ListHosts         => hosts::list_hosts(state),
-        Method::HostToggle        => hosts::host_toggle(state, params),
+        Method::HostToggle        => hosts::host_toggle_managed(state, params,
+                                        Some(Arc::clone(&ctx.managers)),
+                                        Some(Arc::clone(&ctx.registry))),
         Method::HostMountToggle   => hosts::host_mount_toggle(state, params),
         Method::HostRotate        => hosts::host_rotate(state, params),
         Method::HostAdd           => hosts::host_add(state, params),

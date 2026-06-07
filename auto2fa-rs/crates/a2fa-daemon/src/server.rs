@@ -38,9 +38,11 @@ use a2fa_core::config::{config_dir, passwords_path};
 use a2fa_core::engine::{tick::poll_loop, State};
 use a2fa_core::proto::{encode_response, Method};
 
-use crate::dispatch::dispatch;
+use crate::dispatch::{dispatch_with_ctx, DaemonCtx};
+use crate::managers::{boot_autostart, start_heartbeat, HostManagers};
 use crate::singleton::acquire_lock;
 use crate::subscribers;
+use crate::workers::OtpRegistry;
 
 // ---------------------------------------------------------------------------
 // Path resolution helpers
@@ -127,6 +129,15 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // 5b. Create daemon-global persistent host managers + OTP registry.
+    let managers = HostManagers::new();
+    let registry = OtpRegistry::new();
+
+    // 5c. Boot auto-start: connect every host that was active at last shutdown.
+    //     This mirrors Python's `init_managers` which starts active-host threads
+    //     on daemon startup.
+    boot_autostart(&state, &managers, &registry);
+
     // 6. Spawn tick thread.
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -138,17 +149,29 @@ pub fn run() -> Result<()> {
             .context("spawn tick thread")?;
     }
 
+    // 6b. Spawn heartbeat / auto-reconnect thread.
+    //     Loops every ~3 s, heartbeats each active host's pool slots, and
+    //     restarts dead masters — the Rust port of `manage_pool_loop`.
+    start_heartbeat(Arc::clone(&state), Arc::clone(&managers), Arc::clone(&registry));
+
     log::info!("daemon listening on {}", sock_p.display());
     println!("a2fa-daemon listening on {}", sock_p.display());
+
+    // Build the shared daemon context (cloned cheaply per connection).
+    let ctx = DaemonCtx {
+        state: Arc::clone(&state),
+        managers: Arc::clone(&managers),
+        registry: Arc::clone(&registry),
+    };
 
     // 7. Accept loop.
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let state2 = Arc::clone(&state);
+                let ctx2 = ctx.clone();
                 std::thread::Builder::new()
                     .name("conn".into())
-                    .spawn(move || handle_connection(stream, state2))
+                    .spawn(move || handle_connection(stream, ctx2))
                     .context("spawn connection thread")?;
             }
             Err(e) => {
@@ -169,7 +192,7 @@ pub fn run() -> Result<()> {
 // Per-connection handler
 // ---------------------------------------------------------------------------
 
-fn handle_connection(stream: UnixStream, state: Arc<Mutex<State>>) {
+fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
     log::debug!("client connected");
 
     let reader_stream = match stream.try_clone() {
@@ -205,7 +228,7 @@ fn handle_connection(stream: UnixStream, state: Arc<Mutex<State>>) {
                     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("");
                     if Method::from_str(method) == Some(Method::SubscribeEvents) {
                         // Register subscriber and forward events on a dedicated thread.
-                        let rx = subscribers::register(&state);
+                        let rx = subscribers::register(&ctx.state);
                         if let Ok(ev_stream) = writer.try_clone() {
                             subscribers::forward_events(ev_stream, rx);
                         }
@@ -219,7 +242,7 @@ fn handle_connection(stream: UnixStream, state: Arc<Mutex<State>>) {
             }
         }
 
-        let response = dispatch(&state, line_bytes);
+        let response = dispatch_with_ctx(&ctx, line_bytes);
         if writer.write_all(response.as_bytes()).is_err() {
             break;
         }

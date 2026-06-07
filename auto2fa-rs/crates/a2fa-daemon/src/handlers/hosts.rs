@@ -23,6 +23,7 @@ use a2fa_core::ssh::control::update_symlink;
 use a2fa_core::totp::extract_secret;
 use serde_json::{json, Value};
 
+use crate::managers::{spawn_managed_start, spawn_managed_stop, spawn_warmup_slot1, HostManagers};
 use crate::workers::{spawn_host_start, spawn_host_stop, OtpRegistry};
 
 // ---------------------------------------------------------------------------
@@ -144,6 +145,117 @@ pub fn host_toggle_with_registry(
     }
 
     // Return the current snapshot (start/stop complete asynchronously).
+    let guard = state.lock().unwrap();
+    let snap = guard
+        .hosts
+        .iter()
+        .find(|h| h.host == host_name)
+        .map(host_snapshot)
+        .unwrap_or(Value::Null);
+    Ok(snap)
+}
+
+// ---------------------------------------------------------------------------
+// host_toggle_managed — uses persistent HostManagers (production path)
+// ---------------------------------------------------------------------------
+
+/// Toggle a host using the persistent `HostManagers` registry.
+///
+/// Behaves like `host_toggle_with_registry` but:
+/// * Uses `spawn_managed_start` / `spawn_managed_stop` so cooldown / failure
+///   counts survive across retries (the circuit-breaker-reset bug is fixed).
+/// * After slot 0 becomes ready, kicks off `spawn_warmup_slot1` (staggered,
+///   ~5 s) to pre-warm the spare pool slot.
+/// * On deactivate: `spawn_managed_stop` which calls `stop_all` and
+///   `reset_circuit_breakers` on the persistent `PoolState`.
+///
+/// When `managers` or `registry` are `None`, falls back to the legacy
+/// transient behaviour (used by tests that don't supply a context).
+pub fn host_toggle_managed(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    managers: Option<Arc<HostManagers>>,
+    registry: Option<Arc<OtpRegistry>>,
+) -> Result<Value> {
+    let host_name = params["host"]
+        .as_str()
+        .ok_or_else(|| Error::BadParams("host required".into()))?
+        .to_owned();
+
+    // Snapshot credentials + active flag while holding the lock.
+    let (currently_active, password_opt, otpauth_opt) = {
+        let guard = state.lock().unwrap();
+        let host = guard
+            .hosts
+            .iter()
+            .find(|h| h.host == host_name)
+            .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?;
+        let currently_active = host.active;
+        let ks = a2fa_core::creds::keychain::KeychainStore;
+        let pw = a2fa_core::creds::get_password(&ks, &host_name).ok().flatten();
+        let oa = a2fa_core::creds::get_otpauth(&ks, &host_name).ok().flatten();
+        (currently_active, pw, oa)
+    };
+
+    match (managers, registry) {
+        (Some(mgrs), Some(reg)) => {
+            if currently_active {
+                // Deactivate: update State flag + spawn stop (uses persistent pool).
+                {
+                    let mut guard = state.lock().unwrap();
+                    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                        h.active = false;
+                        h.last_msg = "Deactivating…".into();
+                    }
+                }
+                spawn_managed_stop(host_name.clone(), Arc::clone(state), Arc::clone(&mgrs));
+            } else {
+                // Activate: reset circuit breakers (on the persistent state) + start.
+                let password = password_opt.unwrap_or_default();
+                let otpauth = otpauth_opt.unwrap_or_default();
+                let secret =
+                    a2fa_core::totp::extract_secret(&otpauth).unwrap_or_default();
+
+                // Reset circuit breakers so a manual toggle gives a fresh start.
+                mgrs.with_pool_mut(&host_name, |p| p.reset_circuit_breakers());
+
+                {
+                    let mut guard = state.lock().unwrap();
+                    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                        h.active = true;
+                        h.last_msg = "Connecting…".into();
+                        h.status = "Connecting".into();
+                    }
+                }
+
+                // Spawn slot 0 start.
+                spawn_managed_start(
+                    host_name.clone(),
+                    0,
+                    password.clone(),
+                    secret.clone(),
+                    Arc::clone(&reg),
+                    Arc::clone(state),
+                    Arc::clone(&mgrs),
+                );
+
+                // Kick off slot-1 warm-up (staggered ~5 s).
+                spawn_warmup_slot1(
+                    host_name.clone(),
+                    password,
+                    secret,
+                    Arc::clone(&reg),
+                    Arc::clone(state),
+                    Arc::clone(&mgrs),
+                );
+            }
+        }
+        // Legacy fallback (no persistent managers — used by unit tests).
+        _ => {
+            return host_toggle_with_registry(state, params, None);
+        }
+    }
+
     let guard = state.lock().unwrap();
     let snap = guard
         .hosts
