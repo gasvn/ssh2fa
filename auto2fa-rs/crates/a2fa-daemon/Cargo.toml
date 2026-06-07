@@ -3,7 +3,21 @@ name = "a2fa-daemon"
 version = "0.1.0"
 edition.workspace = true
 
+[lib]
+name = "a2fa_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "a2fa-daemon"
+path = "src/main.rs"
+
 [dependencies]
 a2fa-core = { path = "../a2fa-core" }
 anyhow.workspace = true
+serde_json.workspace = true
+log.workspace = true
+simplelog.workspace = true
 fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

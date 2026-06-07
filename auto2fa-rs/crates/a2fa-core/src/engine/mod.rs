@@ -107,9 +107,9 @@ impl State {
         }
     }
 
-    /// Convenience constructor for tests: starts with no hosts and an
-    /// explicit tunnel list.
-    #[cfg(test)]
+    /// Convenience constructor for tests and integration helpers: starts with
+    /// no hosts and an explicit tunnel list.  Available in all configurations
+    /// so downstream crates (e.g. `a2fa-daemon` integration tests) can use it.
     pub fn with_tunnels(tunnels: Vec<Tunnel>) -> Self {
         Self {
             hosts: Vec::new(),
