@@ -1,18 +1,23 @@
 import Foundation
 import AppKit
 
-/// Manages the lifecycle of the Python daemon process.
+/// Manages the lifecycle of the **Rust** `a2fa-daemon` process.
 ///
 /// On app launch we check whether a daemon is already listening on the Unix
-/// socket. If yes, we leave it alone (user might have started it manually,
-/// or it might be running under LaunchAgent). If not, we spawn one ourselves
-/// with `python -m auto2fa.daemon` and keep its PID so we can shut it down
-/// when the app terminates.
+/// socket. If yes (the normal case — a LaunchAgent `com.auto2fa.daemon` keeps
+/// the Rust daemon running), we leave it alone and just connect. If not, we
+/// spawn the Rust binary ourselves and keep its PID so we can shut it down when
+/// the app terminates.
 ///
-/// Project-dir discovery (where the auto2fa Python package lives):
-///   1. `~/.auto2fa/project-dir.txt` — user-set explicit path
-///   2. `$HOME/logs/auto2fa_dev` — default for the dev workstation
-///   3. give up; surface error to user
+/// Daemon-binary discovery (the single self-contained Rust executable):
+///   1. `~/.auto2fa/a2fa-daemon` — the installed/stable path the LaunchAgent
+///      also points at.
+///   2. `<project>/auto2fa-rs/target/release/a2fa-daemon` — dev checkout build.
+///   3. give up; surface error to user.
+///
+/// The Rust daemon resolves its config dir from `SSH_CONFIG_PATH` (falling back
+/// to `~/.ssh`), so we set that env explicitly when we spawn it to match the
+/// LaunchAgent's environment exactly.
 @MainActor
 final class DaemonProcess {
     static let shared = DaemonProcess()
@@ -30,11 +35,11 @@ final class DaemonProcess {
     }
 
     /// Re-spawn the daemon if (a) we spawned the original one AND (b) it's
-    /// now dead. Returns the new SpawnResult or .alreadyRunning if the
-    /// socket somehow came back without our intervention.
+    /// now dead. Returns the new SpawnResult or nil if we don't own it (it is
+    /// managed externally — by the LaunchAgent — so launchd will respawn it).
     func respawnIfOwnedDaemonCrashed() async -> SpawnResult? {
-        // If we never owned the daemon, the user manages it externally
-        // (LaunchAgent, manual launch) — don't touch it.
+        // If we never owned the daemon, the LaunchAgent manages it — don't
+        // touch it (launchd's KeepAlive respawns it, re-adopting live masters).
         guard ownedProcess != nil else { return nil }
         if ownedDaemonIsAlive {
             return nil  // still alive — let the regular reconnect try
@@ -76,8 +81,8 @@ final class DaemonProcess {
         return result == 0
     }
 
-    /// Discover the project directory containing `auto2fa/daemon.py`.
-    /// Order: explicit override file > XDG-ish default > nil.
+    /// Discover the project directory containing the Rust workspace
+    /// (`auto2fa-rs/`). Order: explicit override file > dev default > nil.
     static func discoverProjectDir() -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
@@ -86,75 +91,43 @@ final class DaemonProcess {
         let overridePath = home + "/.auto2fa/project-dir.txt"
         if let data = try? String(contentsOfFile: overridePath, encoding: .utf8) {
             let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && fm.fileExists(atPath: trimmed + "/auto2fa/daemon.py") {
+            if !trimmed.isEmpty && fm.fileExists(atPath: trimmed + "/auto2fa-rs") {
                 return trimmed
             }
         }
 
         // 2. Default dev path
         let defaultPath = home + "/logs/auto2fa_dev"
-        if fm.fileExists(atPath: defaultPath + "/auto2fa/daemon.py") {
+        if fm.fileExists(atPath: defaultPath + "/auto2fa-rs") {
             return defaultPath
         }
 
         return nil
     }
 
-    /// Resolve a CONCRETE Python interpreter that can run `-m auto2fa.daemon`.
+    /// Resolve the Rust `a2fa-daemon` binary to launch.
     ///
-    /// We must never depend on a login shell's PATH at spawn time. At login
-    /// launchd hands the app a pristine environment, and `zsh -lc` is a
-    /// *non-interactive* login shell that does NOT source ~/.zshrc (that's
-    /// interactive-only). So the user's conda/pyenv/venv `python` — and on
-    /// modern macOS even a bare `python`, which no longer exists — isn't on
-    /// PATH. The daemon then failed to start after every reboot with
-    /// "command not found: python", which looked to the user like all their
-    /// hosts and tunnels had vanished. The real files in ~/.ssh were fine.
-    ///
-    /// Order: explicit pin > one-time discovery through an *interactive*
-    /// login shell (which DOES source .zshrc), cached for next boot >
-    /// /usr/bin/python3 as a last resort.
-    static func discoverInterpreter() -> String {
+    /// Order: installed stable path (`~/.auto2fa/a2fa-daemon`, what the
+    /// LaunchAgent uses) > dev release build under the project checkout > nil.
+    static func discoverDaemonBinary() -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        let pinPath = home + "/.auto2fa/python-path.txt"
 
-        // 1. Explicit pin (this file also doubles as our discovery cache).
-        if let data = try? String(contentsOfFile: pinPath, encoding: .utf8) {
-            let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && fm.isExecutableFile(atPath: trimmed) {
-                return trimmed
+        // 1. Installed/stable path (same as the LaunchAgent ProgramArguments).
+        let installed = home + "/.auto2fa/a2fa-daemon"
+        if fm.isExecutableFile(atPath: installed) {
+            return installed
+        }
+
+        // 2. Dev release build under the project checkout.
+        if let projectDir = discoverProjectDir() {
+            let devBuild = projectDir + "/auto2fa-rs/target/release/a2fa-daemon"
+            if fm.isExecutableFile(atPath: devBuild) {
+                return devBuild
             }
         }
 
-        // 2. Discover the user's interactive interpreter ONCE. `-i` forces zsh
-        //    to source ~/.zshrc, so conda/pyenv/venv activation runs and
-        //    `python` resolves to the same one the user uses by hand.
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        probe.arguments = ["-ilc", "command -v python || command -v python3"]
-        let pipe = Pipe()
-        probe.standardOutput = pipe
-        probe.standardError = FileHandle.nullDevice
-        if (try? probe.run()) != nil {
-            probe.waitUntilExit()
-            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-            // An interactive shell may print banners; take the last line that
-            // actually points at an executable file.
-            for line in out.split(separator: "\n").reversed() {
-                let cand = line.trimmingCharacters(in: .whitespaces)
-                if !cand.isEmpty && fm.isExecutableFile(atPath: cand) {
-                    // Cache so we never pay the interactive-shell cost again.
-                    try? cand.write(toFile: pinPath, atomically: true, encoding: .utf8)
-                    return cand
-                }
-            }
-        }
-
-        // 3. Last resort. May lack deps, but yields an explicit ModuleNotFound
-        //    in the log rather than a silent "command not found".
-        return "/usr/bin/python3"
+        return nil
     }
 
     /// Spawn the daemon if it isn't already running. Returns:
@@ -173,40 +146,36 @@ final class DaemonProcess {
             return .alreadyRunning
         }
 
-        guard let projectDir = DaemonProcess.discoverProjectDir() else {
-            let msg = "Daemon project dir not found. Create ~/.auto2fa/project-dir.txt " +
-                      "pointing at your auto2fa source checkout."
+        guard let binary = DaemonProcess.discoverDaemonBinary() else {
+            let msg = "a2fa-daemon binary not found. Install it to " +
+                      "~/.auto2fa/a2fa-daemon (or build auto2fa-rs in release)."
             NSLog("[Auto2FA] %@", msg)
             return .failed(reason: msg)
         }
 
-        // Launch with a CONCRETE interpreter path — never through a login
-        // shell. `zsh -lc` does not source ~/.zshrc, so a bare `python` is
-        // unresolvable at login and the daemon would silently fail to start.
-        // See discoverInterpreter() for the full story.
-        let interpreter = DaemonProcess.discoverInterpreter()
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: interpreter)
-        p.arguments = ["-m", "auto2fa.daemon"]
-        p.currentDirectoryURL = URL(fileURLWithPath: projectDir)
-        // Make the package importable regardless of how this interpreter
-        // handles `-m` + cwd, while preserving any inherited environment.
+        p.executableURL = URL(fileURLWithPath: binary)
+        p.arguments = []
+        // Match the LaunchAgent environment: the Rust daemon resolves its
+        // config dir from SSH_CONFIG_PATH (falling back to ~/.ssh). Set it
+        // explicitly so a daemon we spawn reads the SAME passwords.json /
+        // tunnels.json the LaunchAgent-managed one would.
         var env = ProcessInfo.processInfo.environment
-        if let existing = env["PYTHONPATH"], !existing.isEmpty {
-            env["PYTHONPATH"] = projectDir + ":" + existing
-        } else {
-            env["PYTHONPATH"] = projectDir
+        if env["SSH_CONFIG_PATH"] == nil {
+            env["SSH_CONFIG_PATH"] = NSHomeDirectory() + "/.ssh/"
         }
         p.environment = env
 
-        // Capture stdout/stderr to a log file so we can debug daemon crashes.
+        // The Rust daemon writes its own log to /tmp/auto2fa_daemon.log; we
+        // capture any stdout/stderr (the "listening on …" line, panics) to a
+        // separate file so a spawn that dies before logging is still debuggable.
         let logURL = URL(fileURLWithPath: "/tmp/auto2fa-daemon-mac.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
         if let handle = try? FileHandle(forWritingTo: logURL) {
             _ = try? handle.seekToEnd()
-            handle.write("\n--- daemon spawn at \(Date()) ---\n".data(using: .utf8)!)
+            handle.write("\n--- a2fa-daemon spawn at \(Date()) ---\n".data(using: .utf8)!)
             p.standardOutput = handle
             p.standardError = handle
             self.logFileHandle = handle
@@ -215,40 +184,34 @@ final class DaemonProcess {
         do {
             try p.run()
             self.ownedProcess = p
-            NSLog("[Auto2FA] spawned daemon PID=\(p.processIdentifier) from \(projectDir)")
+            NSLog("[Auto2FA] spawned a2fa-daemon PID=\(p.processIdentifier) from \(binary)")
 
-            // Wait up to 15s for the socket to appear and respond.
-            // Cold-start Python (interpreter load + asyncio init) can
-            // routinely take 5-10s; the old 5s window made first-launch
-            // brittle on slower machines.
-            for _ in 0..<75 {
+            // Wait up to 10s for the socket to appear and respond. The Rust
+            // daemon starts in milliseconds (no interpreter warmup), but it
+            // also adopts live ControlMasters / reads config on boot, so give
+            // it a comfortable window.
+            for _ in 0..<50 {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if DaemonProcess.socketResponds() {
                     return .spawned(pid: p.processIdentifier)
                 }
             }
-            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 15s. See /tmp/auto2fa-daemon-mac.log.")
+            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 10s. See /tmp/auto2fa-daemon-mac.log.")
         } catch {
-            return .failed(reason: "Could not launch daemon: \(error.localizedDescription)")
+            return .failed(reason: "Could not launch a2fa-daemon: \(error.localizedDescription)")
         }
     }
 
     /// Kill the daemon if we spawned it. No-op if it was already running when
-    /// we started.
+    /// we started (LaunchAgent-managed — leave it to launchd).
     ///
     /// Called from NSApplication.willTerminateNotification on the main thread.
-    /// macOS gives the app ~5s after willTerminate before SIGKILL, so we
-    /// SIGTERM and return immediately — the daemon's own signal handler
-    /// owns its cleanup. Previously we Thread.sleep'd for up to 6s on main,
-    /// which both blocked the UI and could be cut short by macOS anyway.
     func terminateOwnedDaemon() {
         guard let p = ownedProcess, p.isRunning else { return }
-        NSLog("[Auto2FA] sending SIGTERM to daemon PID=\(p.processIdentifier)")
+        NSLog("[Auto2FA] sending SIGTERM to a2fa-daemon PID=\(p.processIdentifier)")
         p.terminate()
-        // Don't wait here. The daemon's SIGINT/SIGTERM handler triggers
-        // its asyncio shutdown which joins host threads (best-effort) and
-        // removes the socket. If macOS SIGKILLs us before that finishes,
-        // ssh ControlMaster cleanup will be picked up by cleanup_orphans
-        // on the next daemon start.
+        // Don't wait here. The Rust daemon's SIGTERM handler tears down its
+        // masters + tunnels and removes the socket. If macOS SIGKILLs us
+        // first, the next daemon start's cleanup_orphans reaps any strays.
     }
 }
