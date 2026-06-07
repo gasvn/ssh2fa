@@ -3,8 +3,10 @@
 //! Mirrors `get_ssh_control_path`, `update_symlink`, `cleanup_stale_connection`,
 //! and the heartbeat `ssh -O check` / `ssh -O exit` calls in `backend.py`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use log::{info, warn};
@@ -15,9 +17,94 @@ use log::{info, warn};
 /// and treat timeout as "master not alive".
 const MASTER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum time to wait for `ssh -G <host>` (ControlPath resolution).
+const SSH_G_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // ControlPath scheme
 // ---------------------------------------------------------------------------
+//
+// The base ControlPath is resolved from the user's ssh config via `ssh -G`,
+// exactly like `get_ssh_control_path` in backend.py. This is essential for
+// two reasons:
+//   1. Correctness — Rust must honor a `ControlPath ~/.ssh/cm-auto2fa-%h`
+//      directive (with %h/%n/~ expansion done by ssh itself), not invent its
+//      own path. Ignoring it would orphan the user's configured sockets.
+//   2. Interop / handoff — using the SAME path the Python daemon used lets a
+//      freshly-started Rust daemon ADOPT the live ControlMaster sockets instead
+//      of re-triggering 2FA on every host.
+//
+// Resolution (mirrors get_ssh_control_path):
+//   * `ssh -G <host>` → take the `controlpath` value.
+//   * value "none"         → fall back to ~/.ssh/cm-<host>
+//   * no controlpath / err → fall back to ~/.ssh/cm-auto2fa-<host>
+// The result is cached per host (ssh -G is cheap but not free, and the path is
+// stable for the lifetime of the daemon).
+
+fn control_base_cache() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Parse the `controlpath` value out of `ssh -G` stdout (case-insensitive key).
+/// Returns `None` if there is no controlpath line.
+fn parse_ssh_g_controlpath(ssh_g_stdout: &str) -> Option<String> {
+    for line in ssh_g_stdout.lines() {
+        let mut it = line.splitn(2, ' ');
+        if let (Some(key), Some(val)) = (it.next(), it.next()) {
+            if key.eq_ignore_ascii_case("controlpath") {
+                return Some(val.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Turn an `ssh -G` controlpath value (or absence) into a concrete base path,
+/// mirroring Python's `get_ssh_control_path` fallbacks.
+fn control_base_from_ssh_g(host: &str, value: Option<&str>) -> PathBuf {
+    match value {
+        Some(v) if v.eq_ignore_ascii_case("none") => {
+            dirs_home().join(".ssh").join(format!("cm-{host}"))
+        }
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => dirs_home().join(".ssh").join(format!("cm-auto2fa-{host}")),
+    }
+}
+
+/// Run `ssh -G <host>` with a timeout and return its stdout, or `None` on
+/// timeout / spawn failure / non-zero exit. `ssh -G` does not open a network
+/// connection, but a wedged `Match exec`/`ProxyCommand` config could hang it.
+fn run_ssh_g(host: &str) -> Option<String> {
+    let (tx, rx) = mpsc::channel();
+    let host_owned = host.to_string();
+    std::thread::spawn(move || {
+        let out = Command::new("ssh").args(["-G", &host_owned]).output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(SSH_G_TIMEOUT) {
+        Ok(Ok(out)) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        _ => None,
+    }
+}
+
+/// Resolve the **base** ControlPath for `host` (no `-<index>` suffix), cached.
+///
+/// Mirrors `get_ssh_control_path` in backend.py.
+pub fn resolve_control_base(host: &str) -> PathBuf {
+    if let Some(p) = control_base_cache().lock().unwrap().get(host) {
+        return p.clone();
+    }
+    let value = run_ssh_g(host);
+    let base = control_base_from_ssh_g(host, value.as_deref().and_then(parse_ssh_g_controlpath).as_deref());
+    control_base_cache()
+        .lock()
+        .unwrap()
+        .insert(host.to_string(), base.clone());
+    base
+}
 
 /// Return the **pool-member** ControlPath for a given host and pool index.
 ///
@@ -27,13 +114,13 @@ const MASTER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 ///     i: f"{self.target_control_path}-{i}" for i in range(POOL_SIZE)
 /// }
 /// ```
-/// where `target_control_path` defaults to `~/.ssh/cm-auto2fa-<host>`.
+/// where `target_control_path` comes from `resolve_control_base` (`ssh -G`).
 ///
 /// The active symlink (`target_control_path`) is stored **without** the
 /// `-<index>` suffix and is managed separately by `update_symlink`.
 pub fn control_path(host: &str, index: usize) -> PathBuf {
-    let home = dirs_home();
-    home.join(".ssh").join(format!("cm-auto2fa-{host}-{index}"))
+    let base = resolve_control_base(host);
+    PathBuf::from(format!("{}-{index}", base.display()))
 }
 
 /// Return the **active symlink** path (no pool index suffix).
@@ -41,8 +128,7 @@ pub fn control_path(host: &str, index: usize) -> PathBuf {
 /// ssh clients use this path; `update_symlink` keeps it pointing at the
 /// currently-active pool member.
 pub fn active_symlink_path(host: &str) -> PathBuf {
-    let home = dirs_home();
-    home.join(".ssh").join(format!("cm-auto2fa-{host}"))
+    resolve_control_base(host)
 }
 
 // ---------------------------------------------------------------------------
@@ -214,39 +300,80 @@ fn dirs_home() -> PathBuf {
 mod tests {
     use super::*;
 
+    // -- Pure resolution helpers (deterministic, no ssh invoked) ------------
+
+    #[test]
+    fn parse_controlpath_picks_value_case_insensitive() {
+        let out = "user me\nControlPath /home/me/.ssh/cm-auto2fa-host.example-0\nport 22\n";
+        assert_eq!(
+            parse_ssh_g_controlpath(out).as_deref(),
+            Some("/home/me/.ssh/cm-auto2fa-host.example-0")
+        );
+        // lowercase key (ssh -G normalizes to lowercase)
+        let out2 = "controlpath none\n";
+        assert_eq!(parse_ssh_g_controlpath(out2).as_deref(), Some("none"));
+        // no controlpath line
+        assert_eq!(parse_ssh_g_controlpath("user me\nport 22\n"), None);
+    }
+
+    #[test]
+    fn control_base_fallbacks_match_python() {
+        // explicit "none" → ~/.ssh/cm-<host>
+        let none = control_base_from_ssh_g("b8", Some("none"));
+        assert!(none.to_string_lossy().ends_with("/.ssh/cm-b8"), "{none:?}");
+        // no controlpath line → ~/.ssh/cm-auto2fa-<host>
+        let missing = control_base_from_ssh_g("b8", None);
+        assert!(
+            missing.to_string_lossy().ends_with("/.ssh/cm-auto2fa-b8"),
+            "{missing:?}"
+        );
+        // concrete value (already %h/~ expanded by ssh) → used verbatim
+        let concrete = control_base_from_ssh_g(
+            "b8",
+            Some("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu"),
+        );
+        assert_eq!(
+            concrete,
+            PathBuf::from("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu")
+        );
+    }
+
+    // -- Public path API (structural, environment-robust) -------------------
+
     #[test]
     fn control_path_is_stable_per_host_index() {
-        let a = control_path("k6", 0);
-        let b = control_path("k6", 0);
+        // Use a synthetic host that won't have an ssh config entry → the path
+        // is resolved deterministically via the fallback, independent of the
+        // machine's ~/.ssh/config.
+        let h = "auto2fa-unittest-synthetic-host";
+        let a = control_path(h, 0);
+        let b = control_path(h, 0);
         assert_eq!(a, b);
-        assert!(a.to_string_lossy().contains("k6"));
-        assert_ne!(control_path("k6", 0), control_path("k6", 1));
+        assert_ne!(control_path(h, 0), control_path(h, 1));
     }
 
     #[test]
-    fn control_path_contains_host_and_index() {
-        let p = control_path("cannon", 1);
-        let s = p.to_string_lossy();
-        assert!(s.contains("cannon"), "expected host in path: {s}");
-        assert!(s.contains("-1"), "expected index in path: {s}");
-        assert!(s.contains("cm-auto2fa-"), "expected prefix in path: {s}");
-    }
+    fn control_path_has_index_suffix_and_symlink_does_not() {
+        let h = "auto2fa-unittest-synthetic-host";
+        let pool1 = control_path(h, 1);
+        let s = pool1.to_string_lossy();
+        assert!(s.ends_with("-1"), "expected index suffix: {s}");
+        assert!(s.contains(h), "expected host in fallback path: {s}");
 
-    #[test]
-    fn active_symlink_has_no_index_suffix() {
-        let sym = active_symlink_path("k6");
-        let pool0 = control_path("k6", 0);
-        // The symlink path must not end with "-0" or "-1"
+        let sym = active_symlink_path(h);
         let sym_s = sym.to_string_lossy();
         assert!(!sym_s.ends_with("-0"), "symlink should have no index: {sym_s}");
-        // The pool path must end with "-0"
-        let p0 = pool0.to_string_lossy();
-        assert!(p0.ends_with("-0"), "pool path should end with -0: {p0}");
+        assert!(!sym_s.ends_with("-1"), "symlink should have no index: {sym_s}");
+        // pool path is exactly the base + "-1"
+        assert_eq!(pool1, PathBuf::from(format!("{sym_s}-1")));
     }
 
     #[test]
     fn control_path_different_hosts_differ() {
-        assert_ne!(control_path("k6", 0), control_path("cannon", 0));
+        assert_ne!(
+            control_path("auto2fa-unittest-host-a", 0),
+            control_path("auto2fa-unittest-host-b", 0)
+        );
     }
 
     /// `master_check` with a bogus (non-existent) control socket must return
