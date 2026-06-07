@@ -56,6 +56,29 @@ use a2fa_core::ssh::master::{start_master, stop_all, PoolState, SlotStatus, POOL
 
 use crate::workers::{make_otp_closure, OtpRegistry};
 
+/// Read a host's `(password, secret)` from the macOS Keychain.
+///
+/// IMPORTANT: This MUST only ever be called from inside a spawned worker
+/// thread, NEVER on the daemon's synchronous startup/accept path or the
+/// heartbeat thread.  macOS's Security framework serializes Keychain access
+/// process-wide, so an unanswered "Always Allow" prompt blocks the calling
+/// thread indefinitely — keeping the read on a per-host worker means a stalled
+/// prompt only stalls that one host's login, never the daemon.
+///
+/// Missing / unreadable creds degrade to empty strings (login then simply
+/// fails for that host) rather than propagating an error.
+fn load_creds(host: &str) -> (String, String) {
+    use a2fa_core::creds::keychain::KeychainStore;
+    use a2fa_core::creds::{get_otpauth, get_password};
+    use a2fa_core::totp::extract_secret;
+
+    let ks = KeychainStore;
+    let password = get_password(&ks, host).ok().flatten().unwrap_or_default();
+    let otpauth = get_otpauth(&ks, host).ok().flatten().unwrap_or_default();
+    let secret = extract_secret(&otpauth).unwrap_or_default();
+    (password, secret)
+}
+
 // ---------------------------------------------------------------------------
 // Heartbeat / rotation timing constants (mirroring backend.py)
 // ---------------------------------------------------------------------------
@@ -264,10 +287,6 @@ pub fn boot_autostart(
     managers: &Arc<HostManagers>,
     registry: &Arc<OtpRegistry>,
 ) {
-    use a2fa_core::creds::keychain::KeychainStore;
-    use a2fa_core::creds::{get_otpauth, get_password};
-    use a2fa_core::totp::extract_secret;
-
     // Collect active hosts under the lock.
     let active_hosts: Vec<String> = {
         let guard = state.lock().unwrap();
@@ -300,18 +319,10 @@ pub fn boot_autostart(
             continue;
         }
 
-        let ks = KeychainStore;
-        let password = get_password(&ks, &host_name)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let otpauth = get_otpauth(&ks, &host_name)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let secret = extract_secret(&otpauth).unwrap_or_default();
-
         // Update status in State to "Connecting…".
+        // NOTE: NO Keychain read happens here — `spawn_managed_start` reads the
+        // creds inside its own worker thread, so a blocked "Always Allow"
+        // prompt can never wedge the daemon's startup path.
         {
             let mut guard = state.lock().unwrap();
             if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
@@ -324,8 +335,6 @@ pub fn boot_autostart(
         spawn_managed_start(
             host_name,
             0,
-            password,
-            secret,
             Arc::clone(registry),
             Arc::clone(state),
             Arc::clone(managers),
@@ -346,11 +355,13 @@ pub fn boot_autostart(
 ///
 /// Lock discipline: both `managers` and `state` locks are dropped before the
 /// blocking ssh call.
+///
+/// Credentials are read from the Keychain INSIDE the spawned thread (see
+/// [`load_creds`]), never on the caller — so a stalled macOS "Always Allow"
+/// prompt can only block this one host's worker, never the daemon.
 pub fn spawn_managed_start(
     host_name: String,
     slot: usize,
-    password: String,
-    secret: String,
     registry: Arc<OtpRegistry>,
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
@@ -358,6 +369,10 @@ pub fn spawn_managed_start(
     std::thread::Builder::new()
         .name(format!("managed-start:{host_name}:{slot}"))
         .spawn(move || {
+            // 0. Read Keychain creds IN-THREAD (may block on an unanswered
+            //    "Always Allow" prompt — but only this worker is affected).
+            let (password, secret) = load_creds(&host_name);
+
             // 1. Snapshot the current PoolState (brief lock).
             let mut pool = managers.snapshot(&host_name);
 
@@ -409,10 +424,11 @@ pub fn spawn_managed_start(
 /// fully released across all blocking ssh I/O (`stop_all`, `start_master`).
 /// The pattern is snapshot → off-lock I/O → write_back, repeated for the stop
 /// and start phases.
+///
+/// Credentials are read from the Keychain INSIDE the spawned thread (see
+/// [`load_creds`]), never on the caller.
 pub fn spawn_master_rebuild(
     host_name: String,
-    password: String,
-    secret: String,
     registry: Arc<OtpRegistry>,
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
@@ -420,6 +436,9 @@ pub fn spawn_master_rebuild(
     std::thread::Builder::new()
         .name(format!("master-rebuild:{host_name}"))
         .spawn(move || {
+            // --- Phase 0: read Keychain creds in-thread ---
+            let (password, secret) = load_creds(&host_name);
+
             // --- Phase 1: stop every slot (off-lock) ---
             let mut pool = managers.snapshot(&host_name);
             pool.reset_circuit_breakers();
@@ -483,10 +502,6 @@ pub fn rebuild_masters(
     managers: &Arc<HostManagers>,
     registry: &Arc<OtpRegistry>,
 ) -> usize {
-    use a2fa_core::creds::keychain::KeychainStore;
-    use a2fa_core::creds::{get_otpauth, get_password};
-    use a2fa_core::totp::extract_secret;
-
     // Filter the requested hosts down to those currently active (brief lock).
     let to_rebuild: Vec<String> = {
         let guard = state.lock().unwrap();
@@ -504,22 +519,11 @@ pub fn rebuild_masters(
 
     let mut count = 0;
     for host_name in to_rebuild {
-        let ks = KeychainStore;
-        let password = get_password(&ks, &host_name)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let otpauth = get_otpauth(&ks, &host_name)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let secret = extract_secret(&otpauth).unwrap_or_default();
-
+        // NOTE: NO Keychain read here — `spawn_master_rebuild` reads creds
+        // inside its own worker thread (no-wedge invariant).
         info!("[{host_name}] rebuild_masters: spawning master rebuild");
         spawn_master_rebuild(
             host_name,
-            password,
-            secret,
             Arc::clone(registry),
             Arc::clone(state),
             Arc::clone(managers),
@@ -616,24 +620,18 @@ fn heartbeat_loop(
     loop {
         std::thread::sleep(HEARTBEAT_INTERVAL);
 
-        // Snapshot active hosts + their credentials (brief State lock).
-        let active: Vec<(String, String, String)> = {
-            use a2fa_core::creds::keychain::KeychainStore;
-            use a2fa_core::creds::{get_otpauth, get_password};
-            use a2fa_core::totp::extract_secret;
-
+        // Snapshot active host NAMES only (brief State lock).
+        // CRITICAL no-wedge invariant: do NOT read the Keychain here. The
+        // heartbeat thread must never touch the Keychain — a stalled "Always
+        // Allow" prompt would otherwise freeze ALL heartbeating. Each restart /
+        // warm worker reads its own creds in-thread via `load_creds`.
+        let active: Vec<String> = {
             let guard = state.lock().unwrap();
             guard
                 .hosts
                 .iter()
                 .filter(|h| h.active)
-                .map(|h| {
-                    let ks = KeychainStore;
-                    let pw = get_password(&ks, &h.host).ok().flatten().unwrap_or_default();
-                    let oa = get_otpauth(&ks, &h.host).ok().flatten().unwrap_or_default();
-                    let secret = extract_secret(&oa).unwrap_or_default();
-                    (h.host.clone(), pw, secret)
-                })
+                .map(|h| h.host.clone())
                 .collect()
         };
 
@@ -643,11 +641,9 @@ fn heartbeat_loop(
             last_rotation_check = now;
         }
 
-        for (host_name, password, secret) in active {
+        for host_name in active {
             tick_host(
                 &host_name,
-                &password,
-                &secret,
                 do_rotation_check,
                 &state,
                 &managers,
@@ -663,8 +659,6 @@ fn heartbeat_loop(
 /// implementation of Python's `manage_pool_loop` inner logic.
 fn tick_host(
     host_name: &str,
-    password: &str,
-    secret: &str,
     do_rotation_check: bool,
     state: &Arc<Mutex<State>>,
     managers: &Arc<HostManagers>,
@@ -723,67 +717,87 @@ fn tick_host(
                     }
                 }
 
-                // Throttle before restart (mirrors Python's time.sleep(2)).
-                std::thread::sleep(RESTART_THROTTLE);
+                // The throttle, Keychain read, and blocking restart all run on
+                // a dedicated worker thread — NEVER on the heartbeat thread.
+                // This keeps the no-wedge invariant: a stalled "Always Allow"
+                // prompt blocks only this one restart worker, and the heartbeat
+                // keeps probing every other host.
+                let host_owned = host_name.to_owned();
+                let active_index = pool.active_index;
+                let state2 = Arc::clone(state);
+                let managers2 = Arc::clone(managers);
+                let registry2 = Arc::clone(registry);
+                std::thread::Builder::new()
+                    .name(format!("hb-restart:{host_name}:{slot}"))
+                    .spawn(move || {
+                        // Throttle before restart (mirrors Python's time.sleep(2)).
+                        std::thread::sleep(RESTART_THROTTLE);
 
-                // Re-check active flag — host may have been toggled off during sleep.
-                let still_active = {
-                    let guard = state.lock().unwrap();
-                    guard
-                        .hosts
-                        .iter()
-                        .find(|h| h.host == host_name)
-                        .map(|h| h.active)
-                        .unwrap_or(false)
-                };
-                if !still_active {
-                    info!("[{host_name}] heartbeat: host deactivated during throttle — skipping restart");
-                    continue;
-                }
+                        // Re-check active flag — host may have been toggled off
+                        // during the throttle.
+                        let still_active = {
+                            let guard = state2.lock().unwrap();
+                            guard
+                                .hosts
+                                .iter()
+                                .find(|h| h.host == host_owned)
+                                .map(|h| h.active)
+                                .unwrap_or(false)
+                        };
+                        if !still_active {
+                            info!("[{host_owned}] heartbeat: host deactivated during throttle — skipping restart");
+                            return;
+                        }
 
-                // Restart off-lock.
-                let otp_closure = make_otp_closure(
-                    secret.to_owned(),
-                    host_name.to_owned(),
-                    Arc::clone(registry),
-                );
-                let mut pool_mut = managers.snapshot(host_name);
-                let ready = start_master(&mut pool_mut, slot, password, otp_closure);
-                managers.write_back(host_name, &pool_mut);
+                        // Read Keychain creds IN-THREAD (may block on a prompt).
+                        let (password, secret) = load_creds(&host_owned);
 
-                // Write result back to engine State.
-                let mut guard = state.lock().unwrap();
-                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                    if ready {
-                        h.is_master_ready = true;
-                        h.pool_alive = 1;
-                        h.pool_index = slot as u8;
-                        h.status = "Connected".into();
-                        h.last_msg = format!("Slot {slot} reconnected");
-                    } else {
-                        h.status = "Reconnect failed".into();
-                        h.last_msg = format!("Slot {slot} reconnect failed");
-                    }
-                }
+                        // Restart off-lock.
+                        let otp_closure = make_otp_closure(
+                            secret,
+                            host_owned.clone(),
+                            Arc::clone(&registry2),
+                        );
+                        let mut pool_mut = managers2.snapshot(&host_owned);
+                        let ready = start_master(&mut pool_mut, slot, &password, otp_closure);
+                        managers2.write_back(&host_owned, &pool_mut);
 
-                // If we just restarted the active slot, try rotating to the
-                // spare if it's ready (mirrors Python: `update_symlink(other)`).
-                if slot == pool.active_index {
-                    let other = (slot + 1) % POOL_SIZE;
-                    let other_ready = managers
-                        .with_pool(host_name, |p| p.slot_status[other] == SlotStatus::Ready)
-                        .unwrap_or(false);
-                    if other_ready {
-                        managers.with_pool_mut(host_name, |p| { p.try_rotate(); });
-                    }
-                }
+                        // Write result back to engine State.
+                        {
+                            let mut guard = state2.lock().unwrap();
+                            if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
+                                if ready {
+                                    h.is_master_ready = true;
+                                    h.pool_alive = 1;
+                                    h.pool_index = slot as u8;
+                                    h.status = "Connected".into();
+                                    h.last_msg = format!("Slot {slot} reconnected");
+                                } else {
+                                    h.status = "Reconnect failed".into();
+                                    h.last_msg = format!("Slot {slot} reconnect failed");
+                                }
+                            }
+                        }
+
+                        // If we just restarted the active slot, try rotating to
+                        // the spare if it's ready (mirrors Python:
+                        // `update_symlink(other)`).
+                        if slot == active_index {
+                            let other = (slot + 1) % POOL_SIZE;
+                            let other_ready = managers2
+                                .with_pool(&host_owned, |p| p.slot_status[other] == SlotStatus::Ready)
+                                .unwrap_or(false);
+                            if other_ready {
+                                managers2.with_pool_mut(&host_owned, |p| { p.try_rotate(); });
+                            }
+                        }
+                    })
+                    .expect("failed to spawn hb-restart thread");
             }
 
             MaintenanceAction::WarmSlot1 => {
                 info!("[{host_name}] heartbeat: warming slot 1 (staggered)");
                 let host_owned = host_name.to_owned();
-                let pw_owned = password.to_owned();
-                let sec_owned = secret.to_owned();
                 let state2 = Arc::clone(state);
                 let managers2 = Arc::clone(managers);
                 let registry2 = Arc::clone(registry);
@@ -806,6 +820,8 @@ fn tick_host(
                             info!("[{host_owned}] warm-slot-1 aborted — host no longer active");
                             return;
                         }
+                        // Read Keychain creds IN-THREAD (no-wedge invariant).
+                        let (pw_owned, sec_owned) = load_creds(&host_owned);
                         let otp_closure = make_otp_closure(
                             sec_owned,
                             host_owned.clone(),
@@ -884,8 +900,6 @@ fn tick_host(
 /// Python's `manage_pool_loop`.
 pub fn spawn_warmup_slot1(
     host_name: String,
-    password: String,
-    secret: String,
     registry: Arc<OtpRegistry>,
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
@@ -911,6 +925,8 @@ pub fn spawn_warmup_slot1(
                 return;
             }
 
+            // Read Keychain creds IN-THREAD (no-wedge invariant).
+            let (password, secret) = load_creds(&host_name);
             let otp_closure =
                 make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
             let mut pool = managers.snapshot(&host_name);
@@ -1225,6 +1241,38 @@ mod tests {
         let registry = OtpRegistry::new();
         let n = rebuild_masters(&[], &state, &managers, &registry);
         assert_eq!(n, 0);
+    }
+
+    /// No-wedge guarantee: `boot_autostart` must return promptly and without
+    /// panicking even when every active host needs a login.  It must NOT read
+    /// the Keychain on the calling thread — credential reads happen inside the
+    /// spawned `spawn_managed_start` worker threads (which we don't join here).
+    /// The control paths are bogus, so `adopt_if_alive` returns false and each
+    /// host takes the spawn path; the call returns immediately regardless.
+    #[test]
+    fn boot_autostart_returns_promptly_with_active_hosts() {
+        let state = state_with_hosts(vec![
+            host("k6", true),
+            host("cannon", true),
+            host("idlehost", false),
+        ]);
+        let managers = HostManagers::new();
+        let registry = OtpRegistry::new();
+
+        let start = Instant::now();
+        boot_autostart(&state, &managers, &registry);
+        // The calling thread must not block on any Keychain / ssh I/O.
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "boot_autostart must return promptly (no creds/ssh on the caller)"
+        );
+
+        // Active hosts were moved to "Connecting"; inactive host untouched.
+        let guard = state.lock().unwrap();
+        let k6 = guard.hosts.iter().find(|h| h.host == "k6").unwrap();
+        assert_eq!(k6.status, "Connecting");
+        let idle = guard.hosts.iter().find(|h| h.host == "idlehost").unwrap();
+        assert_eq!(idle.status, "Idle");
     }
 
     /// `rebuild_masters` filters out inactive hosts — passing an inactive host

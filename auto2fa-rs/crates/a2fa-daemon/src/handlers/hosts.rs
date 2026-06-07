@@ -182,19 +182,18 @@ pub fn host_toggle_managed(
         .ok_or_else(|| Error::BadParams("host required".into()))?
         .to_owned();
 
-    // Snapshot credentials + active flag while holding the lock.
-    let (currently_active, password_opt, otpauth_opt) = {
+    // Snapshot the active flag while holding the lock.
+    // NO Keychain read happens on this handler thread — `spawn_managed_start`
+    // and `spawn_warmup_slot1` read the creds inside their own worker threads,
+    // so a stalled "Always Allow" prompt can never wedge the IPC handler.
+    let currently_active = {
         let guard = state.lock().unwrap();
         let host = guard
             .hosts
             .iter()
             .find(|h| h.host == host_name)
             .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?;
-        let currently_active = host.active;
-        let ks = a2fa_core::creds::keychain::KeychainStore;
-        let pw = a2fa_core::creds::get_password(&ks, &host_name).ok().flatten();
-        let oa = a2fa_core::creds::get_otpauth(&ks, &host_name).ok().flatten();
-        (currently_active, pw, oa)
+        host.active
     };
 
     match (managers, registry) {
@@ -211,11 +210,6 @@ pub fn host_toggle_managed(
                 spawn_managed_stop(host_name.clone(), Arc::clone(state), Arc::clone(&mgrs));
             } else {
                 // Activate: reset circuit breakers (on the persistent state) + start.
-                let password = password_opt.unwrap_or_default();
-                let otpauth = otpauth_opt.unwrap_or_default();
-                let secret =
-                    a2fa_core::totp::extract_secret(&otpauth).unwrap_or_default();
-
                 // Reset circuit breakers so a manual toggle gives a fresh start.
                 mgrs.with_pool_mut(&host_name, |p| p.reset_circuit_breakers());
 
@@ -228,22 +222,18 @@ pub fn host_toggle_managed(
                     }
                 }
 
-                // Spawn slot 0 start.
+                // Spawn slot 0 start (reads creds in-thread).
                 spawn_managed_start(
                     host_name.clone(),
                     0,
-                    password.clone(),
-                    secret.clone(),
                     Arc::clone(&reg),
                     Arc::clone(state),
                     Arc::clone(&mgrs),
                 );
 
-                // Kick off slot-1 warm-up (staggered ~5 s).
+                // Kick off slot-1 warm-up (staggered ~5 s; reads creds in-thread).
                 spawn_warmup_slot1(
                     host_name.clone(),
-                    password,
-                    secret,
                     Arc::clone(&reg),
                     Arc::clone(state),
                     Arc::clone(&mgrs),
