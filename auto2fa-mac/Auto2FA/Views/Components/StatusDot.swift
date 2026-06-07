@@ -5,8 +5,8 @@ import SwiftUI
 /// - An exclamation-mark triangle for `attention` states (failed / stale / portBusy).
 /// - A plain filled circle for `ok` (connected / alive) and `idle` states.
 ///
-/// The originals (`PulsingDot` in HostsView/TunnelsView) are kept intact;
-/// this is the shared replacement used by new views.
+/// This is the single shared status indicator for the whole app (it replaced
+/// the per-view `PulsingDot` implementations).
 struct StatusDot: View {
     // Internal severity bucket — collapses the two model enums into four
     // universal categories so colour + animation logic stays in one place.

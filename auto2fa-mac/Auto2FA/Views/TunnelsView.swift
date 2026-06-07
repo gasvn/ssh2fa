@@ -1,27 +1,5 @@
 import SwiftUI
 
-/// Status dot that pulses (scale + opacity) when `animated` is true.
-/// Kept for compatibility; the tunnels list now routes status through the
-/// shared `StatusDot`/`StatusBadge` components instead.
-struct PulsingDot: View {
-    let color: Color
-    let animated: Bool
-    @State private var phase: Bool = false
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
-            .scaleEffect(animated && phase ? 1.4 : 1.0)
-            .opacity(animated && phase ? 0.5 : 1.0)
-            .animation(
-                animated ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default,
-                value: phase
-            )
-            .onAppear { if animated { phase = true } }
-            .onChange(of: animated) { _, on in phase = on }
-    }
-}
-
 struct TunnelsView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
