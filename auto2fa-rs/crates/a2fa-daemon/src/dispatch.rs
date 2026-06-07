@@ -30,17 +30,19 @@ use serde_json::Value;
 
 use crate::handlers::{hosts, system, tunnels};
 use crate::managers::HostManagers;
+use crate::tunnel_runtime::TunnelRuntime;
 use crate::workers::OtpRegistry;
 
 /// Shared daemon-wide context threaded through the dispatch layer.
 ///
-/// Bundles the three Arc-wrapped objects that handlers may need so we can add
+/// Bundles the Arc-wrapped singletons that handlers may need so we can add
 /// new context objects in one place without changing every function signature.
 #[derive(Clone)]
 pub struct DaemonCtx {
     pub state: Arc<Mutex<State>>,
     pub managers: Arc<HostManagers>,
     pub registry: Arc<OtpRegistry>,
+    pub runtime: Arc<TunnelRuntime>,
 }
 
 /// Dispatch one request line (raw bytes) and return the response line.
@@ -91,6 +93,7 @@ pub fn dispatch(state: &Arc<Mutex<State>>, line: &[u8]) -> String {
         state: Arc::clone(state),
         managers: HostManagers::new(),
         registry: OtpRegistry::new(),
+        runtime: TunnelRuntime::new(),
     }, method, params);
 
     match result {
@@ -185,11 +188,11 @@ fn route_with_ctx(
 
         // --- Tunnels (write/persist) ---
         Method::TunnelAdd         => tunnels::tunnel_add(state, params),
-        Method::TunnelRemove      => tunnels::tunnel_remove(state, params),
-        Method::TunnelStart       => tunnels::tunnel_start(state, params),
-        Method::TunnelStop        => tunnels::tunnel_stop(state, params),
-        Method::TunnelToggle      => tunnels::tunnel_toggle(state, params),
-        Method::TunnelSetNode     => tunnels::tunnel_set_node(state, params),
+        Method::TunnelRemove      => tunnels::tunnel_remove(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelStart       => tunnels::tunnel_start(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelStop        => tunnels::tunnel_stop(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelToggle      => tunnels::tunnel_toggle(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelSetNode     => tunnels::tunnel_set_node(state, params, Some(Arc::clone(&ctx.runtime))),
         Method::TunnelSetAutostart=> tunnels::tunnel_set_autostart(state, params),
         Method::TunnelSetJumpCandidates => tunnels::tunnel_set_jump_candidates(state, params),
         Method::TunnelSetPostConnect    => tunnels::tunnel_set_post_connect(state, params),

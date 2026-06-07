@@ -42,6 +42,8 @@ use crate::dispatch::{dispatch_with_ctx, DaemonCtx};
 use crate::managers::{boot_autostart, start_heartbeat, HostManagers};
 use crate::singleton::acquire_lock;
 use crate::subscribers;
+use crate::tunnel_maintenance::start_tunnel_maintenance;
+use crate::tunnel_runtime::TunnelRuntime;
 use crate::workers::OtpRegistry;
 
 // ---------------------------------------------------------------------------
@@ -133,7 +135,20 @@ pub fn run() -> Result<()> {
     let managers = HostManagers::new();
     let registry = OtpRegistry::new();
 
-    // 5c. Boot auto-start: connect every host that was active at last shutdown.
+    // 5c. Create the tunnel runtime registry (child handles + runtime counters).
+    let runtime = TunnelRuntime::new();
+
+    // Record daemon startup time so the maintenance loop can fire boot auto-start
+    // after a 3-second grace period (mirrors Python's startup_ts + 3s logic).
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        runtime.set_startup_ts(now);
+    }
+
+    // 5d. Boot auto-start: connect every host that was active at last shutdown.
     //     This mirrors Python's `init_managers` which starts active-host threads
     //     on daemon startup.
     boot_autostart(&state, &managers, &registry);
@@ -154,6 +169,20 @@ pub fn run() -> Result<()> {
     //     restarts dead masters — the Rust port of `manage_pool_loop`.
     start_heartbeat(Arc::clone(&state), Arc::clone(&managers), Arc::clone(&registry));
 
+    // 6c. Spawn tunnel maintenance thread.
+    //     Runs every ~1 s: auto-recovery, child-died detection, squeue/stale,
+    //     and boot auto-start — the Rust port of `TunnelManager.tick()`.
+    {
+        use std::collections::HashSet;
+        let post_connect_running: Arc<std::sync::Mutex<HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(HashSet::new()));
+        start_tunnel_maintenance(
+            Arc::clone(&state),
+            Arc::clone(&runtime),
+            post_connect_running,
+        );
+    }
+
     log::info!("daemon listening on {}", sock_p.display());
     println!("a2fa-daemon listening on {}", sock_p.display());
 
@@ -162,6 +191,7 @@ pub fn run() -> Result<()> {
         state: Arc::clone(&state),
         managers: Arc::clone(&managers),
         registry: Arc::clone(&registry),
+        runtime: Arc::clone(&runtime),
     };
 
     // 7. Accept loop.

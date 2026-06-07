@@ -27,7 +27,8 @@ use a2fa_core::ssh::control::active_symlink_path;
 use a2fa_core::tunnels::discover_nodes_via_control;
 use serde_json::{json, Value};
 
-use crate::workers::spawn_tunnel_start;
+use crate::tunnel_runtime::TunnelRuntime;
+use crate::workers::{spawn_tunnel_start, spawn_tunnel_start_with_runtime};
 
 // ---------------------------------------------------------------------------
 // Snapshot helper (mirrors `_tunnel_snapshot` in daemon.py)
@@ -156,10 +157,24 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 // tunnel_remove
 // ---------------------------------------------------------------------------
 
-pub fn tunnel_remove(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_remove(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?;
+
+    // Kill the ssh -L child process (SIGKILL) before removing the entry.
+    // Do this BEFORE acquiring the State lock so we never hold the lock across
+    // the kill syscall (which is fast but is still a syscall).
+    if let Some(rt) = &runtime {
+        rt.kill_child(name);
+        rt.with_rt_mut(name, |r| {
+            r.last_recovery_attempt_ts = 0.0;
+        });
+    }
 
     let mut guard = state.lock().unwrap();
     let pos = guard
@@ -168,20 +183,21 @@ pub fn tunnel_remove(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
         .position(|t| t.name == name)
         .ok_or_else(|| Error::NotFound(name.to_owned()))?;
 
-    // If the tunnel is alive, kill it before removing.
-    // We can't hold the lock across the kill, but kill+wait is fast (SIGKILL).
-    // The Tunnel model doesn't store the Child handle in State (it's off-lock);
-    // mark it stopped so the tick loop doesn't try to restart it.
-    if guard.tunnels[pos].status == TunnelStatus::Alive {
-        guard.tunnels[pos].status = TunnelStatus::Idle;
-        guard.tunnels[pos].wants_alive = false;
-    }
+    // Clear wants_alive so the maintenance loop doesn't attempt to restart
+    // the tunnel between the kill above and the remove below.
+    guard.tunnels[pos].status = TunnelStatus::Idle;
+    guard.tunnels[pos].wants_alive = false;
     guard.tunnels.remove(pos);
 
     let path = guard.tunnels_path.clone();
     let tunnels = guard.tunnels.clone();
     drop(guard);
     let _ = save_tunnels(&path, &tunnels);
+
+    // Clean up runtime state (counters + child entry) for this tunnel.
+    if let Some(rt) = &runtime {
+        rt.remove(name);
+    }
 
     Ok(Value::Null)
 }
@@ -195,7 +211,11 @@ pub fn tunnel_remove(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
 /// Extracts jump/node/port info from State (under the lock), then dispatches
 /// to `spawn_tunnel_start` which runs the blocking ssh off-lock.
 /// Mirrors `TunnelManager.start` in tunnels.py.
-pub fn tunnel_start(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_start(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?
@@ -275,17 +295,32 @@ pub fn tunnel_start(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> 
     // Spawn the blocking worker off-lock.
     let post_connect_running: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
-    spawn_tunnel_start(
-        name,
-        jump,
-        user,
-        node,
-        local_port,
-        remote_port,
-        post_connect_cmd,
-        Arc::clone(state),
-        post_connect_running,
-    );
+
+    match runtime {
+        Some(rt) => spawn_tunnel_start_with_runtime(
+            name,
+            jump,
+            user,
+            node,
+            local_port,
+            remote_port,
+            post_connect_cmd,
+            Arc::clone(state),
+            post_connect_running,
+            rt,
+        ),
+        None => spawn_tunnel_start(
+            name,
+            jump,
+            user,
+            node,
+            local_port,
+            remote_port,
+            post_connect_cmd,
+            Arc::clone(state),
+            post_connect_running,
+        ),
+    }
 
     Ok(Value::Null)
 }
@@ -297,31 +332,58 @@ pub fn tunnel_start(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> 
 /// Stop a tunnel — idempotent.
 ///
 /// Mirrors `TunnelManager.stop` (user_initiated=True) in tunnels.py.
-/// Clears `wants_alive`, marks the tunnel Idle, and persists the change.
-/// The actual ssh -L child is not tracked in State (it is owned by the worker
-/// thread); marking Idle + clearing wants_alive is sufficient to stop auto-
-/// recovery from reviving it.
-pub fn tunnel_stop(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+/// Clears `wants_alive`, marks the tunnel Idle, persists the change, and
+/// SIGKILLs the `ssh -L` child process via the runtime registry.
+pub fn tunnel_stop(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?;
 
-    let mut guard = state.lock().unwrap();
-    let t = guard
-        .tunnels
-        .iter_mut()
-        .find(|t| t.name == name)
-        .ok_or_else(|| Error::NotFound(name.to_owned()))?;
+    // Clear wants_alive and mark Idle under the State lock FIRST, so the
+    // maintenance loop sees the user's intent immediately.
+    {
+        let mut guard = state.lock().unwrap();
+        let t = guard
+            .tunnels
+            .iter_mut()
+            .find(|t| t.name == name)
+            .ok_or_else(|| Error::NotFound(name.to_owned()))?;
 
-    if t.status == TunnelStatus::Idle {
-        return Ok(Value::Null); // idempotent
+        if t.status == TunnelStatus::Idle {
+            return Ok(Value::Null); // idempotent
+        }
+
+        t.wants_alive = false;
+        t.status = TunnelStatus::Idle;
+        t.last_msg = "Stopped".into();
+        t.active_jump = None;
     }
 
-    t.wants_alive = false;
-    t.status = TunnelStatus::Idle;
-    t.last_msg = "Stopped".into();
-    t.active_jump = None;
+    // Kill the child process AFTER releasing the State lock.
+    // SIGKILL + wait is fast, but we still don't want to hold the lock for it.
+    if let Some(rt) = &runtime {
+        rt.kill_child(name);
+        // Accumulate uptime: fold alive_since into total_uptime_sec.
+        let alive_since = rt.with_rt_mut(name, |r| {
+            let s = r.alive_since;
+            r.alive_since = None;
+            s
+        });
+        if let Some(since) = alive_since {
+            let delta = (a2fa_core::tunnels::uptime::now_unix() - since).max(0.0);
+            let mut guard = state.lock().unwrap();
+            if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                t.total_uptime_sec += delta;
+            }
+        }
+    }
 
+    // Persist the change.
+    let guard = state.lock().unwrap();
     let path = guard.tunnels_path.clone();
     let tunnels = guard.tunnels.clone();
     drop(guard);
@@ -339,7 +401,11 @@ pub fn tunnel_stop(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 /// Mirrors the Python original: stop when status ∈ {Alive, Starting};
 /// start otherwise. Stopping a "Starting" tunnel is useful when the user
 /// wants to abort a connection attempt that is still in progress.
-pub fn tunnel_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_toggle(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?;
@@ -356,9 +422,9 @@ pub fn tunnel_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
     };
 
     if should_stop {
-        tunnel_stop(state, params)
+        tunnel_stop(state, params, runtime)
     } else {
-        tunnel_start(state, params)
+        tunnel_start(state, params, runtime)
     }
 }
 
@@ -373,7 +439,11 @@ pub fn tunnel_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
 /// - If was Idle/Failed/Stale → start.
 /// - If was Alive/Starting AND the node changed → stop then start
 ///   (so the forward re-targets the new node).
-pub fn tunnel_set_node(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_set_node(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let name = params["name"]
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?
@@ -397,7 +467,7 @@ pub fn tunnel_set_node(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
             .ok_or_else(|| Error::NotFound(name.clone()))?;
 
         let prev_node = t.last_node.clone();
-        let prev_status = t.status.clone();
+        let prev_status = t.status;
 
         t.last_node = Some(node.clone());
         if !user.is_empty() {
@@ -420,13 +490,13 @@ pub fn tunnel_set_node(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
         TunnelStatus::Idle | TunnelStatus::Failed | TunnelStatus::Stale | TunnelStatus::PortBusy => {
             // Was idle / stuck — just start.
             // Mirrors Python: status ∈ {idle, stale, failed, port_busy} → start.
-            tunnel_start(state, &params_with_name)?;
+            tunnel_start(state, &params_with_name, runtime)?;
         }
         TunnelStatus::Alive | TunnelStatus::Starting => {
             // Was alive — only restart if the node actually changed.
             if old_node.as_deref() != Some(&node) {
-                tunnel_stop(state, &params_with_name)?;
-                tunnel_start(state, &params_with_name)?;
+                tunnel_stop(state, &params_with_name, runtime.clone())?;
+                tunnel_start(state, &params_with_name, runtime)?;
             }
         }
     }
@@ -689,9 +759,9 @@ pub fn tunnels_batch(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
     for name in &names {
         let pv = json!({"name": name});
         let outcome = if action == "start" {
-            tunnel_start(state, &pv)
+            tunnel_start(state, &pv, None)
         } else {
-            tunnel_stop(state, &pv)
+            tunnel_stop(state, &pv, None)
         };
         match outcome {
             Ok(_) => results.push(json!({"name": name, "ok": true})),
@@ -941,7 +1011,7 @@ mod tests {
     #[test]
     fn tunnel_stop_marks_idle_and_clears_wants_alive() {
         let state = make_alive_tunnel("nb", 9300);
-        tunnel_stop(&state, &json!({"name": "nb"})).unwrap();
+        tunnel_stop(&state, &json!({"name": "nb"}), None).unwrap();
         let guard = state.lock().unwrap();
         let t = &guard.tunnels[0];
         assert_eq!(t.status, TunnelStatus::Idle);
@@ -952,14 +1022,14 @@ mod tests {
     fn tunnel_stop_idempotent() {
         let state = make_state_with_tunnel("nb", 9301);
         // Already idle — should be a no-op, no error.
-        tunnel_stop(&state, &json!({"name": "nb"})).unwrap();
+        tunnel_stop(&state, &json!({"name": "nb"}), None).unwrap();
         assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
     }
 
     #[test]
     fn tunnel_stop_unknown_name_returns_not_found() {
         let state = make_state();
-        let err = tunnel_stop(&state, &json!({"name": "ghost"})).unwrap_err();
+        let err = tunnel_stop(&state, &json!({"name": "ghost"}), None).unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
     }
 
@@ -968,7 +1038,7 @@ mod tests {
     #[test]
     fn tunnel_start_unknown_name_returns_not_found() {
         let state = make_state();
-        let err = tunnel_start(&state, &json!({"name": "ghost"})).unwrap_err();
+        let err = tunnel_start(&state, &json!({"name": "ghost"}), None).unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
     }
 
@@ -977,7 +1047,7 @@ mod tests {
         // Tunnel with no last_node → start should set last_msg and return Ok.
         let state = make_state_with_tunnel("nb", 9302);
         // No ready host → no jump; no node → picks the "no node" path.
-        tunnel_start(&state, &json!({"name": "nb"})).unwrap();
+        tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
         let msg = state.lock().unwrap().tunnels[0].last_msg.clone();
         assert!(msg.contains("no node") || msg.contains("waiting") || msg.contains("jump"));
     }
@@ -987,7 +1057,7 @@ mod tests {
     #[test]
     fn tunnel_toggle_alive_stops() {
         let state = make_alive_tunnel("nb", 9400);
-        tunnel_toggle(&state, &json!({"name": "nb"})).unwrap();
+        tunnel_toggle(&state, &json!({"name": "nb"}), None).unwrap();
         assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
     }
 
@@ -995,7 +1065,7 @@ mod tests {
     #[test]
     fn tunnel_toggle_starting_stops() {
         let state = make_tunnel_with_status("nb", 9401, TunnelStatus::Starting);
-        tunnel_toggle(&state, &json!({"name": "nb"})).unwrap();
+        tunnel_toggle(&state, &json!({"name": "nb"}), None).unwrap();
         assert_eq!(
             state.lock().unwrap().tunnels[0].status,
             TunnelStatus::Idle,
@@ -1011,6 +1081,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            None,
         )
         .unwrap();
         let guard = state.lock().unwrap();
@@ -1024,6 +1095,7 @@ mod tests {
         let err = tunnel_set_node(
             &state,
             &json!({"name": "ghost", "node": "holygpu01"}),
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
@@ -1036,6 +1108,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            None,
         )
         .unwrap();
         let guard = state.lock().unwrap();
@@ -1055,6 +1128,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            None,
         )
         .unwrap();
         let guard = state.lock().unwrap();

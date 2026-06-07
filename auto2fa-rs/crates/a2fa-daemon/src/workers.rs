@@ -267,6 +267,63 @@ pub fn spawn_tunnel_start(
     state: Arc<Mutex<State>>,
     post_connect_running: Arc<Mutex<std::collections::HashSet<String>>>,
 ) {
+    spawn_tunnel_start_inner(
+        name,
+        jump,
+        user,
+        node,
+        local_port,
+        remote_port,
+        post_connect_cmd,
+        state,
+        post_connect_running,
+        None,
+    );
+}
+
+/// Same as `spawn_tunnel_start` but also stores the `Child` in the
+/// `TunnelRuntime` registry and sets `alive_since` on success.
+///
+/// Used by the IPC `tunnel_start` handler when a `TunnelRuntime` is available.
+pub fn spawn_tunnel_start_with_runtime(
+    name: String,
+    jump: String,
+    user: String,
+    node: String,
+    local_port: u16,
+    remote_port: u16,
+    post_connect_cmd: Option<String>,
+    state: Arc<Mutex<State>>,
+    post_connect_running: Arc<Mutex<std::collections::HashSet<String>>>,
+    runtime: Arc<crate::tunnel_runtime::TunnelRuntime>,
+) {
+    spawn_tunnel_start_inner(
+        name,
+        jump,
+        user,
+        node,
+        local_port,
+        remote_port,
+        post_connect_cmd,
+        state,
+        post_connect_running,
+        Some(runtime),
+    );
+}
+
+/// Internal implementation shared by the two public variants above.
+fn spawn_tunnel_start_inner(
+    name: String,
+    jump: String,
+    user: String,
+    node: String,
+    local_port: u16,
+    remote_port: u16,
+    post_connect_cmd: Option<String>,
+    state: Arc<Mutex<State>>,
+    post_connect_running: Arc<Mutex<std::collections::HashSet<String>>>,
+    runtime: Option<Arc<crate::tunnel_runtime::TunnelRuntime>>,
+) {
     std::thread::Builder::new()
         .name(format!("tunnel-start:{name}"))
         .spawn(move || {
@@ -292,12 +349,18 @@ pub fn spawn_tunnel_start(
 
             let timeout = std::time::Duration::from_secs(10);
             match probe_and_settle(child, local_port, timeout) {
-                Ok((true, _child)) => {
+                Ok((true, child)) => {
                     // Tunnel is alive.
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs_f64();
+
+                    // Store child in runtime registry if available.
+                    if let Some(rt) = &runtime {
+                        rt.store_child(&name, child);
+                        rt.with_rt_mut(&name, |r| r.alive_since = Some(now));
+                    }
 
                     let mut guard = state.lock().unwrap();
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {

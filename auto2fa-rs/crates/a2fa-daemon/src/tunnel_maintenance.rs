@@ -1,0 +1,681 @@
+//! Autonomous tunnel maintenance loop — Rust port of `TunnelManager.tick()`.
+//!
+//! Runs every ~1 s on its own thread (started from `server::run`).
+//!
+//! # Cases handled (mirrors Python `tick()`)
+//!
+//! * **Case 0 — auto-recovery**: if `wants_alive` and status ∈
+//!   {Idle, Failed, Stale, PortBusy} and ≥15 s since last attempt → start.
+//! * **Case 1 — child-died / ghost-alive**: if status == Alive but the child
+//!   has exited OR the local port is no longer bound → stop(non-user) + recover.
+//! * **Case 2 — disabled jump**: if status == Alive but the tunnel's active
+//!   jump host is now `active == false` → stop (user stop, no recover).
+//! * **Case 3 — squeue/stale**: every 30 s, discover nodes on the jump; count
+//!   misses; at ≥2 misses re-check child identity under lock then mark stale.
+//! * **Boot auto-start**: once after `startup_ts + 3 s`, start tunnels with
+//!   `auto_start == true` OR (`wants_alive == true` AND `last_node.is_some()`).
+//!
+//! # Lock discipline
+//!
+//! The `State` mutex is **never** held while doing ssh I/O or blocking probes.
+//! Pattern:
+//!   1. Lock → snapshot fields → unlock.
+//!   2. Do blocking work off-lock.
+//!   3. Lock → write result back → unlock.
+//!
+//! The `TunnelRuntime` mutex is likewise held only for brief hash-map
+//! operations; never across any I/O.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use log::{info, warn};
+
+use a2fa_core::engine::State;
+use a2fa_core::model::TunnelStatus;
+use a2fa_core::tunnels::discovery::discover_nodes_via_control;
+use a2fa_core::tunnels::probe::port_available;
+use a2fa_core::tunnels::uptime::now_unix;
+use a2fa_core::ssh::control::active_symlink_path;
+
+use crate::tunnel_runtime::{
+    should_autostart, tunnel_action, TunnelAction, TunnelRuntime, TunnelStatusKind,
+    STALE_MISS_THRESHOLD,
+};
+
+/// How often the maintenance loop wakes up.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(1000);
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Spawn the background tunnel-maintenance thread.
+///
+/// Returns immediately; the thread runs until the process exits.
+pub fn start_tunnel_maintenance(
+    state: Arc<Mutex<State>>,
+    runtime: Arc<TunnelRuntime>,
+    post_connect_running: Arc<Mutex<HashSet<String>>>,
+) {
+    std::thread::Builder::new()
+        .name("tunnel-maintenance".into())
+        .spawn(move || maintenance_loop(state, runtime, post_connect_running))
+        .expect("failed to spawn tunnel-maintenance thread");
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance loop
+// ---------------------------------------------------------------------------
+
+fn maintenance_loop(
+    state: Arc<Mutex<State>>,
+    runtime: Arc<TunnelRuntime>,
+    post_connect_running: Arc<Mutex<HashSet<String>>>,
+) {
+    loop {
+        std::thread::sleep(MAINTENANCE_INTERVAL);
+        maintenance_tick(&state, &runtime, &post_connect_running);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One maintenance pass
+// ---------------------------------------------------------------------------
+
+/// Run one complete maintenance pass over all tunnels.
+///
+/// This is `pub(crate)` so `server.rs` can call it; it is also `#[cfg(test)]`-
+/// visible so unit tests can invoke it directly.
+pub fn maintenance_tick(
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    post_connect_running: &Arc<Mutex<HashSet<String>>>,
+) {
+    let now = now_unix();
+
+    // ---- Boot auto-start ------------------------------------------------
+
+    let (startup_ts, already_started) = runtime.boot_state();
+    if !already_started && startup_ts > 0.0 && now - startup_ts >= crate::tunnel_runtime::BOOT_GRACE_SEC {
+        run_boot_autostart(state, runtime, post_connect_running, now);
+        runtime.mark_auto_started();
+    }
+
+    // ---- Per-tunnel maintenance ----------------------------------------
+
+    // Snapshot tunnel list + relevant host state under a brief lock.
+    let tunnel_snapshots: Vec<TunnelSnapshot> = {
+        let guard = state.lock().unwrap();
+        guard
+            .tunnels
+            .iter()
+            .map(|t| TunnelSnapshot {
+                name: t.name.clone(),
+                local_port: t.local_port,
+                remote_port: t.remote_port,
+                status: t.status,
+                wants_alive: t.wants_alive,
+                active_jump: t.active_jump.clone(),
+                last_node: t.last_node.clone(),
+                last_user: t.last_user.clone(),
+                post_connect_cmd: t.post_connect_cmd.clone(),
+                jump_host_active: t.active_jump.as_deref().and_then(|jh| {
+                    guard.hosts.iter().find(|h| h.host == jh).map(|h| h.active)
+                }),
+                jump_host_ready: t.active_jump.as_deref().and_then(|jh| {
+                    guard.hosts.iter().find(|h| h.host == jh).map(|h| h.is_master_ready)
+                }),
+            })
+            .collect()
+    };
+
+    for snap in tunnel_snapshots {
+        process_tunnel(&snap, state, runtime, post_connect_running, now);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-tunnel processing
+// ---------------------------------------------------------------------------
+
+/// Lightweight snapshot of the per-tunnel fields we need for one maintenance pass.
+struct TunnelSnapshot {
+    name: String,
+    local_port: u16,
+    #[allow(dead_code)]
+    remote_port: u16,
+    status: TunnelStatus,
+    wants_alive: bool,
+    active_jump: Option<String>,
+    last_node: Option<String>,
+    #[allow(dead_code)]
+    last_user: Option<String>,
+    #[allow(dead_code)]
+    post_connect_cmd: Option<String>,
+    /// `Some(true/false)` → the tunnel's active_jump host's `active` flag.
+    /// `None` → no active_jump recorded.
+    jump_host_active: Option<bool>,
+    /// `Some(true/false)` → the jump's `is_master_ready` flag.
+    #[allow(dead_code)]
+    jump_host_ready: Option<bool>,
+}
+
+fn process_tunnel(
+    snap: &TunnelSnapshot,
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    post_connect_running: &Arc<Mutex<HashSet<String>>>,
+    now: f64,
+) {
+    let name = &snap.name;
+
+    // Read runtime counters (brief lock).
+    let (last_recovery_ts, last_squeue_ts) = runtime
+        .with_rt(name, |r| (r.last_recovery_attempt_ts, r.last_squeue_check_ts))
+        .unwrap_or((0.0, 0.0));
+
+    // Port check (off-lock, but cheap local bind).
+    let port_bound = !port_available(snap.local_port);
+
+    // Child alive check (brief registry lock, no I/O).
+    let child_alive = runtime.child_alive(name);
+
+    let status_kind = tunnel_status_kind(&snap.status);
+
+    let action = tunnel_action(
+        status_kind,
+        snap.wants_alive,
+        child_alive,
+        port_bound,
+        snap.jump_host_active,
+        last_recovery_ts,
+        last_squeue_ts,
+        now,
+    );
+
+    match action {
+        TunnelAction::Skip => {}
+
+        TunnelAction::Recover => {
+            info!("[tunnel:{name}] auto-recover attempt (status={:?})", snap.status);
+            // Update throttle timestamp first.
+            runtime.with_rt_mut(name, |r| r.last_recovery_attempt_ts = now);
+            // Kill any stale child handle before starting fresh.
+            runtime.kill_child(name);
+            do_tunnel_start(name, snap, state, runtime, post_connect_running);
+        }
+
+        TunnelAction::StopDead => {
+            let reason = if child_alive == Some(false) {
+                "child died"
+            } else {
+                "port not bound (ghost alive)"
+            };
+            warn!("[tunnel:{name}] {reason}, respawning");
+            // Accumulate uptime before marking non-alive.
+            accumulate_uptime(name, state, runtime, now);
+            runtime.kill_child(name);
+            mark_tunnel_idle(name, state, /*wants_alive_stays=*/ true, "respawning");
+            // If wants_alive still set (non-user stop), attempt recovery.
+            // We set the throttle timestamp to 0 so recovery fires immediately.
+            runtime.with_rt_mut(name, |r| r.last_recovery_attempt_ts = 0.0);
+        }
+
+        TunnelAction::StopDisabledJump => {
+            info!(
+                "[tunnel:{name}] jump {:?} disabled, stopping",
+                snap.active_jump
+            );
+            accumulate_uptime(name, state, runtime, now);
+            runtime.kill_child(name);
+            mark_tunnel_idle(name, state, /*wants_alive_stays=*/ false, "jump disabled");
+        }
+
+        TunnelAction::SqueueCheck => {
+            run_squeue_check(name, snap, state, runtime, now);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boot auto-start
+// ---------------------------------------------------------------------------
+
+fn run_boot_autostart(
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    post_connect_running: &Arc<Mutex<HashSet<String>>>,
+    now: f64,
+) {
+    info!("tunnel-maintenance: boot auto-start firing");
+
+    // Snapshot candidate tunnels.
+    let candidates: Vec<TunnelSnapshot> = {
+        let guard = state.lock().unwrap();
+        guard
+            .tunnels
+            .iter()
+            .filter(|t| should_autostart(t.auto_start, t.wants_alive, t.last_node.as_deref()))
+            .map(|t| TunnelSnapshot {
+                name: t.name.clone(),
+                local_port: t.local_port,
+                remote_port: t.remote_port,
+                status: t.status,
+                wants_alive: t.wants_alive,
+                active_jump: t.active_jump.clone(),
+                last_node: t.last_node.clone(),
+                last_user: t.last_user.clone(),
+                post_connect_cmd: t.post_connect_cmd.clone(),
+                jump_host_active: t.active_jump.as_deref().and_then(|jh| {
+                    guard.hosts.iter().find(|h| h.host == jh).map(|h| h.active)
+                }),
+                jump_host_ready: t.active_jump.as_deref().and_then(|jh| {
+                    guard.hosts.iter().find(|h| h.host == jh).map(|h| h.is_master_ready)
+                }),
+            })
+            .collect()
+    };
+
+    for snap in &candidates {
+        let name = &snap.name;
+        info!("[tunnel:{name}] boot auto-start: starting");
+        runtime.with_rt_mut(name, |r| r.last_recovery_attempt_ts = now);
+        do_tunnel_start(name, snap, state, runtime, post_connect_running);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Squeue / stale check (Case 3)
+// ---------------------------------------------------------------------------
+
+fn run_squeue_check(
+    name: &str,
+    snap: &TunnelSnapshot,
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    now: f64,
+) {
+    // Update the squeue check timestamp immediately so a slow discovery doesn't
+    // trigger multiple concurrent checks.
+    runtime.with_rt_mut(name, |r| r.last_squeue_check_ts = now);
+
+    let jump = match &snap.active_jump {
+        Some(j) => j.clone(),
+        None => {
+            warn!("[tunnel:{name}] squeue check: no active_jump");
+            return;
+        }
+    };
+
+    let node = match &snap.last_node {
+        Some(n) => n.clone(),
+        None => return,
+    };
+
+    // Check that the jump master is ready (re-snapshot under brief lock).
+    let master_ready = {
+        let guard = state.lock().unwrap();
+        guard
+            .hosts
+            .iter()
+            .find(|h| h.host == jump)
+            .map(|h| h.is_master_ready)
+            .unwrap_or(false)
+    };
+
+    if !master_ready {
+        info!("[tunnel:{name}] squeue check: jump {jump} not ready, skipping");
+        return;
+    }
+
+    let cp = active_symlink_path(&jump);
+
+    // Run squeue off-lock (blocking ssh command, ~100 ms).
+    let jobs = match discover_nodes_via_control(&jump, &cp) {
+        Ok(j) => j,
+        Err(e) => {
+            warn!("[tunnel:{name}] squeue discovery error: {e}");
+            // Update last_msg in State.
+            let mut guard = state.lock().unwrap();
+            if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                t.last_msg = format!("squeue err: {}", &e.to_string()[..e.to_string().len().min(30)]);
+            }
+            return;
+        }
+    };
+
+    let node_alive = jobs.iter().any(|j| j.node == node);
+
+    if node_alive {
+        runtime.with_rt_mut(name, |r| r.consecutive_squeue_misses = 0);
+        return;
+    }
+
+    // Miss: increment counter.
+    let misses = runtime
+        .with_rt_mut(name, |r| {
+            r.consecutive_squeue_misses += 1;
+            r.consecutive_squeue_misses
+        });
+
+    info!(
+        "[tunnel:{name}] squeue miss #{misses} (node={node})"
+    );
+
+    if misses >= STALE_MISS_THRESHOLD {
+        // Re-check child identity + status under the lock before terminating
+        // (mirrors Python's per-tunnel lock re-check).
+        let should_mark_stale = {
+            let guard = state.lock().unwrap();
+            guard
+                .tunnels
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.status == TunnelStatus::Alive)
+                .unwrap_or(false)
+        };
+
+        if should_mark_stale {
+            info!(
+                "[tunnel:{name}] node {node} gone from squeue, marking stale"
+            );
+            accumulate_uptime(name, state, runtime, now);
+            runtime.kill_child(name);
+
+            let mut guard = state.lock().unwrap();
+            if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                t.status = TunnelStatus::Stale;
+                t.active_jump = None;
+                t.fail_count += 1;
+                t.last_msg = format!("node {node} no longer in squeue");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert `TunnelStatus` to the `TunnelStatusKind` enum used by the pure
+/// decision function.
+fn tunnel_status_kind(s: &TunnelStatus) -> TunnelStatusKind {
+    match s {
+        TunnelStatus::Idle => TunnelStatusKind::Idle,
+        TunnelStatus::Failed => TunnelStatusKind::Failed,
+        TunnelStatus::Stale => TunnelStatusKind::Stale,
+        TunnelStatus::PortBusy => TunnelStatusKind::PortBusy,
+        TunnelStatus::Starting => TunnelStatusKind::Starting,
+        TunnelStatus::Alive => TunnelStatusKind::Alive,
+    }
+}
+
+/// Fold `alive_since` into `total_uptime_sec` and clear the marker.
+///
+/// Mirrors Python's `_accumulate_uptime`.
+fn accumulate_uptime(
+    name: &str,
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    now: f64,
+) {
+    let alive_since = runtime.with_rt_mut(name, |r| {
+        let s = r.alive_since;
+        r.alive_since = None;
+        s
+    });
+
+    if let Some(since) = alive_since {
+        let delta = (now - since).max(0.0);
+        let mut guard = state.lock().unwrap();
+        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+            t.total_uptime_sec += delta;
+        }
+    }
+}
+
+/// Mark a tunnel Idle under the State lock.
+///
+/// `wants_alive_stays=true` is used for non-user stops (child died etc.) so
+/// the auto-recovery loop can pick it back up.
+/// `wants_alive_stays=false` is used for user-initiated stops or
+/// disabled-jump stops.
+fn mark_tunnel_idle(
+    name: &str,
+    state: &Arc<Mutex<State>>,
+    wants_alive_stays: bool,
+    msg: &str,
+) {
+    let mut guard = state.lock().unwrap();
+    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+        t.status = TunnelStatus::Idle;
+        t.active_jump = None;
+        t.last_msg = msg.to_owned();
+        if !wants_alive_stays {
+            t.wants_alive = false;
+        }
+    }
+}
+
+/// Dispatch a tunnel start via `spawn_tunnel_start`.
+///
+/// Picks the first ready jump host that matches the tunnel's `jump_candidates`
+/// (or any host if `jump_candidates` is None), then spawns the worker thread.
+///
+/// If no ready jump host is found, marks the tunnel Idle with an appropriate
+/// message and returns.
+fn do_tunnel_start(
+    name: &str,
+    snap: &TunnelSnapshot,
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    post_connect_running: &Arc<Mutex<HashSet<String>>>,
+) {
+    // Re-snapshot under lock to get fresh jump candidates / readiness.
+    let start_info: Option<(String, String, String, u16, u16, Option<String>)> = {
+        let mut guard = state.lock().unwrap();
+
+        // Guard: re-check wants_alive under lock (concurrent user-stop may have
+        // cleared it while we were deciding to recover off-lock — mirrors Python's
+        // `_auto_recovery` flag re-check).
+        let t = match guard.tunnels.iter().find(|t| t.name == name) {
+            Some(t) => t,
+            None => return, // tunnel was removed
+        };
+        if !t.wants_alive {
+            info!("[tunnel:{name}] do_tunnel_start: wants_alive cleared by user — skipping");
+            return;
+        }
+        if matches!(t.status, TunnelStatus::Alive | TunnelStatus::Starting) {
+            return; // already in flight
+        }
+
+        // Pick a ready jump host.
+        let jump = {
+            let candidates = t.jump_candidates.clone();
+            guard.hosts.iter().find(|h| {
+                h.is_master_ready && match &candidates {
+                    Some(cs) => cs.contains(&h.host),
+                    None => true,
+                }
+            }).map(|h| h.host.clone())
+        };
+
+        let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
+
+        let node = match t.last_node.clone() {
+            Some(n) => n,
+            None => {
+                t.status = TunnelStatus::Idle;
+                t.last_msg = "no node — press Enter to pick".into();
+                return;
+            }
+        };
+
+        let jump = match jump {
+            Some(j) => j,
+            None => {
+                t.status = TunnelStatus::Idle;
+                t.last_msg = "waiting for jump host".into();
+                return;
+            }
+        };
+
+        let user = t
+            .last_user
+            .clone()
+            .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+
+        if user.is_empty() {
+            t.status = TunnelStatus::Failed;
+            t.last_msg = "no user (set last_user in tunnels.json)".into();
+            return;
+        }
+
+        let local_port = t.local_port;
+        let remote_port = t.remote_port;
+        let post_cmd = t.post_connect_cmd.clone();
+
+        t.status = TunnelStatus::Starting;
+        t.active_jump = Some(jump.clone());
+        t.last_msg = format!("starting via {jump}");
+
+        Some((jump, user, node, local_port, remote_port, post_cmd))
+    };
+
+    if let Some((jump, user, node, local_port, remote_port, post_cmd)) = start_info {
+        // Set alive_since when the tunnel eventually becomes Alive.
+        // The worker thread writes Alive into State; we hook the alive_since
+        // update through a wrapper approach: the runtime state gets updated
+        // when the tunnel transitions to Alive (see `spawn_tunnel_start_with_runtime`).
+        spawn_tunnel_start_with_runtime(
+            name.to_owned(),
+            jump,
+            user,
+            node,
+            local_port,
+            remote_port,
+            snap.local_port,
+            post_cmd,
+            Arc::clone(state),
+            Arc::clone(post_connect_running),
+            Arc::clone(runtime),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// spawn_tunnel_start_with_runtime
+// ---------------------------------------------------------------------------
+
+/// Like `workers::spawn_tunnel_start` but also:
+/// * Stores the `Child` in the `TunnelRuntime` registry on success.
+/// * Sets `alive_since` in the runtime when the tunnel reaches Alive.
+///
+/// This is the maintenance loop's entry point for starting a tunnel.
+#[allow(clippy::too_many_arguments)]
+fn spawn_tunnel_start_with_runtime(
+    name: String,
+    jump: String,
+    user: String,
+    node: String,
+    local_port: u16,
+    remote_port: u16,
+    _snap_local_port: u16,
+    post_connect_cmd: Option<String>,
+    state: Arc<Mutex<State>>,
+    post_connect_running: Arc<Mutex<HashSet<String>>>,
+    runtime: Arc<TunnelRuntime>,
+) {
+    std::thread::Builder::new()
+        .name(format!("maintenance-start:{name}"))
+        .spawn(move || {
+            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward};
+            use a2fa_core::tunnels::post_connect::run_post_connect;
+            use a2fa_core::config::save_tunnels;
+
+            info!("[tunnel:{name}] maintenance: starting via {jump}");
+
+            let child = match start_forward(&jump, &user, &node, local_port, remote_port) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("[tunnel:{name}] maintenance: spawn failed: {e}");
+                    let mut guard = state.lock().unwrap();
+                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                        t.fail_count += 1;
+                        t.status = TunnelStatus::Failed;
+                        t.last_msg = format!("spawn failed: {e}");
+                        t.active_jump = None;
+                    }
+                    return;
+                }
+            };
+
+            let timeout = std::time::Duration::from_secs(10);
+            match probe_and_settle(child, local_port, timeout) {
+                Ok((true, child)) => {
+                    // Store child in registry.
+                    runtime.store_child(&name, child);
+
+                    let now = now_unix();
+
+                    // Set alive_since in the runtime.
+                    runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));
+
+                    // Update State.
+                    {
+                        let mut guard = state.lock().unwrap();
+                        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                            t.status = TunnelStatus::Alive;
+                            t.wants_alive = true;
+                            t.last_alive_at = now;
+                            t.connect_count += 1;
+                            t.active_jump = Some(jump.clone());
+                            t.last_msg = format!("via {jump}");
+                        }
+                    }
+
+                    // Persist wants_alive.
+                    {
+                        let guard = state.lock().unwrap();
+                        let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+                    }
+
+                    // Post-connect hook.
+                    if let Some(cmd) = post_connect_cmd {
+                        run_post_connect(
+                            name.clone(),
+                            cmd,
+                            local_port,
+                            node.clone(),
+                            jump.clone(),
+                            post_connect_running,
+                        );
+                    }
+                }
+                Ok((false, _child)) => {
+                    warn!("[tunnel:{name}] maintenance: probe timed out");
+                    let mut guard = state.lock().unwrap();
+                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                        t.fail_count += 1;
+                        t.status = TunnelStatus::Failed;
+                        t.last_msg = "probe timed out".into();
+                        t.active_jump = None;
+                    }
+                }
+                Err(e) => {
+                    warn!("[tunnel:{name}] maintenance: probe error: {e}");
+                    let mut guard = state.lock().unwrap();
+                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                        t.fail_count += 1;
+                        t.status = TunnelStatus::Failed;
+                        t.last_msg = format!("probe error: {e}");
+                        t.active_jump = None;
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn maintenance-start thread");
+}
