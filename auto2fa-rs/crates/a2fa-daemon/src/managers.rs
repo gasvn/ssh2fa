@@ -44,7 +44,7 @@
 //! the persistent `PoolState` and circuit breakers are reset (so the next
 //! manual activation starts fresh, matching Python behaviour).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -193,12 +193,56 @@ pub fn next_action(
 #[derive(Default)]
 pub struct HostManagers {
     map: Mutex<HashMap<String, PoolState>>,
+    /// In-flight guard set: the `(host, slot)` pairs that currently have a
+    /// master-start / restart worker thread running.
+    ///
+    /// This is the authoritative fix for the runaway-spawn machine-hang bug.
+    /// `start_master` is a blocking ssh+pty login (up to `LOGIN_TIMEOUT` = 60s),
+    /// during which the slot stays `Dead`/`Init` in the persistent `PoolState`.
+    /// Without this guard, every heartbeat tick (~3s) would see the slot still
+    /// not-Ready and spawn *another* login worker — piling up ~20 concurrent
+    /// ssh+pty processes per slot and hanging the machine.
+    ///
+    /// Each spawn site calls [`HostManagers::try_begin_start`] BEFORE spawning;
+    /// if a start is already in flight for that `(host, slot)`, it skips. The
+    /// worker holds a [`StartGuard`] for its whole lifetime so the entry is
+    /// cleared via [`HostManagers::end_start`] on every exit path (normal
+    /// return, early return, or panic).
+    ///
+    /// Lock discipline: this mutex is held only for the brief insert/remove,
+    /// NEVER across any ssh I/O.
+    starting: Mutex<HashSet<(String, usize)>>,
 }
 
 impl HostManagers {
     /// Create a new, empty registry wrapped in an `Arc`.
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Try to claim the in-flight start slot for `(host, slot)`.
+    ///
+    /// Returns `true` if the caller may proceed to spawn a start/restart worker
+    /// (no start is already in flight for this exact host+slot), `false` if one
+    /// is already running and the caller must skip.
+    ///
+    /// On `true` the `(host, slot)` is recorded as in-flight; the caller MUST
+    /// arrange for [`end_start`](Self::end_start) to be called when the worker
+    /// finishes — use a [`StartGuard`] to guarantee this on every exit path.
+    pub fn try_begin_start(&self, host: &str, slot: usize) -> bool {
+        // HashSet::insert returns true iff the value was NEWLY inserted.
+        self.starting
+            .lock()
+            .unwrap()
+            .insert((host.to_owned(), slot))
+    }
+
+    /// Release the in-flight start slot for `(host, slot)`.
+    pub fn end_start(&self, host: &str, slot: usize) {
+        self.starting
+            .lock()
+            .unwrap()
+            .remove(&(host.to_owned(), slot));
     }
 
     /// Run `f` with a mutable reference to the `PoolState` for `host`.
@@ -271,6 +315,29 @@ impl HostManagers {
             dst.probe_backoff_until = src.probe_backoff_until;
             dst.active_index = src.active_index;
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StartGuard — RAII release of the in-flight start guard
+// ---------------------------------------------------------------------------
+
+/// RAII guard that releases the `(host, slot)` in-flight start claim when it is
+/// dropped — on normal return, early return, OR panic.
+///
+/// A start worker constructs this as its FIRST action (after the caller has
+/// already claimed the slot via [`HostManagers::try_begin_start`]) and holds it
+/// for its entire lifetime, so [`HostManagers::end_start`] always runs exactly
+/// once when the worker exits by any path.
+struct StartGuard {
+    managers: Arc<HostManagers>,
+    host: String,
+    slot: usize,
+}
+
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        self.managers.end_start(&self.host, self.slot);
     }
 }
 
@@ -366,9 +433,24 @@ pub fn spawn_managed_start(
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
 ) {
+    // In-flight guard: don't spawn if a start/restart is already running for
+    // this (host, slot). Prevents runaway login-worker pile-up.
+    if !managers.try_begin_start(&host_name, slot) {
+        info!("[{host_name}] managed-start: start already in flight for slot {slot}, skipping");
+        return;
+    }
+    let guard_managers = Arc::clone(&managers);
+    let guard_host = host_name.clone();
     std::thread::Builder::new()
         .name(format!("managed-start:{host_name}:{slot}"))
         .spawn(move || {
+            // RAII: release the in-flight guard on every exit path.
+            let _start_guard = StartGuard {
+                managers: guard_managers,
+                host: guard_host,
+                slot,
+            };
+
             // 0. Read Keychain creds IN-THREAD (may block on an unanswered
             //    "Always Allow" prompt — but only this worker is affected).
             let (password, secret) = load_creds(&host_name);
@@ -433,9 +515,25 @@ pub fn spawn_master_rebuild(
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
 ) {
+    // In-flight guard on slot 0 (the slot this rebuild starts). The stop_all
+    // phase doesn't need guarding, but holding the guard for the whole worker
+    // prevents a concurrent start of slot 0 while this rebuild is in flight.
+    if !managers.try_begin_start(&host_name, 0) {
+        info!("[{host_name}] master-rebuild: start already in flight for slot 0, skipping");
+        return;
+    }
+    let guard_managers = Arc::clone(&managers);
+    let guard_host = host_name.clone();
     std::thread::Builder::new()
         .name(format!("master-rebuild:{host_name}"))
         .spawn(move || {
+            // RAII: release the slot-0 in-flight guard on every exit path.
+            let _start_guard = StartGuard {
+                managers: guard_managers,
+                host: guard_host,
+                slot: 0,
+            };
+
             // --- Phase 0: read Keychain creds in-thread ---
             let (password, secret) = load_creds(&host_name);
 
@@ -717,6 +815,18 @@ fn tick_host(
                     }
                 }
 
+                // In-flight guard: if a restart worker is already running for
+                // this (host, slot), do NOT spawn another. This is the fix for
+                // the machine-hang bug: without it, the slot stays Dead for the
+                // whole 60s login and every 3s tick would pile on another
+                // ssh+pty login worker.
+                if !managers.try_begin_start(host_name, slot) {
+                    info!(
+                        "[{host_name}] heartbeat: restart already in flight for slot {slot}, skipping spawn"
+                    );
+                    continue;
+                }
+
                 // The throttle, Keychain read, and blocking restart all run on
                 // a dedicated worker thread — NEVER on the heartbeat thread.
                 // This keeps the no-wedge invariant: a stalled "Always Allow"
@@ -727,9 +837,20 @@ fn tick_host(
                 let state2 = Arc::clone(state);
                 let managers2 = Arc::clone(managers);
                 let registry2 = Arc::clone(registry);
+                let guard_managers = Arc::clone(managers);
+                let guard_host = host_name.to_owned();
                 std::thread::Builder::new()
                     .name(format!("hb-restart:{host_name}:{slot}"))
                     .spawn(move || {
+                        // RAII: release the in-flight guard on every exit path
+                        // (including the early-return when host is deactivated
+                        // during the throttle, and on panic).
+                        let _start_guard = StartGuard {
+                            managers: guard_managers,
+                            host: guard_host,
+                            slot,
+                        };
+
                         // Throttle before restart (mirrors Python's time.sleep(2)).
                         std::thread::sleep(RESTART_THROTTLE);
 
@@ -796,14 +917,33 @@ fn tick_host(
             }
 
             MaintenanceAction::WarmSlot1 => {
+                // In-flight guard on slot 1: slot 1 stays Init until the warm
+                // worker finishes, so without this every tick would spawn
+                // another warm worker. Guard prevents the pile-up.
+                if !managers.try_begin_start(host_name, 1) {
+                    info!(
+                        "[{host_name}] heartbeat: warm slot 1 already in flight, skipping spawn"
+                    );
+                    continue;
+                }
                 info!("[{host_name}] heartbeat: warming slot 1 (staggered)");
                 let host_owned = host_name.to_owned();
                 let state2 = Arc::clone(state);
                 let managers2 = Arc::clone(managers);
                 let registry2 = Arc::clone(registry);
+                let guard_managers = Arc::clone(managers);
+                let guard_host = host_name.to_owned();
                 std::thread::Builder::new()
                     .name(format!("warmslot1:{host_name}"))
                     .spawn(move || {
+                        // RAII: release the slot-1 in-flight guard on every exit
+                        // path (early return on deactivation, or panic).
+                        let _start_guard = StartGuard {
+                            managers: guard_managers,
+                            host: guard_host,
+                            slot: 1,
+                        };
+
                         // Stagger sleep (mirrors Python start_master_async).
                         std::thread::sleep(SLOT1_STAGGER);
                         // Guard: re-check active state after the stagger.
@@ -904,9 +1044,23 @@ pub fn spawn_warmup_slot1(
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
 ) {
+    // In-flight guard on slot 1: skip if a slot-1 start is already running.
+    if !managers.try_begin_start(&host_name, 1) {
+        info!("[{host_name}] warmup-slot1: start already in flight for slot 1, skipping");
+        return;
+    }
+    let guard_managers = Arc::clone(&managers);
+    let guard_host = host_name.clone();
     std::thread::Builder::new()
         .name(format!("warmup-slot1:{host_name}"))
         .spawn(move || {
+            // RAII: release the slot-1 in-flight guard on every exit path.
+            let _start_guard = StartGuard {
+                managers: guard_managers,
+                host: guard_host,
+                slot: 1,
+            };
+
             // Stagger delay.
             std::thread::sleep(SLOT1_STAGGER);
 
@@ -1273,6 +1427,63 @@ mod tests {
         assert_eq!(k6.status, "Connecting");
         let idle = guard.hosts.iter().find(|h| h.host == "idlehost").unwrap();
         assert_eq!(idle.status, "Idle");
+    }
+
+    // -----------------------------------------------------------------------
+    // In-flight start guard — the machine-hang fix
+    // -----------------------------------------------------------------------
+
+    /// `try_begin_start` returns true the first time for a (host, slot) and
+    /// false on a second attempt (a start is in flight). After `end_start` it
+    /// returns true again.
+    #[test]
+    fn try_begin_start_blocks_second_concurrent_start() {
+        let managers = HostManagers::new();
+
+        // First claim succeeds.
+        assert!(managers.try_begin_start("k6", 0));
+        // Second claim while the first is in flight is rejected.
+        assert!(!managers.try_begin_start("k6", 0));
+        // A different slot on the same host is independent.
+        assert!(managers.try_begin_start("k6", 1));
+        // A different host is independent.
+        assert!(managers.try_begin_start("cannon", 0));
+
+        // Releasing (k6, 0) lets it be claimed again.
+        managers.end_start("k6", 0);
+        assert!(managers.try_begin_start("k6", 0));
+    }
+
+    /// `end_start` on a key that isn't in flight is a harmless no-op.
+    #[test]
+    fn end_start_on_unclaimed_key_is_noop() {
+        let managers = HostManagers::new();
+        managers.end_start("ghost", 0); // must not panic
+        assert!(managers.try_begin_start("ghost", 0));
+    }
+
+    /// Dropping a `StartGuard` releases the in-flight claim, so the same
+    /// (host, slot) can be claimed again afterwards. This is the RAII property
+    /// that guarantees release on every worker exit path (incl. panic).
+    #[test]
+    fn start_guard_drop_releases_claim() {
+        let managers = HostManagers::new();
+
+        assert!(managers.try_begin_start("k6", 0));
+        {
+            let _guard = StartGuard {
+                managers: Arc::clone(&managers),
+                host: "k6".to_string(),
+                slot: 0,
+            };
+            // Still in flight inside the scope.
+            assert!(!managers.try_begin_start("k6", 0));
+        }
+        // Guard dropped at end of scope → claim released → claimable again.
+        assert!(
+            managers.try_begin_start("k6", 0),
+            "StartGuard drop must call end_start"
+        );
     }
 
     /// `rebuild_masters` filters out inactive hosts — passing an inactive host
