@@ -11,8 +11,12 @@
 //! v2 JSON value.  File I/O and backup creation are the caller's
 //! responsibility.
 
+use std::collections::HashMap;
+use std::path::Path;
+
 use serde_json::{Map, Value};
 
+use crate::config::passwords_store::{save_meta, HostMeta};
 use crate::error::{Error, Result};
 
 use super::{delete_credentials, store_credentials, SecretStore};
@@ -112,6 +116,132 @@ pub fn migrate_v1_to_v2<S: SecretStore>(store: &S, legacy: &Value) -> Result<Val
     );
 
     Ok(Value::Object(v2))
+}
+
+// ---------------------------------------------------------------------------
+// File-level orchestration
+// ---------------------------------------------------------------------------
+
+/// Count the number of entries in a legacy v1 passwords.json `Value` that have
+/// both a non-empty password and a non-empty otpauth/otpauthUrl — i.e., entries
+/// that would actually be migrated.  Reserved keys ("schema", "hosts") are
+/// skipped.
+fn count_migratable(legacy: &Value) -> usize {
+    let obj = match legacy.as_object() {
+        Some(o) => o,
+        None => return 0,
+    };
+    let mut count = 0usize;
+    for (host, cfg) in obj {
+        if host == "schema" || host == "hosts" {
+            continue;
+        }
+        let cfg_obj = match cfg.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        let password = cfg_obj
+            .get("password")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let otpauth = cfg_obj
+            .get("otpauthUrl")
+            .or_else(|| cfg_obj.get("otpauth_url"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !password.is_empty() && !otpauth.is_empty() {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Orchestrate the v1 → v2 migration for the passwords.json file at `path`.
+///
+/// # Behaviour
+///
+/// - Missing file → `Ok(false)`.
+/// - Unparseable JSON or non-object → logged as warning, `Ok(false)` (no
+///   crash at boot).
+/// - Already v2 (`"schema": 2` present) → `Ok(false)` (idempotent).
+/// - All entries are cred-less → `Ok(false)`, file **not** touched, **no**
+///   backup created.
+/// - Otherwise: create a one-time backup at `<path>.pre-keychain-backup`
+///   (only if it doesn't already exist); on backup failure → `Err` (refuse
+///   to migrate, leave file as v1 so the next launch retries).  Then migrate
+///   creds into `store`, atomically rewrite the file as v2, return `Ok(true)`.
+///
+/// Migration failures (Keychain write errors) are propagated as `Err`; the
+/// daemon boot path must **not** abort but should log the error and continue.
+pub fn migrate_passwords_file_if_needed<S: SecretStore>(
+    store: &S,
+    path: &Path,
+) -> Result<bool> {
+    // 1. Missing file — nothing to migrate.
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    // 2. Read + parse.
+    let text = std::fs::read_to_string(path).map_err(Error::Io)?;
+    let value: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[migrate] passwords.json is not valid JSON — skipping migration: {e}");
+            return Ok(false);
+        }
+    };
+    if !value.is_object() {
+        log::warn!("[migrate] passwords.json is not a JSON object — skipping migration");
+        return Ok(false);
+    }
+
+    // 3. Already v2?
+    if value.get("schema").and_then(Value::as_u64) == Some(2) {
+        return Ok(false);
+    }
+
+    // 4. Any migratable entries?
+    if count_migratable(&value) == 0 {
+        log::info!(
+            "[migrate] no migratable entries in passwords.json — leaving untouched"
+        );
+        return Ok(false);
+    }
+
+    // 5. One-time backup.
+    let backup = {
+        let mut b = path.to_path_buf();
+        let new_name = {
+            let old = b
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "passwords.json".into());
+            format!("{old}.pre-keychain-backup")
+        };
+        b.set_file_name(new_name);
+        b
+    };
+    if !backup.exists() {
+        std::fs::copy(path, &backup).map_err(|e| {
+            Error::Internal(format!(
+                "backup write failed ({backup:?}): {e} — refusing to migrate"
+            ))
+        })?;
+        log::info!("[migrate] backup saved to {}", backup.display());
+    }
+
+    // 6. Migrate into store (all-or-nothing via migrate_v1_to_v2).
+    let v2 = migrate_v1_to_v2(store, &value)?;
+
+    // 7. Persist as v2 using the audited atomic writer.
+    //    Extract the "hosts" object and deserialise into HashMap<String, HostMeta>.
+    let hosts_value = v2.get("hosts").cloned().unwrap_or(Value::Object(Map::new()));
+    let hosts: HashMap<String, HostMeta> = serde_json::from_value(hosts_value)
+        .map_err(|e| Error::Internal(format!("deserialise v2 hosts: {e}")))?;
+    save_meta(path, &hosts)?;
+
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -248,5 +378,156 @@ mod tests {
 
         let result = migrate_v1_to_v2(&store, &legacy);
         assert!(result.is_err(), "should have failed on injected error");
+    }
+
+    // -----------------------------------------------------------------------
+    // count_migratable unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn count_migratable_counts_valid_entries() {
+        let v = serde_json::json!({
+            "schema": 1,
+            "hosts": {"ignored": {"autoConnect": false}},
+            "k6": {"password": "pw", "otpauthUrl": "otpauth://totp/x?secret=AAA"},
+            "k8": {"password": "pw2", "otpauth_url": "otpauth://totp/y?secret=BBB"},
+            "bad": {"password": "", "otpauthUrl": "otpauth://totp/z?secret=CCC"}
+        });
+        // schema + hosts skipped; k6 + k8 valid; bad has empty password
+        assert_eq!(count_migratable(&v), 2);
+    }
+
+    #[test]
+    fn count_migratable_zero_for_empty() {
+        assert_eq!(count_migratable(&serde_json::json!({})), 0);
+        assert_eq!(count_migratable(&serde_json::json!(null)), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // migrate_passwords_file_if_needed tests — FakeStore + tempdir only
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn file_orchestration_v1_two_hosts_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwords.json");
+        let original = serde_json::json!({
+            "k6": {
+                "password": "hunter2",
+                "otpauthUrl": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
+                "autoConnect": true
+            },
+            "k8": {
+                "password": "pw2",
+                "otpauthUrl": "otpauth://totp/y?secret=JBSWY3DPEHPK3PXP",
+                "autoConnect": false
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&original).unwrap();
+        std::fs::write(&path, &original_text).unwrap();
+
+        let store = FakeStore { map: RefCell::new(HashMap::new()) };
+        let result = migrate_passwords_file_if_needed(&store, &path).unwrap();
+        assert!(result, "should return true for a successful migration");
+
+        // File on disk is now v2.
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["schema"].as_u64(), Some(2));
+        assert!(on_disk["hosts"]["k6"].is_object());
+        assert!(on_disk["hosts"]["k8"].is_object());
+        assert_eq!(on_disk["hosts"]["k6"]["autoConnect"].as_bool(), Some(true));
+
+        // Backup exists and matches original content.
+        let backup = dir.path().join("passwords.json.pre-keychain-backup");
+        assert!(backup.exists(), "backup should exist");
+        let backup_text = std::fs::read_to_string(&backup).unwrap();
+        assert_eq!(backup_text, original_text, "backup should match original content");
+
+        // Store has the creds.
+        assert_eq!(store.get("k6.password").unwrap().as_deref(), Some("hunter2"));
+        assert!(store.get("k6.otpauth").unwrap().is_some());
+        assert_eq!(store.get("k8.password").unwrap().as_deref(), Some("pw2"));
+    }
+
+    #[test]
+    fn file_orchestration_idempotent_on_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwords.json");
+        let v2 = serde_json::json!({
+            "schema": 2,
+            "hosts": {
+                "k6": {"autoConnect": true}
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&v2).unwrap()).unwrap();
+
+        let store = FakeStore { map: RefCell::new(HashMap::new()) };
+        // Run once (already v2) → should be false.
+        assert!(!migrate_passwords_file_if_needed(&store, &path).unwrap());
+
+        // No backup created.
+        let backup = dir.path().join("passwords.json.pre-keychain-backup");
+        assert!(!backup.exists(), "no backup should be created for already-v2 file");
+    }
+
+    #[test]
+    fn file_orchestration_cred_less_entries_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwords.json");
+        let v1_empty = serde_json::json!({
+            "k6": {
+                "password": "",
+                "otpauthUrl": "otpauth://totp/x?secret=AAA"
+            }
+        });
+        let original_text = serde_json::to_string_pretty(&v1_empty).unwrap();
+        std::fs::write(&path, &original_text).unwrap();
+
+        let store = FakeStore { map: RefCell::new(HashMap::new()) };
+        assert!(!migrate_passwords_file_if_needed(&store, &path).unwrap());
+
+        // No backup.
+        let backup = dir.path().join("passwords.json.pre-keychain-backup");
+        assert!(!backup.exists(), "no backup when nothing to migrate");
+
+        // File unchanged.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, original_text, "file must be unchanged");
+    }
+
+    #[test]
+    fn file_orchestration_missing_file_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        let store = FakeStore { map: RefCell::new(HashMap::new()) };
+        assert!(!migrate_passwords_file_if_needed(&store, &path).unwrap());
+    }
+
+    #[test]
+    fn file_orchestration_backup_is_one_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwords.json");
+        let v1 = serde_json::json!({
+            "k6": {
+                "password": "pw",
+                "otpauthUrl": "otpauth://totp/x?secret=AAA",
+                "autoConnect": false
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&v1).unwrap()).unwrap();
+
+        // Pre-create backup with sentinel content.
+        let backup = dir.path().join("passwords.json.pre-keychain-backup");
+        let sentinel = "SENTINEL_DO_NOT_OVERWRITE";
+        std::fs::write(&backup, sentinel).unwrap();
+
+        let store = FakeStore { map: RefCell::new(HashMap::new()) };
+        let result = migrate_passwords_file_if_needed(&store, &path).unwrap();
+        assert!(result, "migration should succeed");
+
+        // Backup content must NOT have been overwritten.
+        let backup_content = std::fs::read_to_string(&backup).unwrap();
+        assert_eq!(backup_content, sentinel, "backup must not be overwritten when it already exists");
     }
 }

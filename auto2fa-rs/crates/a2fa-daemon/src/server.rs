@@ -120,6 +120,19 @@ pub fn run() -> Result<()> {
     let cfg_dir = config_dir();
     let tunnels_path = cfg_dir.join("tunnels.json");
     let passwords_p = passwords_path();
+
+    // 5-pre. Migrate passwords.json v1 → v2 (one-time, idempotent).
+    //        Must run BEFORE State::new, which calls load_meta and silently
+    //        returns zero hosts for any non-v2 file.
+    {
+        let kc = a2fa_core::creds::keychain::KeychainStore;
+        match a2fa_core::creds::migrate::migrate_passwords_file_if_needed(&kc, &passwords_p) {
+            Ok(true)  => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
+            Ok(false) => {}
+            Err(e)    => log::error!("passwords.json migration failed (continuing): {e}"),
+        }
+    }
+
     let state = Arc::new(Mutex::new(State::new(tunnels_path, &passwords_p)));
 
     {
