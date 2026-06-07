@@ -241,6 +241,9 @@ pub fn run() -> Result<()> {
         managers: Arc::clone(&managers),
         registry: Arc::clone(&registry),
         runtime: Arc::clone(&runtime),
+        // One shared guard for the whole daemon: the two Mac wake monitors fire
+        // wake_recover together, so closely-following calls must coalesce.
+        wake_recover_guard: crate::handlers::system::WakeRecoverGuard::new(),
     };
 
     // 6d. Spawn signal-handler thread.

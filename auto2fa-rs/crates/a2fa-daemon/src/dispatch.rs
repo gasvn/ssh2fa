@@ -28,6 +28,7 @@ use a2fa_core::error::Error;
 use a2fa_core::proto::{encode_error, encode_response, ErrCode, Method, Request};
 use serde_json::Value;
 
+use crate::handlers::system::WakeRecoverGuard;
 use crate::handlers::{hosts, system, tunnels};
 use crate::managers::HostManagers;
 use crate::tunnel_runtime::TunnelRuntime;
@@ -43,6 +44,9 @@ pub struct DaemonCtx {
     pub managers: Arc<HostManagers>,
     pub registry: Arc<OtpRegistry>,
     pub runtime: Arc<TunnelRuntime>,
+    /// Daemon-global coalescing guard for `wake_recover` so overlapping calls
+    /// from the Mac's two wake monitors collapse to a single real run.
+    pub wake_recover_guard: Arc<WakeRecoverGuard>,
 }
 
 /// Dispatch one request line (raw bytes) and return the response line.
@@ -94,6 +98,7 @@ pub fn dispatch(state: &Arc<Mutex<State>>, line: &[u8]) -> String {
         managers: HostManagers::new(),
         registry: OtpRegistry::new(),
         runtime: TunnelRuntime::new(),
+        wake_recover_guard: WakeRecoverGuard::new(),
     }, method, params);
 
     match result {

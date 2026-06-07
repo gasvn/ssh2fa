@@ -5,7 +5,9 @@
 //! Parity: `Auto2FADaemon.handle_request` in daemon.py.
 
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
@@ -13,6 +15,95 @@ use a2fa_core::model::TunnelStatus;
 use serde_json::{json, Value};
 
 use crate::managers::{self, active_host_names};
+
+// ---------------------------------------------------------------------------
+// wake_recover coalescing guard
+// ---------------------------------------------------------------------------
+
+/// Minimum interval (seconds) between two real `wake_recover` runs. A second
+/// wake that arrives within this window after the previous run *completed* is
+/// coalesced into a no-op. Two independent Mac monitors (SleepWakeMonitor +
+/// NetworkMonitor) fire on a single wake, so without this the inline 5s×N
+/// `ssh -O check` probe loop would run several times over.
+const WAKE_RECOVER_MIN_INTERVAL_SECS: u64 = 12;
+
+/// Daemon-global coalescing guard for `wake_recover`.
+///
+/// One shared instance lives in [`DaemonCtx`] (created once in `server.rs`).
+/// It enforces two things so overlapping/closely-following `wake_recover`
+/// calls collapse to a single real run:
+///
+/// 1. **In-flight flag** (`in_flight`): only one `wake_recover` runs the inline
+///    probe loop at a time; concurrent callers bail out immediately.
+/// 2. **Min-interval debounce** (`last_completed`): a wake arriving < ~12s after
+///    the previous run *finished* is treated as redundant and skipped.
+///
+/// Claim is made via [`WakeRecoverGuard::try_claim`], which returns an RAII
+/// [`WakeRecoverClaim`] on success. The claim records the completion timestamp
+/// and clears the in-flight flag in its `Drop`, so the flag is released on
+/// *every* exit path (early return, `?`, or panic-unwind).
+#[derive(Debug)]
+pub struct WakeRecoverGuard {
+    in_flight: AtomicBool,
+    /// Unix seconds at which the last real run completed (0 = never).
+    last_completed: AtomicU64,
+}
+
+impl WakeRecoverGuard {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            in_flight: AtomicBool::new(false),
+            last_completed: AtomicU64::new(0),
+        })
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Try to claim the right to run `wake_recover`.
+    ///
+    /// Returns `Some(claim)` for the one caller that should run, or `None` if a
+    /// run is already in flight or the debounce window has not elapsed (the
+    /// caller should return an "already recovering" no-op).
+    pub fn try_claim(self: &Arc<Self>) -> Option<WakeRecoverClaim> {
+        // In-flight check first: a concurrent caller bails immediately.
+        if self.in_flight.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        // We now hold the in-flight flag. Check the debounce window; if it has
+        // not elapsed, release the flag and bail (so we don't leak it).
+        let now = Self::now_secs();
+        let last = self.last_completed.load(Ordering::SeqCst);
+        if last != 0 && now.saturating_sub(last) < WAKE_RECOVER_MIN_INTERVAL_SECS {
+            self.in_flight.store(false, Ordering::SeqCst);
+            return None;
+        }
+        Some(WakeRecoverClaim {
+            guard: Arc::clone(self),
+        })
+    }
+}
+
+/// RAII token proving the holder won the right to run `wake_recover`.
+///
+/// On `Drop` it stamps the completion time and clears the in-flight flag, so
+/// the guard is released on every exit path (return, `?`, panic).
+pub struct WakeRecoverClaim {
+    guard: Arc<WakeRecoverGuard>,
+}
+
+impl Drop for WakeRecoverClaim {
+    fn drop(&mut self) {
+        self.guard
+            .last_completed
+            .store(WakeRecoverGuard::now_secs(), Ordering::SeqCst);
+        self.guard.in_flight.store(false, Ordering::SeqCst);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // log_tail
@@ -179,6 +270,20 @@ pub fn reset_all(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Va
 /// for up to 5s per host — the same "never hold a lock across ssh I/O" rule the
 /// rest of the daemon follows. Master rebuilds + child kills also run off-lock.
 pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Value> {
+    // 0. Coalesce overlapping / closely-following calls. Two independent Mac
+    //    monitors fire wake_recover on a single wake; without this each one runs
+    //    the inline 5s×N `ssh -O check` probe loop on its own connection thread.
+    //    The first caller wins the claim and runs; everyone else returns an
+    //    immediate no-op. The claim's Drop clears the in-flight flag + stamps the
+    //    completion time on *every* exit path below (return / `?` / panic).
+    let _claim = match ctx.wake_recover_guard.try_claim() {
+        Some(c) => c,
+        None => {
+            log::info!("wake_recover: already recovering (coalesced), skipping");
+            return Ok(json!({ "tunnels_restarting": [], "coalesced": true }));
+        }
+    };
+
     // 1. Snapshot the tunnels that were alive at wake time (name, active_jump).
     let alive_tunnels: Vec<(String, Option<String>)> = {
         let guard = ctx.state.lock().unwrap();
@@ -264,7 +369,7 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
         alive_tunnels.len().saturating_sub(to_restart.len())
     );
 
-    Ok(json!({ "tunnels_restarting": to_restart }))
+    Ok(json!({ "tunnels_restarting": to_restart, "coalesced": false }))
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +403,7 @@ mod tests {
             managers: HostManagers::new(),
             registry: OtpRegistry::new(),
             runtime: TunnelRuntime::new(),
+            wake_recover_guard: WakeRecoverGuard::new(),
         }
     }
 
@@ -356,6 +462,60 @@ mod tests {
         assert_eq!(t.status, TunnelStatus::Idle);
         assert!(!t.wants_alive);
         assert!(t.active_jump.is_none());
+    }
+
+    /// A second claim while the first is still held (in-flight) returns None;
+    /// after the first claim drops, the in-flight flag is clear again — but the
+    /// debounce window now blocks an immediate re-claim.
+    #[test]
+    fn wake_recover_guard_coalesces_concurrent_and_debounces() {
+        let guard = WakeRecoverGuard::new();
+
+        let first = guard.try_claim().expect("first claim should win");
+        // Concurrent caller while first is in flight: coalesced (no run).
+        assert!(
+            guard.try_claim().is_none(),
+            "second concurrent claim must coalesce to None"
+        );
+
+        // First run completes; Drop stamps last_completed + clears in_flight.
+        drop(first);
+
+        // A wake arriving immediately after completion is inside the debounce
+        // window, so it is still coalesced (no fresh probe loop).
+        assert!(
+            guard.try_claim().is_none(),
+            "claim within the debounce window must coalesce to None"
+        );
+    }
+
+    /// Once the debounce window has elapsed, a fresh claim succeeds again.
+    #[test]
+    fn wake_recover_guard_allows_after_window_elapsed() {
+        let guard = WakeRecoverGuard::new();
+        drop(guard.try_claim().expect("first claim should win"));
+        // Simulate the previous completion being older than the min interval.
+        guard.last_completed.store(
+            WakeRecoverGuard::now_secs()
+                .saturating_sub(WAKE_RECOVER_MIN_INTERVAL_SECS + 1),
+            Ordering::SeqCst,
+        );
+        assert!(
+            guard.try_claim().is_some(),
+            "claim after the debounce window must succeed"
+        );
+    }
+
+    /// wake_recover on an empty state reports it ran (not coalesced); a second
+    /// immediate call coalesces (the daemon-side authoritative guard).
+    #[test]
+    fn wake_recover_second_immediate_call_coalesces() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let ctx = ctx_with_state(state);
+        let first = wake_recover(&ctx, &json!({})).unwrap();
+        assert_eq!(first["coalesced"], false);
+        let second = wake_recover(&ctx, &json!({})).unwrap();
+        assert_eq!(second["coalesced"], true);
     }
 
     #[test]

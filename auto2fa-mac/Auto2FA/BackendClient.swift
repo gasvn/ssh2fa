@@ -47,6 +47,13 @@ actor BackendClient {
     private var receiveBuffer = Data()
     private var pendingRequests: [String: CheckedContinuation<Data, Error>] = [:]
 
+    // wake_recover coalescing (defense-in-depth; the daemon-side guard is
+    // authoritative). SleepWakeMonitor and NetworkMonitor both fire on a single
+    // wake, so without this two wake_recover RPCs go out back-to-back.
+    private var wakeRecoverInFlight = false
+    private var lastWakeRecoverAt: Date?
+    private let wakeRecoverMinInterval: TimeInterval = 5.0
+
     // Event stream — set up at init so callers can subscribe before connect()
     nonisolated let events: AsyncStream<DaemonEvent>
     private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
@@ -388,6 +395,23 @@ actor BackendClient {
     /// tunnel that was alive at sleep time, after a ~20s grace window so the
     /// fresh masters have time to log back in.
     func wakeRecover() async throws {
+        // Coalesce: if a wake_recover is already in flight, or one completed
+        // within the last few seconds, skip — the two Mac monitors fire on a
+        // single wake. Actor isolation makes this check/set atomic.
+        if wakeRecoverInFlight {
+            NSLog("[Auto2FA] wakeRecover already in flight — coalescing")
+            return
+        }
+        if let last = lastWakeRecoverAt,
+           Date().timeIntervalSince(last) < wakeRecoverMinInterval {
+            NSLog("[Auto2FA] wakeRecover ran <\(Int(wakeRecoverMinInterval))s ago — coalescing")
+            return
+        }
+        wakeRecoverInFlight = true
+        defer {
+            wakeRecoverInFlight = false
+            lastWakeRecoverAt = Date()
+        }
         _ = try await sendRaw(method: "wake_recover", params: [:])
     }
 
