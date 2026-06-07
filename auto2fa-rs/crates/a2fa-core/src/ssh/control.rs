@@ -167,6 +167,21 @@ pub fn update_symlink(host: &str, index: usize) -> bool {
     true
 }
 
+/// Return the pool index the active symlink currently points at, if it exists
+/// and ends in a `-<index>` suffix. Used at boot to adopt the slot ssh clients
+/// are already multiplexing over.
+pub fn symlink_target_index(host: &str) -> Option<usize> {
+    let target = std::fs::read_link(active_symlink_path(host)).ok()?;
+    parse_trailing_index(&target.to_string_lossy())
+}
+
+/// Parse the `-<index>` suffix off a pool socket file name. The base may contain
+/// dashes (`cm-auto2fa-...`) and dots, so we split on the LAST dash.
+fn parse_trailing_index(name: &str) -> Option<usize> {
+    name.rsplit_once('-')
+        .and_then(|(_, idx)| idx.parse::<usize>().ok())
+}
+
 /// Remove the active symlink and both pool-member socket files for `host`.
 pub fn remove_symlink(host: &str) {
     let target = active_symlink_path(host);
@@ -374,6 +389,17 @@ mod tests {
             control_path("auto2fa-unittest-host-a", 0),
             control_path("auto2fa-unittest-host-b", 0)
         );
+    }
+
+    #[test]
+    fn parse_trailing_index_handles_dashed_base() {
+        assert_eq!(
+            parse_trailing_index("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu-1"),
+            Some(1)
+        );
+        assert_eq!(parse_trailing_index("cm-auto2fa-k6-0"), Some(0));
+        assert_eq!(parse_trailing_index("no-index-here"), None);
+        assert_eq!(parse_trailing_index("plainname"), None);
     }
 
     /// `master_check` with a bogus (non-existent) control socket must return

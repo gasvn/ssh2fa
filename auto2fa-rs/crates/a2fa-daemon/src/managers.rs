@@ -280,6 +280,26 @@ pub fn boot_autostart(
     };
 
     for host_name in active_hosts {
+        // First: try to ADOPT an already-live master (left by a previous daemon
+        // — including the Python daemon during cutover). If a master socket is
+        // alive at the resolved ControlPath, take it over without re-logging in.
+        // This makes daemon restarts and the Python→Rust handoff zero-2FA.
+        let mut pool = managers.snapshot(&host_name);
+        if a2fa_core::ssh::master::adopt_if_alive(&mut pool) {
+            let idx = pool.active_index;
+            managers.write_back(&host_name, &pool);
+            let mut guard = state.lock().unwrap();
+            if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
+                h.is_master_ready = true;
+                h.pool_alive = 1;
+                h.pool_index = idx as u8;
+                h.status = "Connected".into();
+                h.last_msg = "Adopted live master (no login)".into();
+            }
+            info!("[{host_name}] boot: adopted live master slot {idx} — skipping login");
+            continue;
+        }
+
         let ks = KeychainStore;
         let password = get_password(&ks, &host_name)
             .ok()

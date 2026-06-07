@@ -267,6 +267,40 @@ pub fn start_master(
     }
 }
 
+/// Adopt an already-live ControlMaster instead of re-authenticating.
+///
+/// Probes every pool slot with `ssh -O check`. For each slot that responds,
+/// marks it `Ready`. If any slot is alive, sets `active_index` to the slot the
+/// active symlink already points at (when that one is alive) or the first alive
+/// slot otherwise, and returns `true`.
+///
+/// This is what makes a daemon restart — or the Python→Rust cutover — a
+/// **zero-relogin handoff**: a freshly started daemon finds the sockets the
+/// previous owner left behind (same `ControlPath`, thanks to `ssh -G`
+/// resolution) and takes them over without triggering 2FA. Returns `false` if
+/// no slot is alive, in which case the caller should start a master normally.
+pub fn adopt_if_alive(state: &mut PoolState) -> bool {
+    let mut alive = [false; POOL_SIZE];
+    let mut any = false;
+    for (i, slot_alive) in alive.iter_mut().enumerate() {
+        let path = control::control_path(&state.host, i);
+        if control::master_check(&path, &state.host) {
+            *slot_alive = true;
+            any = true;
+            state.slot_status[i] = SlotStatus::Ready;
+            info!("[{}] adopted live master slot {i} (no login)", state.host);
+        }
+    }
+    if !any {
+        return false;
+    }
+    let preferred = control::symlink_target_index(&state.host)
+        .filter(|&i| i < POOL_SIZE && alive[i]);
+    state.active_index = preferred
+        .unwrap_or_else(|| alive.iter().position(|&a| a).expect("any==true"));
+    true
+}
+
 /// Tear down a specific pool slot: send `ssh -O exit`, clear status.
 pub fn stop_slot(state: &mut PoolState, index: usize) {
     let path = state.pool_path(index);
@@ -281,4 +315,21 @@ pub fn stop_all(state: &mut PoolState) {
         stop_slot(state, i);
     }
     control::remove_symlink(&state.host);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adopt_if_alive_false_when_no_master() {
+        // A synthetic host with no ssh config and no live socket: every
+        // `ssh -O check` fails, so adoption returns false and no slot is Ready.
+        let mut pool = PoolState::new("auto2fa-unittest-no-such-host-xyz");
+        assert!(!adopt_if_alive(&mut pool));
+        assert!(pool
+            .slot_status
+            .iter()
+            .all(|s| *s != SlotStatus::Ready));
+    }
 }
