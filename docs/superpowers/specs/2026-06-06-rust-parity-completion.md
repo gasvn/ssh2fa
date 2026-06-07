@@ -73,11 +73,42 @@ Full workspace, single-threaded: **core 107, daemon 125 (+13 integration), tui 3
 (The 2 conformance/doc tests are `#[ignore]` by design.) Clippy: autofixes applied;
 11 residual stylistic warnings (too-many-args on spawn fns, intentional `from_str` naming) left as-is.
 
-## Remaining: cutover (T16)
+## Cutover (T16) — DONE 2026-06-06 (zero-relogin handoff)
 
-Technically unblocked — the daemon is now autonomous and at parity. Cutover requires:
-1. The FAS-RC account cooled from prior rate-limiting.
-2. A clean user-supervised live e2e: run the Rust daemon, watch it auto-connect all
-   hosts + tunnels, verify the Mac app, then retire Python.
+The Rust daemon is now the live, launchd-managed daemon (`com.auto2fa.daemon`,
+ProgramArguments → `~/.auto2fa/a2fa-daemon`, env `SSH_CONFIG_PATH=/Users/shgao/.ssh/`).
 
-Do **not** run live cluster logins while the account may be rate-limited.
+**Two correctness fixes made the handoff zero-relogin** (commits `f4121f0`, `351f759`):
+1. `control.rs` resolves `ControlPath` via `ssh -G` (honors the user's
+   `ControlPath ~/.ssh/cm-auto2fa-%h` directive) → Rust computes the SAME socket
+   paths Python used.
+2. `boot_autostart` adopts already-live masters (`adopt_if_alive`) → no login when
+   a master socket is already up.
+
+**Handoff procedure used** (preserves masters; Python tears them down on SIGTERM via
+`cleanup_all`, so it must be killed without its handler running):
+1. Back up plist; repoint ProgramArguments → `~/.auto2fa/a2fa-daemon`.
+2. `kill -STOP` Python → `launchctl unload` (deregister; SIGTERM stays pending while
+   frozen) → `kill -KILL` Python (handler never runs → masters survive via
+   `ControlPersist`) → `launchctl load` (Rust starts, adopts).
+   Daemon **restart** is likewise zero-relogin (SIGKILL it; launchd KeepAlive respawns;
+   it re-adopts). NOTE: a *graceful* SIGTERM tears masters down — use SIGKILL to preserve.
+
+**Outcome:** b8/k7/k8 adopted with **0 logins**; txgent tunnel up. Only failures were
+**pre-existing** (also down under Python): `k6` login fails at keyboard-interactive
+("exited early") — toggled OFF to protect the account from its repeated-failure pattern
+(the same pattern that rate-limited FAS-RC before); `claw` tunnel's compute node
+`holygpu8a13504` is dead (probe timeout) — repick its node or stop it.
+
+**A live-surfaced bug was fixed** (`81c338c`): the squeue format `%i|%P|...` was passed
+unquoted, so the remote shell split on `|` (`bash: %T: command not found`) — broke node
+discovery + stale detection. Now single-quoted.
+
+**Rollback** (if needed): `cp ~/Library/LaunchAgents/com.auto2fa.daemon.plist.bak-precutover`
+back over the plist, then `launchctl unload && launchctl load` it to relaunch the Python
+daemon at `.venv/bin/auto2fa-daemon`. The Python code + venv are intentionally **not
+deleted** yet — keep until the Rust daemon proves stable over normal use.
+
+**Follow-ups (non-blocking):** investigate k6's keyboard-interactive "exited early" (node
+vs account vs pty timing — pty_auth itself is proven working on b8/k7/k8/kempner); repick
+claw's node; once stable, merge `rust-rewrite` → `main` and remove the Python backend.
