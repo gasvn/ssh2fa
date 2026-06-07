@@ -48,6 +48,8 @@ dependencies = [
  "anyhow",
  "crossterm",
  "ratatui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

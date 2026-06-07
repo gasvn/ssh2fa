@@ -1,7 +1,635 @@
+//! `a2fa-tui` — ratatui terminal UI for the auto2fa daemon.
+//!
+//! Architecture:
+//!   - `AppModel` (app.rs): pure, I/O-free view-model.
+//!   - `client.rs`: Unix-socket RPC + event subscription.
+//!   - `views/`: ratatui render functions (stateless).
+//!   - `main.rs`: crossterm setup, event loop, IPC dispatch.
+//!
+//! CPU-burn avoidance:
+//!   The event loop calls `poll(250ms)` — it only redraws when a crossterm
+//!   key event arrives OR when a daemon event is pushed onto the channel.
+//!   There is NO continuous high-FPS render loop.
+
 mod app;
 mod client;
 mod views;
 
+use std::io;
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, Borders, Paragraph},
+    Terminal,
+};
+use serde_json::Value;
+
+use app::{AppModel, InputMode, Pane, SheetKind};
+use views::{
+    hosts::render_hosts,
+    logs::render_logs,
+    sheets::{
+        render_add_host, render_new_tunnel, render_node_picker, AddHostSheet, NewTunnelSheet,
+        NodePickerSheet,
+    },
+    tunnels::render_tunnels,
+};
+
+// ---------------------------------------------------------------------------
+// Sheet state carried alongside AppModel
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Sheets {
+    add_host: Option<AddHostSheet>,
+    new_tunnel: Option<NewTunnelSheet>,
+    node_picker: Option<NodePickerSheet>,
+}
+
+// ---------------------------------------------------------------------------
+// Main entry
+// ---------------------------------------------------------------------------
+
 fn main() {
-    println!("stub");
+    if let Err(e) = run() {
+        eprintln!("a2fa-tui error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    // Terminal setup — also install a panic hook that restores the terminal
+    // before printing the panic, so the user's shell is not left in raw mode.
+    enable_raw_mode().context("enable raw mode")?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .context("enter alternate screen")?;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).context("create terminal")?;
+
+    // Install panic hook to restore terminal on panic.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
+        original_hook(info);
+    }));
+
+    let result = event_loop(&mut terminal);
+
+    // Always restore terminal.
+    disable_raw_mode().ok();
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
+    terminal.show_cursor().ok();
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Event loop
+// ---------------------------------------------------------------------------
+
+fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    let mut app = AppModel::new();
+    let mut sheets = Sheets::default();
+
+    // Initial load.
+    match client::rpc("list_hosts", serde_json::json!({})) {
+        Ok(v) => {
+            if let Ok(hosts) = serde_json::from_value(v) {
+                app.set_hosts(hosts);
+            }
+        }
+        Err(e) => {
+            app.status_msg = format!("list_hosts failed: {e}");
+        }
+    }
+    match client::rpc("list_tunnels", serde_json::json!({})) {
+        Ok(v) => {
+            if let Ok(tunnels) = serde_json::from_value(v) {
+                app.set_tunnels(tunnels);
+            }
+        }
+        Err(e) => {
+            app.status_msg = format!("list_tunnels failed: {e}");
+        }
+    }
+
+    // Fetch initial log tail.
+    match client::rpc("log_tail", serde_json::json!({ "n": 200 })) {
+        Ok(v) => {
+            if let Some(lines) = v.get("lines").and_then(Value::as_array) {
+                let ls: Vec<String> = lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect();
+                app.append_logs(ls);
+            }
+        }
+        Err(_) => {} // log_tail is best-effort
+    }
+
+    // Spawn event subscriber on background thread.
+    let (tx, rx): (mpsc::Sender<Value>, Receiver<Value>) = mpsc::channel();
+    {
+        let tx2 = tx.clone();
+        std::thread::spawn(move || {
+            let _ = client::subscribe(tx2);
+        });
+    }
+
+    // Initial render.
+    terminal.draw(|f| render_frame(f, &app, &sheets))?;
+
+    loop {
+        // Drain any pending daemon events (non-blocking).
+        let mut got_daemon_event = false;
+        while let Ok(event) = rx.try_recv() {
+            apply_daemon_event(&mut app, event);
+            got_daemon_event = true;
+        }
+
+        // Poll for crossterm key/resize events (250 ms timeout).
+        // This is the sole render-triggering mechanism — no busy loop.
+        let got_key = event::poll(Duration::from_millis(250))?;
+        let mut needs_redraw = got_daemon_event;
+
+        if got_key {
+            if let Event::Key(key) = event::read()? {
+                needs_redraw = true;
+                handle_key(key, &mut app, &mut sheets);
+            } else if let Event::Resize(_, _) = event::read().unwrap_or(Event::FocusLost) {
+                needs_redraw = true;
+            }
+        }
+
+        // Drain events that may have arrived during key handling.
+        while let Ok(ev) = rx.try_recv() {
+            apply_daemon_event(&mut app, ev);
+            needs_redraw = true;
+        }
+
+        if app.should_quit {
+            break;
+        }
+
+        if needs_redraw {
+            terminal.draw(|f| render_frame(f, &app, &sheets))?;
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Key handler
+// ---------------------------------------------------------------------------
+
+fn handle_key(
+    key: event::KeyEvent,
+    app: &mut AppModel,
+    sheets: &mut Sheets,
+) {
+    // ----- Sheet / modal input modes -----
+    match app.input_mode {
+        InputMode::Sheet(SheetKind::AddHost) => {
+            if let Some(ref mut sh) = sheets.add_host {
+                match key.code {
+                    KeyCode::Esc => {
+                        sheets.add_host = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        let host = sh.host_buf.trim().to_string();
+                        if host.is_empty() {
+                            sh.error = "Host alias cannot be empty.".to_string();
+                        } else {
+                            let res = client::rpc(
+                                "host_add",
+                                serde_json::json!({ "host": host }),
+                            );
+                            match res {
+                                Ok(_) => {
+                                    app.status_msg = format!("Added host {host}");
+                                    refresh_hosts(app);
+                                }
+                                Err(e) => {
+                                    app.status_msg = format!("host_add failed: {e}");
+                                }
+                            }
+                            sheets.add_host = None;
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        sh.host_buf.pop();
+                        sh.error.clear();
+                    }
+                    KeyCode::Char(c) => {
+                        sh.host_buf.push(c);
+                        sh.error.clear();
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        InputMode::Sheet(SheetKind::NewTunnel) => {
+            if let Some(ref mut sh) = sheets.new_tunnel {
+                match key.code {
+                    KeyCode::Esc => {
+                        sheets.new_tunnel = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        sh.field = if sh.field == 0 { 1 } else { 0 };
+                    }
+                    KeyCode::Enter => {
+                        if let Some((name, port)) = sh.validate() {
+                            let res = client::rpc(
+                                "tunnel_add",
+                                serde_json::json!({
+                                    "name": name,
+                                    "local_port": port,
+                                    "remote_port": port,
+                                }),
+                            );
+                            match res {
+                                Ok(_) => {
+                                    app.status_msg = format!("Added tunnel {name}");
+                                    refresh_tunnels(app);
+                                }
+                                Err(e) => {
+                                    app.status_msg = format!("tunnel_add failed: {e}");
+                                }
+                            }
+                            sheets.new_tunnel = None;
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if sh.field == 0 {
+                            sh.name_buf.pop();
+                        } else {
+                            sh.port_buf.pop();
+                        }
+                        sh.error.clear();
+                    }
+                    KeyCode::Char(c) => {
+                        if sh.field == 0 {
+                            sh.name_buf.push(c);
+                        } else {
+                            sh.port_buf.push(c);
+                        }
+                        sh.error.clear();
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        InputMode::Sheet(SheetKind::NodePicker) => {
+            if let Some(ref mut sh) = sheets.node_picker {
+                match key.code {
+                    KeyCode::Esc => {
+                        sheets.node_picker = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        sh.field = if sh.field == 0 { 1 } else { 0 };
+                    }
+                    KeyCode::Enter => {
+                        if let Some((node, user)) = sh.validate() {
+                            let tunnel_name = sh.tunnel_name.clone();
+                            let res = client::rpc(
+                                "tunnel_set_node",
+                                serde_json::json!({
+                                    "name": tunnel_name,
+                                    "node": node,
+                                    "user": user,
+                                }),
+                            );
+                            match res {
+                                Ok(_) => {
+                                    app.status_msg =
+                                        format!("Set node {node} for {tunnel_name}");
+                                    refresh_tunnels(app);
+                                }
+                                Err(e) => {
+                                    app.status_msg = format!("tunnel_set_node failed: {e}");
+                                }
+                            }
+                            sheets.node_picker = None;
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if sh.field == 0 {
+                            sh.node_buf.pop();
+                        } else {
+                            sh.user_buf.pop();
+                        }
+                        sh.error.clear();
+                    }
+                    KeyCode::Char(c) => {
+                        if sh.field == 0 {
+                            sh.node_buf.push(c);
+                        } else {
+                            sh.user_buf.push(c);
+                        }
+                        sh.error.clear();
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        InputMode::Filter => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => app.commit_filter(),
+                KeyCode::Backspace => {
+                    app.filter_buf.pop();
+                }
+                KeyCode::Char(c) => {
+                    app.filter_buf.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        InputMode::Normal => {}
+    }
+
+    // ----- Normal mode -----
+    match key.code {
+        // Quit
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+
+        // Navigation
+        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+
+        // Switch pane
+        KeyCode::Tab => app.cycle_focus(),
+
+        // Logs view
+        KeyCode::Char('l') => {
+            if app.focus == Pane::Logs {
+                app.focus = Pane::Tunnels;
+            } else {
+                app.focus = Pane::Logs;
+            }
+        }
+
+        // Filter
+        KeyCode::Char('/') => {
+            app.filter_buf = app.filter.clone();
+            app.input_mode = InputMode::Filter;
+        }
+        KeyCode::Char('c') => {
+            // Clear filter (without Ctrl).
+            app.clear_filter();
+        }
+
+        // Actions on tunnels
+        KeyCode::Char('s') if app.focus == Pane::Tunnels => {
+            if let Some(t) = app.selected_tunnel() {
+                let name = t.name.clone();
+                match client::rpc("tunnel_start", serde_json::json!({ "name": name })) {
+                    Ok(_) => app.status_msg = format!("Started {name}"),
+                    Err(e) => app.status_msg = format!("start failed: {e}"),
+                }
+                refresh_tunnels(app);
+            }
+        }
+        KeyCode::Char('x') if app.focus == Pane::Tunnels => {
+            if let Some(t) = app.selected_tunnel() {
+                let name = t.name.clone();
+                match client::rpc("tunnel_stop", serde_json::json!({ "name": name })) {
+                    Ok(_) => app.status_msg = format!("Stopped {name}"),
+                    Err(e) => app.status_msg = format!("stop failed: {e}"),
+                }
+                refresh_tunnels(app);
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') if app.focus == Pane::Tunnels => {
+            if let Some(t) = app.selected_tunnel() {
+                let name = t.name.clone();
+                match client::rpc("tunnel_toggle", serde_json::json!({ "name": name })) {
+                    Ok(_) => app.status_msg = format!("Toggled {name}"),
+                    Err(e) => app.status_msg = format!("toggle failed: {e}"),
+                }
+                refresh_tunnels(app);
+            }
+        }
+        KeyCode::Char('n') if app.focus == Pane::Tunnels => {
+            if let Some(t) = app.selected_tunnel() {
+                let name = t.name.clone();
+                let user = t
+                    .last_user
+                    .clone()
+                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+                sheets.node_picker = Some(NodePickerSheet {
+                    tunnel_name: name,
+                    user_buf: user,
+                    ..NodePickerSheet::default()
+                });
+                app.input_mode = InputMode::Sheet(SheetKind::NodePicker);
+            }
+        }
+        KeyCode::Char('a') if app.focus == Pane::Tunnels => {
+            sheets.new_tunnel = Some(NewTunnelSheet::new());
+            app.input_mode = InputMode::Sheet(SheetKind::NewTunnel);
+        }
+
+        // Actions on hosts
+        KeyCode::Enter | KeyCode::Char(' ') if app.focus == Pane::Hosts => {
+            if let Some(h) = app.selected_host() {
+                let name = h.host.clone();
+                match client::rpc("host_toggle", serde_json::json!({ "host": name })) {
+                    Ok(_) => app.status_msg = format!("Toggled {name}"),
+                    Err(e) => app.status_msg = format!("host_toggle failed: {e}"),
+                }
+                refresh_hosts(app);
+            }
+        }
+        KeyCode::Char('a') if app.focus == Pane::Hosts => {
+            sheets.add_host = Some(AddHostSheet::new());
+            app.input_mode = InputMode::Sheet(SheetKind::AddHost);
+        }
+
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IPC refresh helpers
+// ---------------------------------------------------------------------------
+
+fn refresh_tunnels(app: &mut AppModel) {
+    if let Ok(v) = client::rpc("list_tunnels", serde_json::json!({})) {
+        if let Ok(tunnels) = serde_json::from_value(v) {
+            app.set_tunnels(tunnels);
+        }
+    }
+}
+
+fn refresh_hosts(app: &mut AppModel) {
+    if let Ok(v) = client::rpc("list_hosts", serde_json::json!({})) {
+        if let Ok(hosts) = serde_json::from_value(v) {
+            app.set_hosts(hosts);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon event application
+// ---------------------------------------------------------------------------
+
+fn apply_daemon_event(app: &mut AppModel, event: Value) {
+    // The daemon emits: {"event": "tunnel_update", "data": {...}}
+    //                   {"event": "host_update",   "data": {...}}
+    //                   {"event": "log_line",       "line": "..."}
+    let event_type = event.get("event").and_then(Value::as_str).unwrap_or("");
+    match event_type {
+        "tunnel_update" => {
+            // Re-fetch the full list for simplicity.
+            if let Ok(v) = client::rpc("list_tunnels", serde_json::json!({})) {
+                if let Ok(tunnels) = serde_json::from_value(v) {
+                    app.set_tunnels(tunnels);
+                }
+            }
+        }
+        "host_update" => {
+            if let Ok(v) = client::rpc("list_hosts", serde_json::json!({})) {
+                if let Ok(hosts) = serde_json::from_value(v) {
+                    app.set_hosts(hosts);
+                }
+            }
+        }
+        "log_line" => {
+            if let Some(line) = event.get("line").and_then(Value::as_str) {
+                app.append_logs(vec![line.to_string()]);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+
+fn render_frame(
+    f: &mut ratatui::Frame,
+    app: &AppModel,
+    sheets: &Sheets,
+) {
+    let size = f.area();
+
+    // Top-level layout: main area + status bar.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),    // main
+            Constraint::Length(1), // status bar
+        ])
+        .split(size);
+
+    let main_area = chunks[0];
+    let status_area = chunks[1];
+
+    // Split main area: hosts (upper) + tunnels (lower) or logs (full).
+    if app.focus == Pane::Logs {
+        render_logs(f, main_area, app);
+    } else {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(main_area);
+        render_hosts(f, split[0], app);
+        render_tunnels(f, split[1], app);
+    }
+
+    // Status bar.
+    render_status_bar(f, status_area, app);
+
+    // Modal overlays (drawn last so they appear on top).
+    match app.input_mode {
+        InputMode::Sheet(SheetKind::AddHost) => {
+            if let Some(ref sh) = sheets.add_host {
+                render_add_host(f, sh);
+            }
+        }
+        InputMode::Sheet(SheetKind::NewTunnel) => {
+            if let Some(ref sh) = sheets.new_tunnel {
+                render_new_tunnel(f, sh);
+            }
+        }
+        InputMode::Sheet(SheetKind::NodePicker) => {
+            if let Some(ref sh) = sheets.node_picker {
+                render_node_picker(f, sh);
+            }
+        }
+        InputMode::Filter => {
+            render_filter_bar(f, status_area, app);
+        }
+        InputMode::Normal => {}
+    }
+}
+
+fn render_status_bar(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &AppModel) {
+    let help =
+        " q:quit  Tab:switch  ↑↓/jk:move  Enter/Spc:toggle  s:start  x:stop  n:node  a:add  l:logs  /:filter";
+
+    let msg = if app.status_msg.is_empty() {
+        help.to_string()
+    } else {
+        format!("{} │ {}", app.status_msg, help)
+    };
+
+    let para = Paragraph::new(msg.as_str())
+        .style(Style::default().fg(Color::DarkGray))
+        .block(Block::default());
+    f.render_widget(para, area);
+}
+
+fn render_filter_bar(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &AppModel) {
+    let text = format!("Filter: {}█", app.filter_buf);
+    let para = Paragraph::new(text.as_str())
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(para, area);
 }
