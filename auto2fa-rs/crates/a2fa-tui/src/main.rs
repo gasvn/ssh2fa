@@ -41,8 +41,8 @@ use views::{
     hosts::render_hosts,
     logs::render_logs,
     sheets::{
-        render_add_host, render_new_tunnel, render_node_picker, AddHostSheet, NewTunnelSheet,
-        NodePickerSheet,
+        render_add_host, render_confirm_delete, render_new_tunnel, render_node_picker,
+        AddHostSheet, ConfirmDeleteSheet, NewTunnelSheet, NodePickerSheet, SqueueJob,
     },
     tunnels::render_tunnels,
 };
@@ -56,6 +56,7 @@ struct Sheets {
     add_host: Option<AddHostSheet>,
     new_tunnel: Option<NewTunnelSheet>,
     node_picker: Option<NodePickerSheet>,
+    confirm_delete: Option<ConfirmDeleteSheet>,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,54 +316,86 @@ fn handle_key(
 
         InputMode::Sheet(SheetKind::NodePicker) => {
             if let Some(ref mut sh) = sheets.node_picker {
-                match key.code {
-                    KeyCode::Esc => {
-                        sheets.node_picker = None;
-                        app.input_mode = InputMode::Normal;
-                    }
-                    KeyCode::Tab => {
-                        sh.field = if sh.field == 0 { 1 } else { 0 };
-                    }
-                    KeyCode::Enter => {
-                        if let Some((node, user)) = sh.validate() {
-                            let tunnel_name = sh.tunnel_name.clone();
-                            let res = client::rpc(
-                                "tunnel_set_node",
-                                serde_json::json!({
-                                    "name": tunnel_name,
-                                    "node": node,
-                                    "user": user,
-                                }),
-                            );
-                            match res {
-                                Ok(_) => {
-                                    app.status_msg =
-                                        format!("Set node {node} for {tunnel_name}");
-                                    refresh_tunnels(app);
-                                }
-                                Err(e) => {
-                                    app.status_msg = format!("tunnel_set_node failed: {e}");
-                                }
-                            }
+                if sh.custom {
+                    // ----- custom free-text entry sub-mode -----
+                    match key.code {
+                        KeyCode::Esc => {
                             sheets.node_picker = None;
                             app.input_mode = InputMode::Normal;
                         }
-                    }
-                    KeyCode::Backspace => {
-                        if sh.field == 0 {
+                        KeyCode::Enter => {
+                            if let Some(node) = sh.resolve_node() {
+                                let name = sh.tunnel_name.clone();
+                                let user = sh.user.clone();
+                                submit_node(app, &name, &node, &user);
+                                sheets.node_picker = None;
+                                app.input_mode = InputMode::Normal;
+                            }
+                        }
+                        KeyCode::Backspace => {
                             sh.node_buf.pop();
-                        } else {
-                            sh.user_buf.pop();
+                            sh.error.clear();
                         }
-                        sh.error.clear();
-                    }
-                    KeyCode::Char(c) => {
-                        if sh.field == 0 {
+                        KeyCode::Char(c) => {
                             sh.node_buf.push(c);
-                        } else {
-                            sh.user_buf.push(c);
+                            sh.error.clear();
                         }
-                        sh.error.clear();
+                        _ => {}
+                    }
+                } else {
+                    // ----- list-pick mode -----
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            sheets.node_picker = None;
+                            app.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => sh.move_down(),
+                        KeyCode::Up | KeyCode::Char('k') => sh.move_up(),
+                        KeyCode::Char('c') => sh.enter_custom(),
+                        KeyCode::Char('r') => {
+                            let jump = sh.jump.clone();
+                            let preselect = sh.selected_node();
+                            load_picker_jobs(sh, jump.as_deref(), preselect.as_deref());
+                        }
+                        KeyCode::Enter => {
+                            if let Some(node) = sh.resolve_node() {
+                                let name = sh.tunnel_name.clone();
+                                let user = sh.user.clone();
+                                submit_node(app, &name, &node, &user);
+                                sheets.node_picker = None;
+                                app.input_mode = InputMode::Normal;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
+
+        InputMode::Sheet(SheetKind::ConfirmDelete) => {
+            if let Some(ref sh) = sheets.confirm_delete {
+                match key.code {
+                    KeyCode::Char('y') => {
+                        let name = sh.name.clone();
+                        match client::rpc(
+                            "tunnel_remove",
+                            serde_json::json!({ "name": name }),
+                        ) {
+                            Ok(_) => {
+                                app.status_msg = format!("deleted {name}");
+                                refresh_tunnels(app);
+                            }
+                            Err(e) => {
+                                app.status_msg = format!("delete failed: {e}");
+                            }
+                        }
+                        sheets.confirm_delete = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+                        sheets.confirm_delete = None;
+                        app.input_mode = InputMode::Normal;
                     }
                     _ => {}
                 }
@@ -444,7 +477,9 @@ fn handle_key(
                 refresh_tunnels(app);
             }
         }
-        KeyCode::Enter | KeyCode::Char(' ') if app.focus == Pane::Tunnels => {
+        // Space toggles a tunnel (start/stop); Enter opens the node picker
+        // (parity with the Python TUI).
+        KeyCode::Char(' ') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
                 match client::rpc("tunnel_toggle", serde_json::json!({ "name": name })) {
@@ -454,19 +489,13 @@ fn handle_key(
                 refresh_tunnels(app);
             }
         }
-        KeyCode::Char('n') if app.focus == Pane::Tunnels => {
+        KeyCode::Enter | KeyCode::Char('n') if app.focus == Pane::Tunnels => {
+            open_node_picker(app, sheets);
+        }
+        KeyCode::Char('d') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
-                let name = t.name.clone();
-                let user = t
-                    .last_user
-                    .clone()
-                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
-                sheets.node_picker = Some(NodePickerSheet {
-                    tunnel_name: name,
-                    user_buf: user,
-                    ..NodePickerSheet::default()
-                });
-                app.input_mode = InputMode::Sheet(SheetKind::NodePicker);
+                sheets.confirm_delete = Some(ConfirmDeleteSheet::new(&t.name));
+                app.input_mode = InputMode::Sheet(SheetKind::ConfirmDelete);
             }
         }
         KeyCode::Char('a') if app.focus == Pane::Tunnels => {
@@ -491,6 +520,122 @@ fn handle_key(
         }
 
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node-picker helpers
+// ---------------------------------------------------------------------------
+
+/// Choose the jump host to use for node discovery for the given tunnel.
+///
+/// Prefers a master-ready host that is also in the tunnel's `jump_candidates`
+/// (if it has any); otherwise the first master-ready host; otherwise the
+/// tunnel's active_jump as a last resort.
+fn pick_jump_for_tunnel(app: &AppModel, name: &str) -> Option<String> {
+    let t = app.tunnels.iter().find(|t| t.name == name)?;
+
+    // First, a master-ready host matching the candidate constraint.
+    let ready = app.hosts.iter().filter(|h| h.is_master_ready);
+    if let Some(cands) = &t.jump_candidates {
+        if let Some(h) = ready.clone().find(|h| cands.contains(&h.host)) {
+            return Some(h.host.clone());
+        }
+    }
+    if let Some(h) = app.hosts.iter().find(|h| h.is_master_ready) {
+        return Some(h.host.clone());
+    }
+    t.active_jump.clone()
+}
+
+/// Open the squeue-backed node picker for the focused tunnel.
+fn open_node_picker(app: &mut AppModel, sheets: &mut Sheets) {
+    let (name, user, preselect) = match app.selected_tunnel() {
+        Some(t) => (
+            t.name.clone(),
+            t.last_user
+                .clone()
+                .unwrap_or_else(|| std::env::var("USER").unwrap_or_default()),
+            t.last_node.clone(),
+        ),
+        None => return,
+    };
+
+    let jump = pick_jump_for_tunnel(app, &name);
+    let mut sh = NodePickerSheet::new(&name, jump.clone(), user);
+
+    if jump.is_none() {
+        sh.error =
+            "no connected jump host — press c for custom, or start a host first".to_string();
+    } else {
+        load_picker_jobs(&mut sh, jump.as_deref(), preselect.as_deref());
+    }
+
+    sheets.node_picker = Some(sh);
+    app.input_mode = InputMode::Sheet(SheetKind::NodePicker);
+}
+
+/// Fetch squeue jobs for `jump` and load them into the picker sheet.
+/// On error or empty, sets an informative message instead of crashing.
+fn load_picker_jobs(sh: &mut NodePickerSheet, jump: Option<&str>, preselect: Option<&str>) {
+    let host = match jump {
+        Some(h) => h,
+        None => {
+            sh.error =
+                "no connected jump host — press c for custom, r to retry".to_string();
+            sh.jobs.clear();
+            return;
+        }
+    };
+    match client::rpc("discover_nodes", serde_json::json!({ "host": host })) {
+        Ok(v) => {
+            let jobs = parse_squeue_jobs(&v);
+            sh.set_jobs(jobs, preselect);
+        }
+        Err(e) => {
+            sh.jobs.clear();
+            sh.sel = 0;
+            sh.error = format!("squeue failed: {e} — press c for custom, r to retry");
+        }
+    }
+}
+
+/// Parse the `discover_nodes` JSON array into `SqueueJob`s.
+fn parse_squeue_jobs(v: &Value) -> Vec<SqueueJob> {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    arr.iter()
+        .map(|j| SqueueJob {
+            jobid: j.get("jobid").and_then(Value::as_str).unwrap_or("").to_string(),
+            partition: j
+                .get("partition")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            name: j.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+            state: j.get("state").and_then(Value::as_str).unwrap_or("").to_string(),
+            time: j.get("time").and_then(Value::as_str).unwrap_or("").to_string(),
+            node: j.get("node").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
+        .collect()
+}
+
+/// Submit the chosen node via `tunnel_set_node` and refresh.
+fn submit_node(app: &mut AppModel, name: &str, node: &str, user: &str) {
+    let res = client::rpc(
+        "tunnel_set_node",
+        serde_json::json!({ "name": name, "node": node, "user": user }),
+    );
+    match res {
+        Ok(_) => {
+            app.status_msg = format!("Set node {node} for {name}");
+            refresh_tunnels(app);
+        }
+        Err(e) => {
+            app.status_msg = format!("tunnel_set_node failed: {e}");
+        }
     }
 }
 
@@ -603,6 +748,11 @@ fn render_frame(
                 render_node_picker(f, sh);
             }
         }
+        InputMode::Sheet(SheetKind::ConfirmDelete) => {
+            if let Some(ref sh) = sheets.confirm_delete {
+                render_confirm_delete(f, sh);
+            }
+        }
         InputMode::Filter => {
             render_filter_bar(f, status_area, app);
         }
@@ -612,7 +762,7 @@ fn render_frame(
 
 fn render_status_bar(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &AppModel) {
     let help =
-        " q:quit  Tab:switch  ↑↓/jk:move  Enter/Spc:toggle  s:start  x:stop  n:node  a:add  l:logs  /:filter";
+        " q:quit  Tab:switch  ↑↓/jk:move  Spc:toggle  Enter/n:node  s:start  x:stop  d:delete  a:add  l:logs  /:filter";
 
     let msg = if app.status_msg.is_empty() {
         help.to_string()

@@ -6,6 +6,7 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
@@ -215,52 +216,140 @@ pub fn render_new_tunnel(f: &mut Frame, sheet: &NewTunnelSheet) {
 }
 
 // ---------------------------------------------------------------------------
-// Node-picker sheet
+// Node-picker sheet (squeue-backed)
 // ---------------------------------------------------------------------------
 
-/// State for the node-picker modal.
+/// A single SLURM job row as returned by `discover_nodes`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SqueueJob {
+    pub jobid: String,
+    pub partition: String,
+    pub name: String,
+    pub state: String,
+    pub time: String,
+    pub node: String,
+}
+
+/// State for the squeue-backed node-picker modal.
+///
+/// Two display modes share one struct:
+///   * list mode (`custom == false`): a scrollable list of RUNNING squeue jobs.
+///   * custom mode (`custom == true`): a free-text field for a manual node name.
 #[derive(Debug, Clone, Default)]
 pub struct NodePickerSheet {
-    pub node_buf: String,
-    pub user_buf: String,
-    /// 0 = node, 1 = user.
-    pub field: usize,
-    pub error: String,
     /// The tunnel name this picker is for.
     pub tunnel_name: String,
+    /// The jump host used for discovery (None → no ready jump host).
+    pub jump: Option<String>,
+    /// The user to pass to `tunnel_set_node`.
+    pub user: String,
+    /// RUNNING jobs to pick from.
+    pub jobs: Vec<SqueueJob>,
+    /// Selected row index into `jobs`.
+    pub sel: usize,
+    /// Custom-entry text buffer (used when `custom` is true).
+    pub node_buf: String,
+    /// Whether the modal is in custom free-text entry mode.
+    pub custom: bool,
+    /// Status / error / hint message line.
+    pub error: String,
 }
 
 impl NodePickerSheet {
-    #[allow(dead_code)]
-    pub fn new(tunnel_name: &str) -> Self {
+    pub fn new(tunnel_name: &str, jump: Option<String>, user: String) -> Self {
         Self {
             tunnel_name: tunnel_name.to_string(),
+            jump,
+            user,
             ..Self::default()
         }
     }
 
-    /// Return `(node, user)` if both are non-empty.
-    pub fn validate(&mut self) -> Option<(String, String)> {
-        let node = self.node_buf.trim().to_string();
-        if node.is_empty() {
-            self.error = "Node cannot be empty.".to_string();
-            self.field = 0;
-            return None;
+    /// Replace the job list with a fresh squeue result, keeping only RUNNING
+    /// jobs, and clamp the selection.  Pre-selects `preselect_node` if present.
+    pub fn set_jobs(&mut self, jobs: Vec<SqueueJob>, preselect_node: Option<&str>) {
+        self.jobs = filter_running(jobs);
+        if self.jobs.is_empty() {
+            self.sel = 0;
+            self.error = "no running jobs — press c for custom, r to retry".to_string();
+            return;
         }
-        let user = self.user_buf.trim().to_string();
-        if user.is_empty() {
-            self.error = "User cannot be empty.".to_string();
-            self.field = 1;
-            return None;
-        }
-        Some((node, user))
+        self.sel = preselect_node
+            .and_then(|n| self.jobs.iter().position(|j| j.node == n))
+            .unwrap_or(0);
+        self.error.clear();
     }
+
+    /// Move the list selection down (clamped at the last row).
+    pub fn move_down(&mut self) {
+        if !self.jobs.is_empty() {
+            self.sel = (self.sel + 1).min(self.jobs.len() - 1);
+        }
+    }
+
+    /// Move the list selection up (clamped at row 0).
+    pub fn move_up(&mut self) {
+        if self.sel > 0 {
+            self.sel -= 1;
+        }
+    }
+
+    /// The currently-selected job's node string, if any.
+    pub fn selected_node(&self) -> Option<String> {
+        self.jobs.get(self.sel).map(|j| j.node.clone())
+    }
+
+    /// Switch into custom free-text entry mode.
+    pub fn enter_custom(&mut self) {
+        self.custom = true;
+        self.node_buf.clear();
+        self.error.clear();
+    }
+
+    /// Resolve the node to submit, depending on the current mode.
+    ///
+    /// Returns `None` (and sets `error`) when there is nothing valid to submit.
+    pub fn resolve_node(&mut self) -> Option<String> {
+        if self.custom {
+            let node = self.node_buf.trim().to_string();
+            if node.is_empty() {
+                self.error = "Node cannot be empty.".to_string();
+                return None;
+            }
+            Some(node)
+        } else {
+            match self.selected_node() {
+                Some(n) => Some(n),
+                None => {
+                    self.error =
+                        "no running jobs — press c for custom, r to retry".to_string();
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Keep only jobs whose state is RUNNING (case-insensitive, also accepts the
+/// short SLURM code "R").
+pub fn filter_running(jobs: Vec<SqueueJob>) -> Vec<SqueueJob> {
+    jobs.into_iter()
+        .filter(|j| {
+            let s = j.state.to_ascii_uppercase();
+            s == "RUNNING" || s == "R"
+        })
+        .collect()
 }
 
 /// Render the node-picker modal.
 pub fn render_node_picker(f: &mut Frame, sheet: &NodePickerSheet) {
-    let title = format!("Set node for '{}'", sheet.tunnel_name);
-    let area = centered_rect(70, 12, f.area());
+    let via = sheet
+        .jump
+        .as_deref()
+        .map(|j| format!(" via {j}"))
+        .unwrap_or_default();
+    let title = format!("Pick node for '{}'{}", sheet.tunnel_name, via);
+    let area = centered_rect(70, 18, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -279,24 +368,238 @@ pub fn render_node_picker(f: &mut Frame, sheet: &NodePickerSheet) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // node field
-            Constraint::Length(3), // user field
-            Constraint::Length(1), // error
+            Constraint::Min(3),    // list or custom field
+            Constraint::Length(1), // error / status
             Constraint::Length(1), // hint
         ])
         .split(inner);
 
-    render_input_field(f, chunks[0], "Node", &sheet.node_buf, sheet.field == 0);
-    render_input_field(f, chunks[1], "User", &sheet.user_buf, sheet.field == 1);
-
-    if !sheet.error.is_empty() {
-        let err = Paragraph::new(sheet.error.as_str())
-            .style(Style::default().fg(Color::Red));
-        f.render_widget(err, chunks[2]);
+    if sheet.custom {
+        render_input_field(f, chunks[0], "Custom node", &sheet.node_buf, true);
+    } else {
+        let mut lines: Vec<Line> = Vec::new();
+        if sheet.jobs.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(no running jobs)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for (i, j) in sheet.jobs.iter().enumerate() {
+                let text = format!(
+                    "{:<10} {:<12} {:<16} {:<10} {}",
+                    truncate(&j.jobid, 10),
+                    truncate(&j.partition, 12),
+                    truncate(&j.name, 16),
+                    truncate(&j.time, 10),
+                    j.node,
+                );
+                let style = if i == sheet.sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+        }
+        let list = Paragraph::new(lines);
+        f.render_widget(list, chunks[0]);
     }
 
-    let hint = Paragraph::new("Tab: next field   Enter: confirm   Esc: cancel")
+    if !sheet.error.is_empty() {
+        let err = Paragraph::new(sheet.error.as_str()).style(Style::default().fg(Color::Red));
+        f.render_widget(err, chunks[1]);
+    }
+
+    let hint = if sheet.custom {
+        "Enter: confirm   Esc: cancel"
+    } else {
+        "↑↓/jk: move   Enter: use   c: custom   r: refresh   Esc: cancel"
+    };
+    let hint_w = Paragraph::new(hint)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint_w, chunks[2]);
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Confirm-delete modal
+// ---------------------------------------------------------------------------
+
+/// State for the delete-tunnel confirm modal.
+#[derive(Debug, Clone, Default)]
+pub struct ConfirmDeleteSheet {
+    /// The tunnel name to delete.
+    pub name: String,
+}
+
+impl ConfirmDeleteSheet {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+/// Render the confirm-delete modal.
+pub fn render_confirm_delete(f: &mut Frame, sheet: &ConfirmDeleteSheet) {
+    let area = centered_rect(60, 7, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Confirm")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // question
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // hint
+        ])
+        .split(inner);
+
+    let q = Paragraph::new(format!("Delete tunnel '{}'?", sheet.name))
+        .alignment(Alignment::Center);
+    f.render_widget(q, chunks[1]);
+
+    let hint = Paragraph::new("y: yes    n / Esc / q: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Tests (pure logic)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(jobid: &str, node: &str, state: &str) -> SqueueJob {
+        SqueueJob {
+            jobid: jobid.into(),
+            partition: "gpu".into(),
+            name: "run".into(),
+            state: state.into(),
+            time: "1:00:00".into(),
+            node: node.into(),
+        }
+    }
+
+    #[test]
+    fn filter_running_keeps_only_running() {
+        let jobs = vec![
+            job("1", "n1", "RUNNING"),
+            job("2", "n2", "PENDING"),
+            job("3", "n3", "R"),
+            job("4", "n4", "completing"),
+        ];
+        let kept = filter_running(jobs);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].node, "n1");
+        assert_eq!(kept[1].node, "n3");
+    }
+
+    #[test]
+    fn set_jobs_filters_and_preselects() {
+        let mut sh = NodePickerSheet::new("nb", Some("k6".into()), "jdoe".into());
+        let jobs = vec![
+            job("1", "n1", "RUNNING"),
+            job("2", "n2", "PENDING"),
+            job("3", "n3", "RUNNING"),
+        ];
+        sh.set_jobs(jobs, Some("n3"));
+        assert_eq!(sh.jobs.len(), 2);
+        assert_eq!(sh.sel, 1);
+        assert_eq!(sh.selected_node().as_deref(), Some("n3"));
+        assert!(sh.error.is_empty());
+    }
+
+    #[test]
+    fn set_jobs_empty_sets_message() {
+        let mut sh = NodePickerSheet::new("nb", Some("k6".into()), "jdoe".into());
+        sh.set_jobs(vec![job("1", "n1", "PENDING")], None);
+        assert!(sh.jobs.is_empty());
+        assert!(sh.error.contains("no running jobs"));
+    }
+
+    #[test]
+    fn move_selection_clamps_at_bounds() {
+        let mut sh = NodePickerSheet::new("nb", None, "u".into());
+        sh.set_jobs(vec![job("1", "n1", "R"), job("2", "n2", "R")], None);
+        sh.move_up(); // already at 0
+        assert_eq!(sh.sel, 0);
+        sh.move_down();
+        sh.move_down();
+        sh.move_down(); // clamp at last
+        assert_eq!(sh.sel, 1);
+        assert_eq!(sh.selected_node().as_deref(), Some("n2"));
+    }
+
+    #[test]
+    fn resolve_node_list_mode_returns_selected() {
+        let mut sh = NodePickerSheet::new("nb", None, "u".into());
+        sh.set_jobs(vec![job("1", "holygpu01", "R")], None);
+        assert_eq!(sh.resolve_node().as_deref(), Some("holygpu01"));
+    }
+
+    #[test]
+    fn resolve_node_list_mode_empty_errors() {
+        let mut sh = NodePickerSheet::new("nb", None, "u".into());
+        sh.set_jobs(vec![], None);
+        assert!(sh.resolve_node().is_none());
+        assert!(sh.error.contains("no running jobs"));
+    }
+
+    #[test]
+    fn resolve_node_custom_mode_trims_and_validates() {
+        let mut sh = NodePickerSheet::new("nb", None, "u".into());
+        sh.enter_custom();
+        assert!(sh.custom);
+        sh.node_buf = "  holygpu07  ".into();
+        assert_eq!(sh.resolve_node().as_deref(), Some("holygpu07"));
+    }
+
+    #[test]
+    fn resolve_node_custom_empty_errors() {
+        let mut sh = NodePickerSheet::new("nb", None, "u".into());
+        sh.enter_custom();
+        sh.node_buf = "   ".into();
+        assert!(sh.resolve_node().is_none());
+        assert!(sh.error.contains("empty"));
+    }
+
+    #[test]
+    fn confirm_delete_carries_name() {
+        let sh = ConfirmDeleteSheet::new("jupyter");
+        assert_eq!(sh.name, "jupyter");
+    }
+
+    #[test]
+    fn truncate_shortens_long_strings() {
+        assert_eq!(truncate("abc", 10), "abc");
+        assert_eq!(truncate("abcdefghij", 5), "abcd\u{2026}");
+    }
 }

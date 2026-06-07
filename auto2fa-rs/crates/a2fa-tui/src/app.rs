@@ -36,6 +36,7 @@ pub enum SheetKind {
     AddHost,
     NewTunnel,
     NodePicker,
+    ConfirmDelete,
 }
 
 // ---------------------------------------------------------------------------
