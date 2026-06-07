@@ -7,6 +7,42 @@ enum Spacing {
     static let s:  CGFloat = 8
     static let m:  CGFloat = 12
     static let l:  CGFloat = 16
+    static let xl: CGFloat = 24
+}
+
+// MARK: - Radius
+
+/// Continuous corner radii for the 2026 "Liquid Glass" look.
+enum Radius {
+    static let card:    CGFloat = 20
+    static let pill:    CGFloat = 999
+    static let control: CGFloat = 10
+}
+
+// MARK: - Brand
+
+/// Single place to swap the accent later. Restrained: tracks the system accent.
+enum Brand {
+    static let accent = Color.accentColor
+}
+
+// MARK: - Rounded font helpers
+
+extension Font {
+    /// Dashboard / section title — friendly rounded, semibold.
+    static var dashTitle: Font {
+        .system(.headline, design: .rounded).weight(.semibold)
+    }
+
+    /// Count badges (e.g. host / tunnel counts) — rounded, semibold.
+    static var countBadge: Font {
+        .system(.caption, design: .rounded).weight(.semibold)
+    }
+
+    /// Row titles (host names, tunnel names) — rounded, medium.
+    static var rowTitle: Font {
+        .system(.body, design: .rounded).weight(.medium)
+    }
 }
 
 // MARK: - StatusColor
@@ -33,6 +69,10 @@ enum StatusColor {
         case .unknown:   return .secondary
         }
     }
+
+    // Aliases for tinted pills — same colors, friendlier call sites.
+    static func tint(forHost s: SSHHost.DisplayState) -> Color { host(s) }
+    static func tint(forTunnel s: Tunnel.DisplayState) -> Color { tunnel(s) }
 }
 
 // MARK: - RowMetric
@@ -62,5 +102,49 @@ extension View {
     /// Consistent vertical padding for list rows.
     func dashboardRow() -> some View {
         self.padding(.vertical, RowMetric.vPad)
+    }
+
+    // MARK: Liquid Glass surfaces (macOS 26) with material fallback (14.0+)
+
+    /// Primary elevated surface — cards / panels. Uses Liquid Glass on
+    /// macOS 26, falls back to a bordered + shadowed material on older systems.
+    @ViewBuilder
+    func glassCard(cornerRadius: CGFloat = Radius.card) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        } else {
+            self
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(.white.opacity(0.08))
+                )
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        }
+    }
+
+    /// Lighter glass for chrome — toolbars / bars. Thinner material fallback.
+    @ViewBuilder
+    func glassChrome() -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: .rect(cornerRadius: Radius.control))
+        } else {
+            self.background(.ultraThinMaterial)
+        }
+    }
+
+    /// Subtle hover elevation — gentle scale + soft shadow, animated.
+    func hoverLift(_ hovering: Bool) -> some View {
+        self
+            .scaleEffect(hovering ? 1.005 : 1.0)
+            .shadow(
+                color: .black.opacity(hovering ? 0.18 : 0.0),
+                radius: hovering ? 8 : 0,
+                y: hovering ? 3 : 0
+            )
+            .animation(.easeOut(duration: 0.16), value: hovering)
     }
 }
