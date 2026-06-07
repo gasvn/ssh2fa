@@ -97,6 +97,32 @@ enum RowMetric {
     static let mono: Font = .system(.body, design: .monospaced)
 }
 
+// MARK: - IconActionButton style
+
+/// Shared button style for the inline icon quick-actions in dense rows.
+/// Gives each icon a subtle rounded hover/press background so it reads as
+/// interactive (HIG affordance), without enlarging the row. Disabled buttons
+/// dim and show no hover background. Presentation only — no behaviour change.
+struct IconActionButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let active = configuration.isPressed || hovering
+        configuration.label
+            .frame(width: 22, height: 20)
+            .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity((active && isEnabled) ? 0.10 : 0.0))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .onHover { if isEnabled { hovering = $0 } else { hovering = false } }
+            .animation(.easeOut(duration: 0.12), value: active)
+    }
+}
+
 // MARK: - View modifiers
 
 extension View {

@@ -108,11 +108,14 @@ struct TunnelRow: View {
 
             Spacer(minLength: Spacing.s)
 
-            // Hover actions.
+            // Hover actions — quick-action icons for power users.
             if hovering {
                 actions
                     .transition(.opacity)
             }
+
+            // ALWAYS-VISIBLE labeled overflow menu — the discoverable path.
+            overflowMenu
         }
         .padding(.vertical, compactRows ? 1 : 2)
         .frame(minHeight: compactRows ? 22 : RowMetric.minHeight)
@@ -201,7 +204,8 @@ struct TunnelRow: View {
                     Image(systemName: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
                 }
             }
-            .help(tunnel.displayState == .alive ? "Stop" : "Start")
+            .help(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
+            .accessibilityLabel(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
             .disabled(isBusy)
 
             // Pick node.
@@ -210,7 +214,8 @@ struct TunnelRow: View {
             } label: {
                 Image(systemName: "list.bullet.rectangle")
             }
-            .help("Pick a node from squeue")
+            .help("Pick compute node")
+            .accessibilityLabel("Pick compute node")
             .disabled(isBusy)
 
             // Open in browser (disabled if not alive).
@@ -219,7 +224,8 @@ struct TunnelRow: View {
             } label: {
                 Image(systemName: "safari")
             }
-            .help("Open localhost:\(tunnel.localPort) in browser")
+            .help("Open in browser")
+            .accessibilityLabel("Open in browser")
             .disabled(isBusy || tunnel.displayState != .alive)
 
             // Copy URL.
@@ -228,7 +234,8 @@ struct TunnelRow: View {
             } label: {
                 Image(systemName: "doc.on.doc")
             }
-            .help("Copy localhost:\(tunnel.localPort)")
+            .help("Copy localhost URL")
+            .accessibilityLabel("Copy localhost URL")
 
             // Details.
             Button {
@@ -236,7 +243,8 @@ struct TunnelRow: View {
             } label: {
                 Image(systemName: "info.circle")
             }
-            .help("Activity log + post-connect command")
+            .help("Tunnel details")
+            .accessibilityLabel("Tunnel details")
 
             // Delete.
             Button {
@@ -245,9 +253,99 @@ struct TunnelRow: View {
                 Image(systemName: "trash")
             }
             .help("Delete tunnel")
+            .accessibilityLabel("Delete tunnel")
             .disabled(isBusy)
         }
+        .buttonStyle(IconActionButton())
+    }
+
+    // MARK: - Always-visible overflow menu (discoverable, labeled)
+
+    /// Compact trailing `⋯` control that is ALWAYS visible (not hover-gated).
+    /// Lists every row action as a TEXT-LABELED command — the discoverable,
+    /// HIG-aligned path. Reuses the SAME action set as the TunnelsView
+    /// right-click context menu and the same AppState calls as the inline icons.
+    private var overflowMenu: some View {
+        Menu {
+            tunnelMenuItems
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .buttonStyle(.borderless)
+        .fixedSize()
+        .help("Actions")
+        .accessibilityLabel("Tunnel actions")
+    }
+
+    /// Labeled action set mirroring the TunnelsView context menu. Same calls
+    /// as the inline icons + the existing context menu.
+    @ViewBuilder
+    private var tunnelMenuItems: some View {
+        Button {
+            Task { await appState.toggleTunnel(tunnel) }
+        } label: {
+            Label(tunnel.displayState == .alive ? "Stop" : "Start",
+                  systemImage: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
+        }
+        .disabled(isBusy)
+
+        Button {
+            appState.presentNodePicker(for: tunnel)
+        } label: {
+            Label("Pick node…", systemImage: "list.bullet.rectangle")
+        }
+        .disabled(isBusy)
+
+        Menu {
+            jumpPickerMenu(for: tunnel)
+        } label: {
+            Label("Use jump host", systemImage: "arrow.triangle.branch")
+        }
+
+        Button {
+            openInBrowser(tunnel)
+        } label: {
+            Label("Open in browser", systemImage: "safari")
+        }
+        .disabled(tunnel.displayState != .alive)
+
+        Button {
+            copyURL(tunnel.url)
+        } label: {
+            Label("Copy localhost:\(tunnel.localPort)", systemImage: "doc.on.doc")
+        }
+
+        Button {
+            detailsForTunnel = tunnel
+        } label: {
+            Label("Details…", systemImage: "info.circle")
+        }
+
+        Divider()
+
+        Button {
+            renameDraft = tunnel.name
+            renamingTunnel = tunnel
+        } label: {
+            Label("Rename…", systemImage: "pencil")
+        }
+
+        Button {
+            Task { await appState.cloneTunnel(tunnel) }
+        } label: {
+            Label("Clone…", systemImage: "plus.square.on.square")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            appState.presentConfirmDelete(for: tunnel)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+        .disabled(isBusy)
     }
 
     // MARK: - Jump-host picker (verbatim from old TunnelsView)

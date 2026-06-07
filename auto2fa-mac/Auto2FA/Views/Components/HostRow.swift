@@ -103,11 +103,14 @@ struct HostRow: View {
 
             Spacer(minLength: Spacing.s)
 
-            // Hover actions.
+            // Hover actions — quick-action icons for power users.
             if hovering {
                 actions
                     .transition(.opacity)
             }
+
+            // ALWAYS-VISIBLE labeled overflow menu — the discoverable path.
+            overflowMenu
         }
         .padding(.vertical, 2)
         .frame(minHeight: RowMetric.minHeight)
@@ -116,6 +119,7 @@ struct HostRow: View {
         .changeHighlight(host.status)
         .hoverLift(hovering)
         .onHover { hovering = $0 }
+        .contextMenu { hostMenuItems }
     }
 
     // MARK: - Hostname column
@@ -152,7 +156,8 @@ struct HostRow: View {
                     Image(systemName: host.active ? "stop.fill" : "play.fill")
                 }
             }
-            .help(host.active ? "Stop / disconnect" : "Start / connect")
+            .help(host.active ? "Disconnect host" : "Connect host")
+            .accessibilityLabel(host.active ? "Disconnect host" : "Connect host")
             .disabled(isBusy)
 
             // Mount / eject.
@@ -162,7 +167,8 @@ struct HostRow: View {
                 Image(systemName: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
             }
             .disabled(isBusy || (!host.isMasterReady && !host.isMounted))
-            .help(host.isMounted ? "Unmount remote filesystem" : "Mount remote filesystem (sshfs)")
+            .help(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
+            .accessibilityLabel(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
 
             // Rotate pool slot.
             Button {
@@ -171,7 +177,8 @@ struct HostRow: View {
                 Image(systemName: "arrow.triangle.2.circlepath")
             }
             .disabled(isBusy || !host.active)
-            .help("Rotate connection pool slot")
+            .help("Rotate connection")
+            .accessibilityLabel("Rotate connection")
 
             // Open terminal.
             Button {
@@ -180,9 +187,65 @@ struct HostRow: View {
                 Image(systemName: "terminal")
             }
             .disabled(!host.isMasterReady)
-            .help("Open an interactive ssh session in Terminal")
+            .help("Open Terminal")
+            .accessibilityLabel("Open Terminal")
         }
+        .buttonStyle(IconActionButton())
+    }
+
+    // MARK: - Always-visible overflow menu (discoverable, labeled)
+
+    /// Compact trailing `⋯` control that is ALWAYS visible (not hover-gated).
+    /// Opens a menu where every row action is a TEXT-LABELED command — the
+    /// discoverable, HIG-aligned path. Mirrors the inline icons + same calls.
+    private var overflowMenu: some View {
+        Menu {
+            hostMenuItems
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .buttonStyle(.borderless)
+        .fixedSize()
+        .help("Actions")
+        .accessibilityLabel("Host actions")
+    }
+
+    /// Shared labeled action set — used by BOTH the `⋯` overflow menu and the
+    /// row's right-click context menu. Same AppState calls + disabled logic as
+    /// the inline icons.
+    @ViewBuilder
+    private var hostMenuItems: some View {
+        Button {
+            Task { await appState.toggleHost(host) }
+        } label: {
+            Label(host.active ? "Disconnect" : "Connect",
+                  systemImage: host.active ? "stop.fill" : "play.fill")
+        }
+        .disabled(isBusy)
+
+        Button {
+            Task { await appState.toggleMount(host) }
+        } label: {
+            Label(host.isMounted ? "Unmount" : "Mount filesystem",
+                  systemImage: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
+        }
+        .disabled(isBusy || (!host.isMasterReady && !host.isMounted))
+
+        Button {
+            Task { await appState.rotateHost(host) }
+        } label: {
+            Label("Rotate connection", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .disabled(isBusy || !host.active)
+
+        Button {
+            openTerminal(for: host)
+        } label: {
+            Label("Open Terminal", systemImage: "terminal")
+        }
+        .disabled(!host.isMasterReady)
     }
 
     // MARK: - Terminal (verbatim from old HostsView)
