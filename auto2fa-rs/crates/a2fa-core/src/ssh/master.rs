@@ -103,6 +103,24 @@ impl PoolState {
             .unwrap_or(false)
     }
 
+    /// Record one failed login attempt against the circuit breaker: bump the
+    /// consecutive-failure counter and arm the cooldown once it crosses
+    /// [`OTP_FAILURE_THRESHOLD`]. Shared by the `AuthFailed` and `Err`
+    /// (totp/system error) arms of [`start_master`] so a permanently-bad secret
+    /// can't be re-driven by the heartbeat every cycle forever.
+    pub fn record_login_failure(&mut self) {
+        self.consecutive_login_failures += 1;
+        if self.consecutive_login_failures >= OTP_FAILURE_THRESHOLD {
+            self.cooldown_until = Some(Instant::now() + OTP_COOLDOWN);
+            warn!(
+                "[{}] {} consecutive failures — entering {}s cooldown",
+                self.host,
+                self.consecutive_login_failures,
+                OTP_COOLDOWN.as_secs()
+            );
+        }
+    }
+
     /// Reset cooldown and back-off on an explicit user toggle.
     pub fn reset_circuit_breakers(&mut self) {
         self.consecutive_login_failures = 0;
@@ -233,16 +251,7 @@ pub fn start_master(
         Ok(LoginOutcome::AuthFailed { reason }) => {
             warn!("[{}] master slot {index} auth failed: {reason}", state.host);
             state.slot_status[index] = SlotStatus::Failed;
-            state.consecutive_login_failures += 1;
-            if state.consecutive_login_failures >= OTP_FAILURE_THRESHOLD {
-                state.cooldown_until = Some(Instant::now() + OTP_COOLDOWN);
-                warn!(
-                    "[{}] {} consecutive failures — entering {}s cooldown",
-                    state.host,
-                    state.consecutive_login_failures,
-                    OTP_COOLDOWN.as_secs()
-                );
-            }
+            state.record_login_failure();
             false
         }
         Ok(LoginOutcome::Timeout) => {
@@ -260,8 +269,13 @@ pub fn start_master(
             false
         }
         Err(e) => {
+            // A totp/system error (e.g. permanently-bad secret, OTP provider
+            // failure) is treated like an auth failure for the circuit breaker:
+            // otherwise the heartbeat would re-drive a hopeless login every
+            // cycle forever. Mirror the AuthFailed arm's counter + cooldown.
             warn!("[{}] master slot {index} system error: {e}", state.host);
             state.slot_status[index] = SlotStatus::Dead;
+            state.record_login_failure();
             false
         }
     }
@@ -320,6 +334,45 @@ pub fn stop_all(state: &mut PoolState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_failure_increments_and_trips_cooldown_at_threshold() {
+        // Mirrors the breaker logic that BOTH the AuthFailed and Err (totp/
+        // system error) arms of start_master now run via record_login_failure:
+        // a permanently-bad secret keeps bumping the counter and must arm the
+        // cooldown once it crosses OTP_FAILURE_THRESHOLD.
+        let mut pool = PoolState::new("auto2fa-unittest-host");
+        assert_eq!(pool.consecutive_login_failures, 0);
+        assert!(!pool.in_cooldown());
+
+        // Below threshold: counter rises, no cooldown yet.
+        for i in 1..OTP_FAILURE_THRESHOLD {
+            pool.record_login_failure();
+            assert_eq!(pool.consecutive_login_failures, i);
+            assert!(!pool.in_cooldown(), "must not cool down before threshold");
+            assert!(pool.cooldown_until.is_none());
+        }
+
+        // Crossing the threshold arms the cooldown.
+        pool.record_login_failure();
+        assert_eq!(pool.consecutive_login_failures, OTP_FAILURE_THRESHOLD);
+        assert!(pool.cooldown_until.is_some(), "cooldown must be armed at threshold");
+        assert!(pool.in_cooldown(), "must be in cooldown at threshold");
+    }
+
+    #[test]
+    fn reset_circuit_breakers_clears_login_failures_and_cooldown() {
+        let mut pool = PoolState::new("auto2fa-unittest-host");
+        for _ in 0..OTP_FAILURE_THRESHOLD {
+            pool.record_login_failure();
+        }
+        assert!(pool.in_cooldown());
+
+        pool.reset_circuit_breakers();
+        assert_eq!(pool.consecutive_login_failures, 0);
+        assert!(pool.cooldown_until.is_none());
+        assert!(!pool.in_cooldown());
+    }
 
     #[test]
     fn adopt_if_alive_false_when_no_master() {

@@ -33,10 +33,65 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
-use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use regex::Regex;
 
 use crate::error::{Error, Result};
+
+// ---------------------------------------------------------------------------
+// RAII child reaper
+// ---------------------------------------------------------------------------
+
+/// Owns the spawned ssh child and guarantees it is reaped on EVERY exit path
+/// of `run_login` — normal return, `?`-operator early return, or panic.
+///
+/// portable-pty 0.8.1's `Child` is backed by `std::process::Child`, which has
+/// NO Drop-reap, and the daemon installs no SIGCHLD handler. Without this guard
+/// any path that dropped the child without `wait()` left a zombie process and
+/// leaked the pty fd, accumulating on every login → PID/fd exhaustion.
+///
+/// Two reap modes (the default is the safe one):
+///
+/// * `Reap` (default) — only `wait()`. Used on the SUCCESS path. The ssh we
+///   spawn is the foreground CLIENT for a `ControlMaster=auto` +
+///   `ControlPersist=yes` connection: once auth completes the master forks
+///   into the background and persists, and the foreground client exits on its
+///   own. `wait()` collects that already-exiting client without disturbing the
+///   backgrounded master, so the ControlMaster keeps running.
+///
+/// * `KillAndReap` — `kill()` then `wait()`. Used on every FAILURE/abort path
+///   (timeout, auth-failed, eof, system error) where the client may still be
+///   blocked at a prompt and must be force-terminated before reaping.
+struct ChildReaper {
+    child: Box<dyn Child + Send + Sync>,
+    kill_on_drop: bool,
+}
+
+impl ChildReaper {
+    fn new(child: Box<dyn Child + Send + Sync>) -> Self {
+        // Default to kill-and-reap so any early return / `?` / panic that
+        // happens before we explicitly mark success force-terminates the
+        // still-blocked client.
+        Self { child, kill_on_drop: true }
+    }
+
+    /// Mark the success path: do NOT kill the foreground client on drop (that
+    /// could disturb the backgrounded ControlPersist master); just `wait()` to
+    /// reap the already-exiting client.
+    fn mark_success(&mut self) {
+        self.kill_on_drop = false;
+    }
+}
+
+impl Drop for ChildReaper {
+    fn drop(&mut self) {
+        if self.kill_on_drop {
+            let _ = self.child.kill();
+        }
+        // Always reap so no zombie / leaked pty fd remains. Best-effort.
+        let _ = self.child.wait();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -128,11 +183,16 @@ pub fn run_login(
         cmd.arg(arg);
     }
 
-    // Spawn ssh in the slave side of the pty
-    let mut child = pair
+    // Spawn ssh in the slave side of the pty, then immediately wrap it in the
+    // RAII reaper so EVERY subsequent exit path (including the `?`-operator
+    // early returns just below and any panic) kills-and-reaps the child. The
+    // `pair` itself (and thus the master/slave pty fds) is a local that drops
+    // at function end on every path, so no fd outlives the function.
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| Error::Internal(format!("spawn ssh: {e}")))?;
+    let mut reaper = ChildReaper::new(child);
 
     // Grab master read/write handles
     let mut reader = pair
@@ -157,12 +217,12 @@ pub fn run_login(
         // Check overall timeout
         if start.elapsed() >= LOGIN_TIMEOUT {
             warn!("ssh login timed out after {}s", LOGIN_TIMEOUT.as_secs());
-            let _ = child.kill();
+            // reaper kills-and-reaps the still-blocked client on drop.
             return Ok(LoginOutcome::Timeout);
         }
 
         // Check if child has already exited
-        match child.try_wait() {
+        match reaper.child.try_wait() {
             Ok(Some(_)) => {
                 debug!("ssh exited; transcript:\n{buf}");
                 // Might still have data buffered — do a final drain
@@ -206,7 +266,11 @@ pub fn run_login(
         // Success: shell prompt detected
         if pat.shell_prompt.is_match(&buf) {
             info!("ssh login successful (shell prompt detected)");
-            let _ = child.kill(); // release master — the real ControlMaster stays in bg
+            // Success: the ControlPersist master has already forked into the
+            // background, so do NOT kill the foreground client (that could
+            // disturb the master) — just reap it on drop. The foreground ssh
+            // exits on its own after auth; reaper.wait() collects it.
+            reaper.mark_success();
             return Ok(LoginOutcome::Success);
         }
 
@@ -275,4 +339,82 @@ fn write_line(w: &mut dyn Write, s: &str) -> Result<()> {
     let line = format!("{s}\n");
     w.write_all(line.as_bytes())
         .map_err(Error::Io)
+}
+
+// ---------------------------------------------------------------------------
+// Tests — only the RAII reaper Drop semantics (everything else needs a real
+// ssh + pty + TOTP, which is impractical to unit-test; see the module note).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use portable_pty::{ChildKiller, ExitStatus};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A fake `Child` whose `kill`/`wait` bump shared counters so a test can
+    /// assert what the reaper's `Drop` did after the reaper is dropped.
+    #[derive(Debug)]
+    struct FakeChild {
+        kills: Arc<AtomicUsize>,
+        waits: Arc<AtomicUsize>,
+    }
+
+    impl ChildKiller for FakeChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            // Not exercised by the reaper; return an independent no-op-ish killer.
+            Box::new(FakeChild {
+                kills: self.kills.clone(),
+                waits: self.waits.clone(),
+            })
+        }
+    }
+
+    impl Child for FakeChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    fn fake() -> (ChildReaper, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let kills = Arc::new(AtomicUsize::new(0));
+        let waits = Arc::new(AtomicUsize::new(0));
+        let child = Box::new(FakeChild {
+            kills: kills.clone(),
+            waits: waits.clone(),
+        });
+        (ChildReaper::new(child), kills, waits)
+    }
+
+    #[test]
+    fn drop_default_kills_then_waits_exactly_once() {
+        // Failure/abort path: kill_on_drop stays true → kill() + wait().
+        let (reaper, kills, waits) = fake();
+        drop(reaper);
+        assert_eq!(kills.load(Ordering::SeqCst), 1, "must kill once on failure path");
+        assert_eq!(waits.load(Ordering::SeqCst), 1, "must reap (wait) exactly once");
+    }
+
+    #[test]
+    fn drop_after_mark_success_waits_but_does_not_kill() {
+        // Success path: mark_success() → reap only, never kill (so the
+        // backgrounded ControlPersist master is left undisturbed).
+        let (mut reaper, kills, waits) = fake();
+        reaper.mark_success();
+        drop(reaper);
+        assert_eq!(kills.load(Ordering::SeqCst), 0, "success path must NOT kill the client");
+        assert_eq!(waits.load(Ordering::SeqCst), 1, "success path must still reap exactly once");
+    }
 }
