@@ -1,5 +1,60 @@
 use crate::error::{Error, Result};
 use regex::Regex;
+use std::time::{Duration, Instant};
+
+/// Hard upper bound on a single `ssh ... squeue` invocation.
+///
+/// `ConnectTimeout=10` only bounds the TCP connect phase; a stale/half-open
+/// ControlMaster socket can wedge the ssh client *after* connect (or while
+/// reusing the master) and block forever. This deadline is enforced by
+/// killing the child if it has not exited, mirroring
+/// `ssh::control::master_check`. Set a bit above ConnectTimeout.
+const SQUEUE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Spawn an `ssh ... squeue` `Command` and collect its `Output`, but **never**
+/// block past `deadline`.
+///
+/// Mirrors the spawn + `try_wait` + kill discipline in
+/// `ssh::control::master_check`: the child is spawned with piped stdio, polled
+/// every ~50 ms, and force-killed if it has not exited by the deadline. On
+/// timeout (or kill) an `Err(Error::Discovery(_))` is returned so a wedged
+/// control socket can never freeze the caller.
+fn ssh_squeue_output(mut cmd: std::process::Command, deadline: Duration) -> Result<std::process::Output> {
+    use std::process::Stdio;
+
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
+
+    let hard_deadline = Instant::now() + deadline;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Process exited; drain stdout/stderr and return the Output.
+                return child
+                    .wait_with_output()
+                    .map_err(|e| Error::Discovery(format!("ssh wait failed: {e}")));
+            }
+            Ok(None) => {
+                if Instant::now() >= hard_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(Error::Discovery(format!(
+                        "squeue timed out after {deadline:?}"
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Discovery(format!("ssh wait error: {e}")));
+            }
+        }
+    }
+}
 
 /// A single SLURM job row from `squeue -h -o '%i|%P|%j|%T|%M|%R'`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,20 +169,26 @@ pub fn expand_first_node(nodelist: &str) -> (String, bool) {
 /// spawn, or squeue exits non-zero.
 pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
     use std::process::Command;
-    let output = Command::new("ssh")
-        .args([
-            jump,
-            "squeue",
-            "-h",
-            "-o",
-            // Single-quote the format so the REMOTE shell treats it as ONE
-            // token. ssh concatenates argv with spaces and the remote shell
-            // re-parses it; without quotes the `|` separators become shell
-            // pipes (observed live: `bash: %T: command not found`).
-            "'%i|%P|%j|%T|%M|%R'",
-        ])
-        .output()
-        .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        // ConnectTimeout bounds the TCP connect; BatchMode ensures ssh never
+        // blocks on an interactive prompt (e.g. password / host-key confirm).
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "BatchMode=yes",
+        jump,
+        "squeue",
+        "-h",
+        "-o",
+        // Single-quote the format so the REMOTE shell treats it as ONE
+        // token. ssh concatenates argv with spaces and the remote shell
+        // re-parses it; without quotes the `|` separators become shell
+        // pipes (observed live: `bash: %T: command not found`).
+        "'%i|%P|%j|%T|%M|%R'",
+    ]);
+    // Hard kill-on-deadline so a wedged ssh can never hang the caller.
+    let output = ssh_squeue_output(cmd, SQUEUE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -155,26 +216,33 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
 pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) -> Result<Vec<Job>> {
     use std::process::Command;
     let cp = control_path.to_string_lossy();
-    let output = Command::new("ssh")
-        .args([
-            "-o",
-            &format!("ControlPath={cp}"),
-            // Disable ControlMaster so we don't accidentally try to become a
-            // new master if the socket has vanished.
-            "-o",
-            "ControlMaster=no",
-            jump,
-            "squeue",
-            "-h",
-            "-o",
-            // Single-quote the format so the REMOTE shell treats it as ONE
-            // token. ssh concatenates argv with spaces and the remote shell
-            // re-parses it; without quotes the `|` separators become shell
-            // pipes (observed live: `bash: %T: command not found`).
-            "'%i|%P|%j|%T|%M|%R'",
-        ])
-        .output()
-        .map_err(|e| Error::Discovery(format!("ssh spawn failed: {e}")))?;
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o",
+        &format!("ControlPath={cp}"),
+        // Disable ControlMaster so we don't accidentally try to become a
+        // new master if the socket has vanished.
+        "-o",
+        "ControlMaster=no",
+        // ConnectTimeout bounds the TCP connect; BatchMode ensures ssh never
+        // blocks on an interactive prompt (e.g. password / host-key confirm).
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "BatchMode=yes",
+        jump,
+        "squeue",
+        "-h",
+        "-o",
+        // Single-quote the format so the REMOTE shell treats it as ONE
+        // token. ssh concatenates argv with spaces and the remote shell
+        // re-parses it; without quotes the `|` separators become shell
+        // pipes (observed live: `bash: %T: command not found`).
+        "'%i|%P|%j|%T|%M|%R'",
+    ]);
+    // Hard kill-on-deadline so a stale ControlMaster socket can never hang the
+    // maintenance loop.
+    let output = ssh_squeue_output(cmd, SQUEUE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -262,6 +330,47 @@ mod tests {
         // 5 fields instead of 6
         let jobs = parse_squeue("1|gpu|train|RUNNING|2:00:00");
         assert!(jobs.is_empty());
+    }
+
+    /// `ssh_squeue_output` against a control path that does not exist (with
+    /// BatchMode) must fail fast — well within the deadline — rather than hang.
+    /// This exercises the spawn + try_wait + return path without needing a
+    /// genuinely-hanging ssh.
+    #[test]
+    fn ssh_squeue_output_fails_fast_on_bogus_control_path() {
+        use std::process::Command;
+        let mut cmd = Command::new("ssh");
+        cmd.args([
+            "-o",
+            "ControlPath=/tmp/auto2fa-bogus-socket-does-not-exist",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ConnectTimeout=1",
+            "-o",
+            "BatchMode=yes",
+            // Unroutable TEST-NET-1 address so connect cannot succeed even if a
+            // local sshd exists; ConnectTimeout=1 + BatchMode bound it.
+            "192.0.2.1",
+            "true",
+        ]);
+        let t0 = Instant::now();
+        let res = ssh_squeue_output(cmd, Duration::from_secs(10));
+        let elapsed = t0.elapsed();
+        // It should resolve (Ok with non-zero status, or Err) without ever
+        // approaching the 10 s deadline.
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "ssh_squeue_output took too long: {elapsed:?}"
+        );
+        // Either spawn failed (no ssh binary) or ssh exited non-zero — either
+        // way the helper must NOT have timed out at the deadline.
+        if let Ok(out) = res {
+            assert!(
+                !out.status.success(),
+                "ssh to an unroutable host must not succeed"
+            );
+        }
     }
 
     #[test]

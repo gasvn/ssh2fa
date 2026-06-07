@@ -141,6 +141,7 @@ pub fn maintenance_tick(
 // ---------------------------------------------------------------------------
 
 /// Lightweight snapshot of the per-tunnel fields we need for one maintenance pass.
+#[derive(Clone)]
 struct TunnelSnapshot {
     name: String,
     local_port: u16,
@@ -236,7 +237,29 @@ fn process_tunnel(
         }
 
         TunnelAction::SqueueCheck => {
-            run_squeue_check(name, snap, state, runtime, now);
+            // Dispatch the squeue check to a short-lived worker thread so the
+            // maintenance loop NEVER blocks on ssh — even though Layer 1 already
+            // hard-bounds the ssh, a 15 s stall would still freeze every other
+            // tunnel's health check for that whole window if run inline.
+            //
+            // Claim the throttle in the LOOP thread *before* spawning, so the
+            // next tick (1 s later) sees last_squeue_check_ts == now and won't
+            // re-dispatch until SQUEUE_INTERVAL_SEC has elapsed. This guarantees
+            // at most one squeue worker per tunnel per interval.
+            runtime.with_rt_mut(name, |r| r.last_squeue_check_ts = now);
+
+            let name_owned = name.to_owned();
+            let snap_clone = snap.clone();
+            let state = Arc::clone(state);
+            let runtime = Arc::clone(runtime);
+            let spawn_res = std::thread::Builder::new()
+                .name(format!("squeue-check:{name_owned}"))
+                .spawn(move || {
+                    run_squeue_check(&name_owned, &snap_clone, &state, &runtime, now);
+                });
+            if let Err(e) = spawn_res {
+                warn!("[tunnel:{name}] failed to spawn squeue-check thread: {e}");
+            }
         }
     }
 }
