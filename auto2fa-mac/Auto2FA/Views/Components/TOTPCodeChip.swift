@@ -42,7 +42,7 @@ struct TOTPCodeChip: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             let fraction = fraction(at: context.date)
             content(fraction: fraction)
-                .onChange(of: tick(context.date)) { _ in
+                .onChange(of: tick(context.date)) {
                     // Window elapsed → fetch the next window's code. Guarded
                     // by `loading` so a slow fetch can't stack requests.
                     if code != nil, expiry.timeIntervalSinceNow <= 0, !loading {
