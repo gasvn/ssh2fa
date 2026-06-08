@@ -103,3 +103,46 @@ collections), the audits added two rules that the fixes now follow everywhere:
 Full workspace single-threaded: a2fa-core 125, a2fa-daemon 143, cli 15, tui 36 — 0 failures;
 Python compiles; release compiles. `rust-rewrite` ~72 commits ahead of main. **Not deployed.**
 Verdict: **GO** — no known reachable hang/crash/leak/deadlock; normal operation verified intact.
+
+---
+
+## Live bring-up findings — Keychain prompt storm + fd limit — 2026-06-07 (evening)
+
+The signed daemon was deployed and run live. The user reported "countless Keychain
+prompts — this is not normal." Systematic debugging (no guessing) of the live process:
+
+**Evidence gathered (read-only first):** single daemon, correctly signed with the stable
+Apple Development identity, **0 ssh procs / 25 fds** at snapshot. The cumulative log
+(`/tmp/auto2fa_daemon.log`, **appended across 29 daemon restarts today**) showed ~8k
+`spawning ssh master` with ~6k `dup of fd failed` + ~2k `Too many open files`. Splitting
+by restart boundary: **all 2039 fd-exhaustion failures and the bulk of the cred reads were
+in the 28 earlier (pre-round-3, buggy) instances; ZERO after the current binary's restart**
+(only 6 cred reads). So the historical fd exhaustion was the already-fixed pty leak from
+earlier builds — not the current code.
+
+**Disproved the obvious hypothesis with a probe.** lsof showed leaked-looking pty pairs, so
+the suspicion was a residual pty-fd leak in `run_login`'s success path. A 3-variant
+`fd_leak_probe` (fast-exit child; lingering child; **ControlPersist-shaped grandchild** that
+inherits fds while the foreground exits) held the daemon fd count **flat across 30 cycles**;
+the master fd is **O_CLOEXEC**. The current pty teardown does NOT leak. (Probe removed after.)
+
+**Actual root causes of the prompt storm:**
+1. `load_creds` re-read the Keychain on **every** login attempt (no cache). A host whose
+   login keeps failing re-reads every ~3s; macOS re-prompts whenever the binary's signature
+   isn't authorized → flood. Worsened by 29 restarts + redeploys today.
+2. **Signing identifier churn** — signing temp files (`/tmp/a2fa-live`) gives codesign a
+   filename-derived identifier (`a2fa-live`); the Keychain ACL is keyed on the designated
+   requirement, so a changed identifier re-prompts even with the same stable cert.
+3. **launchd soft RLIMIT_NOFILE = 256** — too low; once hit, every spawn fails.
+
+**Fixes (commit on `rust-rewrite`, tested):**
+- `managers.rs`: process-lifetime credential cache (read Keychain ≤ once/host/lifetime; only
+  complete creds cached; `invalidate_creds_cache` from `host_add`). Poison-tolerant.
+- `sys.rs` (new): `raise_fd_limit()` lifts soft NOFILE toward 8192 (capped at hard/kernel),
+  called first in `main()`.
+- Deploy procedure: sign with **pinned** `--identifier com.auto2fa.daemon`; optional plist
+  `SoftResourceLimits NumberOfFiles`.
+
+Tests: a2fa-core **127** (+2 sys), a2fa-daemon **147** (+4 creds), cli 15, tui 36 — 0 failures.
+The bug-class invariant is unchanged; this adds **"resolve each external secret once and
+cache it"** + **"raise the process fd limit at startup"** as standing rules.
