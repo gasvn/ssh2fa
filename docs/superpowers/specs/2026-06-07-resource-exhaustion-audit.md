@@ -219,3 +219,30 @@ daemonized go-nfsv4/FUSE process that cleanup_orphans (matches only `ssh -N -J �
 reap — a slow resource leak under repeated failed mounts, not a machine hang.
 
 Tests after 5b: a2fa-core **134**, a2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
+
+### Round 5c — clean re-verification (full budget) — 2026-06-07
+
+Re-ran the fix-verification after the token reset, scoped to the 2 fixes-of-fixes + previously-
+incomplete items + high-risk fixes + a completeness sweep (42 agents, no truncation). **12
+suspected → 3 confirmed, and EVERY confirmed issue is LOW with NO hang/crash/deadlock/leak** —
+the stability verdict on the fixes is **CLEAN**.
+
+1. **save_tunnels shared-tmp race (LOW, data-integrity — fixed).** The Round-5 off-lock persist
+   removed the implicit State-mutex serialization, so concurrent off-lock `save_tunnels` calls
+   could truncate-interleave the shared `tunnels.json.tmp` or ENOENT the rename (swallowed →
+   lost/stale persist; never a hang). FIXED: per-call unique tmp (`pid.seq.tmp`) + unlink-on-
+   error → atomic rename = safe last-writer-wins. New 16-thread concurrency test.
+2. **Migration-timeout metadata loss (LOW — pre-existing, hardened).** Verifier confirmed it is
+   NOT worsened by the 5b save_meta split and is unreachable on an already-v2 machine. Hardened
+   the timeout WARN to flag the risk + point at the `.pre-keychain-backup` recovery file.
+3. **Creds cache out-of-band staleness (LOW, latent — documented).** Only `host_add` invalidates;
+   a host removed/re-keyed outside the daemon would serve a stale cred (→ login failure, never a
+   hang, never re-prompts). No `host_remove` handler exists to trigger it; doc already instructs
+   to call `invalidate_creds_cache` from such handlers when added.
+
+**FINAL STABILITY VERDICT: GO.** Across Rounds 1–5c (creds-cache + fd-limit + 21 audit findings,
+4 system-threatening, + 2 fix-verification regressions + 1 re-verification regression, all fixed)
+no known reachable hang/crash/leak/deadlock/crashloop remains; normal operation verified intact
+by the full suite. Residuals are LOW data-integrity/correctness items, none machine-threatening.
+Tests after 5c: a2fa-core **135**, a2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
+Not yet deployed (awaiting user go-live + pinned-identifier signing).
