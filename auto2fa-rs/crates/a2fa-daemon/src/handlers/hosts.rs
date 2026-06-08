@@ -173,6 +173,22 @@ pub fn host_toggle_with_registry(
 ///
 /// When `managers` or `registry` are `None`, falls back to the legacy
 /// transient behaviour (used by tests that don't supply a context).
+/// Persist a host's auto-connect flag to passwords.json so a toggle survives a
+/// daemon restart. Without this, `host_toggle` only flipped the in-memory
+/// `active` flag, so a stopped host came back (boot auto-start re-read
+/// autoConnect=true) on the next launch — the "stop doesn't work" bug.
+/// Best-effort + off the State lock (load_meta/save_meta touch only the file).
+fn persist_host_autoconnect(host: &str, on: bool) {
+    let path = passwords_path();
+    let mut meta = load_meta(&path);
+    meta.entry(host.to_string())
+        .and_modify(|m| m.auto_connect = on)
+        .or_insert(HostMeta { auto_connect: on });
+    if let Err(e) = save_meta(&path, &meta) {
+        log::warn!("host_toggle: failed to persist autoConnect={on} for {host}: {e}");
+    }
+}
+
 pub fn host_toggle_managed(
     state: &Arc<Mutex<State>>,
     params: &Value,
@@ -209,6 +225,8 @@ pub fn host_toggle_managed(
                         h.last_msg = "Deactivating…".into();
                     }
                 }
+                // Persist so the stop survives a daemon restart.
+                persist_host_autoconnect(&host_name, false);
                 spawn_managed_stop(host_name.clone(), Arc::clone(state), Arc::clone(&mgrs));
             } else {
                 // Activate: reset circuit breakers (on the persistent state) + start.
@@ -223,6 +241,8 @@ pub fn host_toggle_managed(
                         h.status = "Connecting".into();
                     }
                 }
+                // Persist so the host re-connects on the next daemon restart.
+                persist_host_autoconnect(&host_name, true);
 
                 // Spawn slot 0 start (reads creds in-thread).
                 spawn_managed_start(
