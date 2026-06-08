@@ -26,7 +26,7 @@
 //!      mpsc fan-out channel.
 //! 8. On SIGINT / SIGTERM: set the stop flag and join the tick thread.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -368,21 +368,36 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
     let mut subscribed = false;
 
     // Hard cap on a single request line. A client streaming bytes with no
-    // newline must not be able to grow `line_buf` without bound.
+    // newline must not be able to grow our accumulation buffer without bound.
     const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
 
-    let mut line_buf = String::new();
+    // Persistent byte accumulation buffer for the current (possibly partial)
+    // line. It is cleared ONLY after a complete line has been dispatched — NOT
+    // on the read-timeout `continue` path — so a line that straddles a 30s read
+    // timeout keeps its already-read bytes instead of being silently truncated.
+    let mut raw: Vec<u8> = Vec::new();
     loop {
-        line_buf.clear();
-        match reader.read_line(&mut line_buf) {
+        // Read up to the remaining budget for THIS line, stopping at a newline.
+        // We bound the READ itself (not just a post-hoc len() check): a client
+        // flooding bytes with no newline can read at most MAX_LINE_BYTES + 1
+        // total across however many timeout-retries, so it can never OOM us.
+        // `take()` limits THIS read to (remaining budget + 1); the budget is
+        // `raw.len()` already accumulated from prior partial reads, so it is
+        // correctly carried across WouldBlock/TimedOut retries.
+        let budget = (MAX_LINE_BYTES + 1).saturating_sub(raw.len());
+        match (&mut reader)
+            .take(budget as u64)
+            .read_until(b'\n', &mut raw)
+        {
             Ok(0) => break, // EOF
             Ok(_) => {}
             // A read timeout fires on idle connections — notably subscriber
-            // connections that block on read_line while events are pushed by
-            // the separate forwarder thread. Treat it as NON-fatal: keep the
-            // connection alive and retry. (BufReader retains any bytes already
-            // buffered, so a subsequent newline still completes the line; the
-            // wedged-write protection comes from the write timeout.)
+            // connections that block on read while events are pushed by the
+            // separate forwarder thread. Treat it as NON-fatal: keep the
+            // connection alive and retry WITHOUT clearing `raw`, so any partial
+            // bytes already read for a straddling line are preserved (no
+            // truncation). The wedged-write protection comes from the write
+            // timeout.
             Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                 continue;
             }
@@ -392,16 +407,27 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
             }
         }
 
-        // Length cap: bail if a single line grows past the sane maximum
-        // without a terminating newline.
-        if line_buf.len() > MAX_LINE_BYTES {
-            log::warn!(
-                "request line exceeded {MAX_LINE_BYTES} bytes without a newline; closing connection"
-            );
-            break;
+        // If we have not yet seen a terminating newline, the line is still
+        // incomplete: either we hit our per-line byte budget (over-limit DoS)
+        // or the read returned a short partial chunk. Distinguish the two: if
+        // we already buffered MAX_LINE_BYTES + 1 bytes without a newline, the
+        // line is over the cap → close. Otherwise keep accumulating.
+        if raw.last() != Some(&b'\n') {
+            if raw.len() > MAX_LINE_BYTES {
+                log::warn!(
+                    "request line exceeded {MAX_LINE_BYTES} bytes without a newline; closing connection"
+                );
+                break;
+            }
+            // Short read without a newline yet — accumulate and read more.
+            continue;
         }
 
-        let line_bytes = line_buf.as_bytes();
+        // A complete newline-delimited line is in `raw`. Decode to bytes for
+        // dispatch, then clear the accumulation buffer for the NEXT line (only
+        // here, after a full line — never on the timeout-continue path).
+        let line_owned = std::mem::take(&mut raw);
+        let line_bytes = line_owned.as_slice();
 
         // Intercept subscribe_events before dispatch — we need the writer.
         if let Ok(text) = std::str::from_utf8(line_bytes) {

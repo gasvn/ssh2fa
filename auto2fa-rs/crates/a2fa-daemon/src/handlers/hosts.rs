@@ -719,23 +719,43 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
     let (tx, rx) = std::sync::mpsc::channel();
     let host_owned = host_name.clone();
-    std::thread::spawn(move || {
-        // RAII: release the per-host in-flight latch on every exit path
-        // (completion or panic) so the host is never wedged as "busy".
-        let _inflight_guard = TotpInFlightGuard {
-            host: host_owned.clone(),
-        };
-        // Read the otpauth URL from the Keychain and compute the code + timing
-        // entirely on this worker thread. Do NOT log the code or secret.
-        let result = (|| -> Result<(String, u32, u32)> {
-            let otpauth = get_otpauth(&KeychainStore, &host_owned)?
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
-            let (code, period, remaining) = totp_now_detailed(&otpauth)?;
-            Ok((code, period, remaining))
-        })();
-        let _ = tx.send(result);
-    });
+    // Use Builder::spawn and CAPTURE the Result so a thread-creation failure
+    // (EAGAIN under thread exhaustion) cannot panic AND cannot leave the latch
+    // wedged: the TotpInFlightGuard only runs once the closure starts, so if
+    // the spawn itself fails the guard never runs. Release the latch here and
+    // return the same retryable error as the already-in-flight case. Mirrors
+    // the spawn sites in tunnels/post_connect.rs and daemon/managers.rs.
+    let spawn_res = std::thread::Builder::new()
+        .name(format!("host_totp:{host_name}"))
+        .spawn(move || {
+            // RAII: release the per-host in-flight latch on every exit path
+            // (completion or panic) so the host is never wedged as "busy".
+            let _inflight_guard = TotpInFlightGuard {
+                host: host_owned.clone(),
+            };
+            // Read the otpauth URL from the Keychain and compute the code +
+            // timing entirely on this worker thread. Do NOT log code/secret.
+            let result = (|| -> Result<(String, u32, u32)> {
+                let otpauth = get_otpauth(&KeychainStore, &host_owned)?
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
+                let (code, period, remaining) = totp_now_detailed(&otpauth)?;
+                Ok((code, period, remaining))
+            })();
+            let _ = tx.send(result);
+        });
+    if let Err(e) = spawn_res {
+        // The worker (and its guard) never ran — release the latch here so the
+        // host is not wedged "busy" forever, and return a retryable error.
+        totp_in_flight()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&host_name);
+        log::warn!("failed to spawn host_totp worker for {host_name}: {e}");
+        return Err(Error::Internal(format!(
+            "totp read could not start for {host_name} — try again"
+        )));
+    }
 
     let (code, period, remaining) = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(inner) => inner?,

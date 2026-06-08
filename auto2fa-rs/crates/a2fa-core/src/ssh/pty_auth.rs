@@ -43,65 +43,62 @@ use crate::error::{Error, Result};
 // RAII child reaper
 // ---------------------------------------------------------------------------
 
-/// Owns the spawned ssh child for the duration of `run_login` and reaps it on
-/// every FAILURE/abort exit path — normal return, `?`-operator early return, or
-/// panic — while DETACHING (leaving it running) on the SUCCESS path.
+/// Owns the spawned ssh child for the duration of `run_login`.
 ///
 /// portable-pty 0.8.1's `Child` is backed by `std::process::Child`, which has
 /// NO Drop-reap, and the daemon installs no SIGCHLD handler. Without this guard
 /// any failure path that dropped the child without `wait()` left a zombie
 /// process and leaked the pty fd, accumulating on every attempt.
 ///
-/// Two drop modes:
+/// The child lives in an `Option`:
 ///
-/// * SUCCESS (`detach_on_drop == true`, set by [`mark_success`]) — Drop is a
-///   NO-OP: it neither kills nor waits. The ssh we spawn uses an INTERACTIVE
-///   argv (no remote command) with `ControlMaster=auto` + `ControlPersist=yes`;
-///   on success this foreground client IS the live, master-bearing pool client
-///   and MUST stay alive (exactly like the pexpect child that `backend.py`
-///   keeps in its pool). It is long-lived, NOT exiting, so a `wait()` here
-///   would BLOCK FOREVER — wedging the (host,slot) and leaking a thread/child/
-///   pty on every successful login. Detaching restores the working
-///   pre-3135bcd behavior: just return and let the pty locals drop while the
-///   client keeps running as the ControlPersist master for the pool.
+/// * FAILURE/abort path (the child is still owned here) — Drop does `kill()`
+///   then `wait()`. Used on every failure/abort path (timeout, auth-failed,
+///   eof, otp/write `?` errors, panic, system error) where the client is still
+///   blocked at a prompt and must be force-terminated and reaped (no zombie /
+///   leaked pty fd).
 ///
-/// * FAILURE (default, `detach_on_drop == false`) — `kill()` then `wait()`.
-///   Used on every failure/abort path (timeout, auth-failed, eof, otp/write
-///   `?` errors, system error) where the client is still blocked at a prompt
-///   and must be force-terminated and reaped (no zombie / leaked pty fd).
+/// * SUCCESS path — the caller pulls the child OUT with [`take_child`] and
+///   reaps it on a detached thread AFTER dropping the pty fds (see `run_login`).
+///   Once taken, Drop is a NO-OP (`Option` is `None`), so the reaper neither
+///   kills nor blocks. The ssh we spawn uses an INTERACTIVE argv (no remote
+///   command) with `ControlMaster=auto` + `ControlPersist=yes`; on success this
+///   foreground client backgrounds the persistent master (triggered by the pty
+///   master fd closing → SIGHUP) and then EXITS. We must NOT kill it (that
+///   would tear down the persistent master), and we must NOT block `run_login`
+///   waiting for it. The detached `wait()` reaps the now-exiting foreground
+///   client (so no zombie) without blocking the caller; the persistent master
+///   stays alive for the pool.
 struct ChildReaper {
-    child: Box<dyn Child + Send + Sync>,
-    detach_on_drop: bool,
+    child: Option<Box<dyn Child + Send + Sync>>,
 }
 
 impl ChildReaper {
     fn new(child: Box<dyn Child + Send + Sync>) -> Self {
-        // Default to kill-and-reap so any early return / `?` / panic that
-        // happens before we explicitly mark success force-terminates the
-        // still-blocked client and reaps it.
-        Self { child, detach_on_drop: false }
+        // Owns the child; Drop kill-and-reaps it unless `take_child` pulls it
+        // out first (the success path).
+        Self { child: Some(child) }
     }
 
-    /// Mark the success path: Drop becomes a no-op (neither kill nor wait), so
-    /// the live ControlPersist master-bearing client is left running for the
-    /// pool. Waiting here would block forever (the client does not exit on a
-    /// successful interactive login); killing it would tear down the master.
-    fn mark_success(&mut self) {
-        self.detach_on_drop = true;
+    /// SUCCESS path: take ownership of the child out of the reaper so it can be
+    /// reaped on a detached thread by the caller (after the pty fds are
+    /// dropped). After this, the reaper's Drop is a no-op. Returns `None` only
+    /// if already taken (never happens in practice).
+    fn take_child(&mut self) -> Option<Box<dyn Child + Send + Sync>> {
+        self.child.take()
     }
 }
 
 impl Drop for ChildReaper {
     fn drop(&mut self) {
-        if self.detach_on_drop {
-            // Success: leave the live master-bearing client running. No kill
-            // (would tear down the master), no wait (would block forever).
-            return;
+        // Only the FAILURE/abort path still owns the child here. The success
+        // path took the child via `take_child`, leaving `None` → no-op.
+        if let Some(child) = self.child.as_mut() {
+            // Force-terminate the still-blocked client and reap it so no
+            // zombie / leaked pty fd remains. Best-effort.
+            let _ = child.kill();
+            let _ = child.wait();
         }
-        // Failure/abort: force-terminate the still-blocked client and reap it
-        // so no zombie / leaked pty fd remains. Best-effort.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -255,8 +252,15 @@ pub fn run_login(
             return Ok(LoginOutcome::Timeout);
         }
 
-        // Check if child has already exited
-        match reaper.child.try_wait() {
+        // Check if child has already exited. `expect` is safe: the child is
+        // only taken out of the reaper on the SUCCESS return path below, which
+        // exits the loop immediately, so it is always present here.
+        match reaper
+            .child
+            .as_mut()
+            .expect("child present during expect loop")
+            .try_wait()
+        {
             Ok(Some(_)) => {
                 debug!("ssh exited; transcript:\n{buf}");
                 // Might still have data buffered — do a final drain
@@ -304,13 +308,48 @@ pub fn run_login(
         // Success: shell prompt detected
         if pat.shell_prompt.is_match(&buf) {
             info!("ssh login successful (shell prompt detected)");
-            // Success: this interactive ssh client IS the live, master-bearing
-            // ControlPersist pool client and must stay alive (like the pexpect
-            // child backend.py keeps in its pool). mark_success() makes the
-            // reaper DETACH on drop — no kill (would tear down the master), no
-            // wait (would block forever; the client does not exit). We just
-            // return and let the pty locals drop.
-            reaper.mark_success();
+            // On success this interactive ssh client (ControlMaster=auto +
+            // ControlPersist=yes) backgrounds the persistent master and then
+            // EXITS as a foreground process. We must:
+            //   (a) NOT kill it — that would tear down the persistent master;
+            //   (b) NOT block run_login waiting for it; and
+            //   (c) NOT leave it a zombie — something must wait() it.
+            //
+            // Sequence (ordering matters):
+            //   1. Pull the child OUT of the reaper so the reaper's Drop becomes
+            //      a no-op (no kill, no blocking wait at function exit).
+            //   2. Drop the pty handles (writer, reader, and the pty pair/master
+            //      fd). Closing the master fd is what sends SIGHUP to the
+            //      foreground client → it backgrounds the ControlPersist master
+            //      (which keeps running, adoptable via master_check) and then
+            //      the foreground process exits.
+            //   3. Reap the now-exiting foreground client on a DETACHED thread:
+            //      wait() returns quickly (the client is exiting), reaps it so
+            //      no zombie remains, and never blocks run_login. The persistent
+            //      master is untouched and stays alive for the pool.
+            let child = reaper.take_child();
+            // Explicitly drop the pty handles so the master fd closes → SIGHUP.
+            drop(writer);
+            drop(reader);
+            drop(pair);
+            if let Some(child) = child {
+                // Detached reaper: never blocks run_login, never leaves a
+                // zombie. Builder::spawn so a spawn-Err (EAGAIN) can't panic.
+                // On spawn-Err the closure never ran, so `child` is handed back
+                // to us in the SpawnError — fall back to a one-shot non-blocking
+                // try_wait (won't block run_login). The foreground client is
+                // exiting; if it hasn't yet this may leave a transient zombie,
+                // but we must NOT block here.
+                let spawn_res = std::thread::Builder::new()
+                    .name("login-reap".into())
+                    .spawn(move || {
+                        let mut child = child;
+                        let _ = child.wait();
+                    });
+                if let Err(e) = spawn_res {
+                    warn!("could not spawn login-reap thread ({e}); skipping detached reap");
+                }
+            }
             return Ok(LoginOutcome::Success);
         }
 
@@ -468,14 +507,40 @@ mod tests {
     }
 
     #[test]
-    fn drop_after_mark_success_detaches_neither_kills_nor_waits() {
-        // Success path: mark_success() → DETACH. Drop must NOT kill (would tear
-        // down the ControlPersist master) and must NOT wait (the live
-        // master-bearing client never exits → wait() would block forever).
+    fn take_child_makes_drop_a_noop_and_hands_child_to_caller() {
+        // Success path: the caller pulls the child OUT of the reaper with
+        // take_child() and reaps it on a detached thread (after dropping the
+        // pty fds). The reaper itself must then NOT kill (would tear down the
+        // ControlPersist master) and must NOT wait on drop. The detached reap
+        // is what wait()s the exiting foreground client (no zombie).
         let (mut reaper, kills, waits) = fake();
-        reaper.mark_success();
+        let mut child = reaper
+            .take_child()
+            .expect("take_child yields the child on the success path");
+        // Reaper dropped with the child already taken → no-op (no kill/wait).
         drop(reaper);
-        assert_eq!(kills.load(Ordering::SeqCst), 0, "success path must NOT kill the live master client");
-        assert_eq!(waits.load(Ordering::SeqCst), 0, "success path must NOT wait (would block forever)");
+        assert_eq!(
+            kills.load(Ordering::SeqCst),
+            0,
+            "success path must NOT kill the live master client"
+        );
+        assert_eq!(
+            waits.load(Ordering::SeqCst),
+            0,
+            "reaper drop must NOT wait after the child was taken"
+        );
+        // The caller's detached reaper waits the now-exiting foreground client
+        // exactly once → reaped, not zombied. (Done inline here in the test.)
+        let _ = child.wait();
+        assert_eq!(
+            waits.load(Ordering::SeqCst),
+            1,
+            "the taken child is reaped via the detached path (waited once)"
+        );
+        assert_eq!(
+            kills.load(Ordering::SeqCst),
+            0,
+            "success path never kills the persistent master"
+        );
     }
 }
