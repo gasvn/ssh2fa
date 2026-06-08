@@ -41,3 +41,4 @@ htmlcov/
 debug_*.py
 *.bak
 *.rich.bak
+auto2fa-mac/build_latest/
