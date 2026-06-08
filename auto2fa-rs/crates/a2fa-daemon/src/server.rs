@@ -222,16 +222,17 @@ pub fn run() -> Result<()> {
     // 6c. Spawn tunnel maintenance thread.
     //     Runs every ~1 s: auto-recovery, child-died detection, squeue/stale,
     //     and boot auto-start — the Rust port of `TunnelManager.tick()`.
-    {
-        use std::collections::HashSet;
-        let post_connect_running: Arc<std::sync::Mutex<HashSet<String>>> =
-            Arc::new(std::sync::Mutex::new(HashSet::new()));
-        start_tunnel_maintenance(
-            Arc::clone(&state),
-            Arc::clone(&runtime),
-            post_connect_running,
-        );
-    }
+    use std::collections::HashSet;
+    // The ONE post-connect dedup set, shared between the maintenance loop AND
+    // the IPC `tunnel_start`/`tunnels_batch` paths (via DaemonCtx). A fresh set
+    // per IPC call would make dedup a no-op across paths.
+    let post_connect_running: Arc<std::sync::Mutex<HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(HashSet::new()));
+    start_tunnel_maintenance(
+        Arc::clone(&state),
+        Arc::clone(&runtime),
+        Arc::clone(&post_connect_running),
+    );
 
     log::info!("daemon listening on {}", sock_p.display());
     println!("a2fa-daemon listening on {}", sock_p.display());
@@ -245,6 +246,8 @@ pub fn run() -> Result<()> {
         // One shared guard for the whole daemon: the two Mac wake monitors fire
         // wake_recover together, so closely-following calls must coalesce.
         wake_recover_guard: crate::handlers::system::WakeRecoverGuard::new(),
+        // Share the SAME post-connect dedup set the maintenance loop uses.
+        post_connect_running: Arc::clone(&post_connect_running),
     };
 
     // 6d. Spawn signal-handler thread.

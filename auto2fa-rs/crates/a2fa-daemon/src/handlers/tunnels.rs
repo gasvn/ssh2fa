@@ -215,6 +215,7 @@ pub fn tunnel_start(
     state: &Arc<Mutex<State>>,
     params: &Value,
     runtime: Option<Arc<TunnelRuntime>>,
+    post_connect_running: Option<Arc<Mutex<HashSet<String>>>>,
 ) -> Result<Value> {
     let name = params["name"]
         .as_str()
@@ -301,9 +302,13 @@ pub fn tunnel_start(
         (jump, user, node, local_port, remote_port, post_cmd)
     };
 
-    // Spawn the blocking worker off-lock.
+    // Spawn the blocking worker off-lock. Use the SHARED post-connect dedup set
+    // (threaded in from DaemonCtx) so the IPC path and the maintenance loop
+    // dedup against the SAME set — a fresh set here would make dedup a no-op for
+    // the IPC path (concurrent duplicate hooks possible). Fall back to a fresh
+    // set only for legacy callers that don't supply one (e.g. unit tests).
     let post_connect_running: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+        post_connect_running.unwrap_or_else(|| Arc::new(Mutex::new(HashSet::new())));
 
     match runtime {
         Some(rt) => spawn_tunnel_start_with_runtime(
@@ -414,6 +419,7 @@ pub fn tunnel_toggle(
     state: &Arc<Mutex<State>>,
     params: &Value,
     runtime: Option<Arc<TunnelRuntime>>,
+    post_connect_running: Option<Arc<Mutex<HashSet<String>>>>,
 ) -> Result<Value> {
     let name = params["name"]
         .as_str()
@@ -433,7 +439,7 @@ pub fn tunnel_toggle(
     if should_stop {
         tunnel_stop(state, params, runtime)
     } else {
-        tunnel_start(state, params, runtime)
+        tunnel_start(state, params, runtime, post_connect_running)
     }
 }
 
@@ -452,6 +458,7 @@ pub fn tunnel_set_node(
     state: &Arc<Mutex<State>>,
     params: &Value,
     runtime: Option<Arc<TunnelRuntime>>,
+    post_connect_running: Option<Arc<Mutex<HashSet<String>>>>,
 ) -> Result<Value> {
     let name = params["name"]
         .as_str()
@@ -505,13 +512,13 @@ pub fn tunnel_set_node(
         TunnelStatus::Idle | TunnelStatus::Failed | TunnelStatus::Stale | TunnelStatus::PortBusy => {
             // Was idle / stuck — just start.
             // Mirrors Python: status ∈ {idle, stale, failed, port_busy} → start.
-            tunnel_start(state, &params_with_name, runtime)?;
+            tunnel_start(state, &params_with_name, runtime, post_connect_running)?;
         }
         TunnelStatus::Alive | TunnelStatus::Starting => {
             // Was alive — only restart if the node actually changed.
             if old_node.as_deref() != Some(&node) {
                 tunnel_stop(state, &params_with_name, runtime.clone())?;
-                tunnel_start(state, &params_with_name, runtime)?;
+                tunnel_start(state, &params_with_name, runtime, post_connect_running)?;
             }
         }
     }
@@ -752,7 +759,24 @@ pub fn tunnel_rename(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
 // tunnels_batch
 // ---------------------------------------------------------------------------
 
-pub fn tunnels_batch(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+/// Maximum number of tunnel starts to kick off concurrently in one batch.
+///
+/// A `tunnels_batch{action:"start"}` request naming N idle tunnels would, with
+/// no cap, fan out N concurrent `ssh -L` children + start-worker threads at
+/// once. Each `tunnel_start` call only SPAWNS the worker (it returns after
+/// flipping the tunnel to `Starting` and dispatching off-lock), so the bound
+/// here limits how many starts we INITIATE per pass; the per-tunnel `Starting`
+/// latch already prevents duplicate starts of the same tunnel. We process the
+/// requested names in chunks of this size, joining each chunk's spawn-and-flip
+/// work before moving on, so a giant request can't initiate an unbounded burst.
+const BATCH_START_CONCURRENCY: usize = 4;
+
+pub fn tunnels_batch(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+    post_connect_running: Option<Arc<Mutex<HashSet<String>>>>,
+) -> Result<Value> {
     let action = params
         .get("action")
         .and_then(|v| v.as_str())
@@ -771,16 +795,31 @@ pub fn tunnels_batch(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
     };
 
     let mut results: Vec<Value> = Vec::new();
-    for name in &names {
-        let pv = json!({"name": name});
-        let outcome = if action == "start" {
-            tunnel_start(state, &pv, None)
-        } else {
-            tunnel_stop(state, &pv, None)
-        };
-        match outcome {
-            Ok(_) => results.push(json!({"name": name, "ok": true})),
-            Err(e) => results.push(json!({"name": name, "ok": false, "error": e.to_string()})),
+
+    if action == "stop" {
+        // Stop is cheap (flip flag + SIGKILL off-lock); no concurrency hazard.
+        for name in &names {
+            let pv = json!({"name": name});
+            match tunnel_stop(state, &pv, runtime.clone()) {
+                Ok(_) => results.push(json!({"name": name, "ok": true})),
+                Err(e) => results.push(json!({"name": name, "ok": false, "error": e.to_string()})),
+            }
+        }
+        return Ok(json!({ "results": results }));
+    }
+
+    // action == "start": cap how many starts we initiate at once. tunnel_start
+    // returns quickly (spawns the ssh worker off-lock), so processing in chunks
+    // of BATCH_START_CONCURRENCY bounds the burst of concurrent ssh children a
+    // single request can trigger.
+    for chunk in names.chunks(BATCH_START_CONCURRENCY) {
+        for name in chunk {
+            let pv = json!({"name": name});
+            let outcome = tunnel_start(state, &pv, runtime.clone(), post_connect_running.clone());
+            match outcome {
+                Ok(_) => results.push(json!({"name": name, "ok": true})),
+                Err(e) => results.push(json!({"name": name, "ok": false, "error": e.to_string()})),
+            }
         }
     }
 
@@ -1067,7 +1106,7 @@ mod tests {
     #[test]
     fn tunnel_start_unknown_name_returns_not_found() {
         let state = make_state();
-        let err = tunnel_start(&state, &json!({"name": "ghost"}), None).unwrap_err();
+        let err = tunnel_start(&state, &json!({"name": "ghost"}), None, None).unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
     }
 
@@ -1076,7 +1115,7 @@ mod tests {
         // Tunnel with no last_node → start should set last_msg and return Ok.
         let state = make_state_with_tunnel("nb", 9302);
         // No ready host → no jump; no node → picks the "no node" path.
-        tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
+        tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
         let msg = state.lock().unwrap().tunnels[0].last_msg.clone();
         assert!(msg.contains("no node") || msg.contains("waiting") || msg.contains("jump"));
     }
@@ -1088,7 +1127,7 @@ mod tests {
     fn tunnel_start_already_alive_is_noop() {
         let state = make_alive_tunnel("nb", 9310);
         let before = state.lock().unwrap().tunnels[0].last_msg.clone();
-        let v = tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
+        let v = tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(v, Value::Null);
         let guard = state.lock().unwrap();
         let t = &guard.tunnels[0];
@@ -1110,7 +1149,7 @@ mod tests {
     fn tunnel_start_already_starting_is_noop() {
         let state = make_tunnel_with_status("nb", 9311, TunnelStatus::Starting);
         let before = state.lock().unwrap().tunnels[0].last_msg.clone();
-        let v = tunnel_start(&state, &json!({"name": "nb"}), None).unwrap();
+        let v = tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(v, Value::Null);
         let guard = state.lock().unwrap();
         let t = &guard.tunnels[0];
@@ -1130,7 +1169,7 @@ mod tests {
     #[test]
     fn tunnel_toggle_alive_stops() {
         let state = make_alive_tunnel("nb", 9400);
-        tunnel_toggle(&state, &json!({"name": "nb"}), None).unwrap();
+        tunnel_toggle(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
     }
 
@@ -1138,7 +1177,7 @@ mod tests {
     #[test]
     fn tunnel_toggle_starting_stops() {
         let state = make_tunnel_with_status("nb", 9401, TunnelStatus::Starting);
-        tunnel_toggle(&state, &json!({"name": "nb"}), None).unwrap();
+        tunnel_toggle(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(
             state.lock().unwrap().tunnels[0].status,
             TunnelStatus::Idle,
@@ -1155,6 +1194,7 @@ mod tests {
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
             None,
+            None,
         )
         .unwrap();
         let guard = state.lock().unwrap();
@@ -1170,6 +1210,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu[01-03]", "user": "jdoe"}),
+            None,
             None,
         )
         .unwrap();
@@ -1188,6 +1229,7 @@ mod tests {
             &state,
             &json!({"name": "ghost", "node": "holygpu01"}),
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
@@ -1200,6 +1242,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            None,
             None,
         )
         .unwrap();
@@ -1220,6 +1263,7 @@ mod tests {
         tunnel_set_node(
             &state,
             &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            None,
             None,
         )
         .unwrap();
@@ -1352,7 +1396,7 @@ mod tests {
     #[test]
     fn tunnels_batch_bad_action() {
         let state = make_state();
-        let err = tunnels_batch(&state, &json!({"action": "fly", "names": []})).unwrap_err();
+        let err = tunnels_batch(&state, &json!({"action": "fly", "names": []}), None, None).unwrap_err();
         assert!(matches!(err, Error::BadParams(_)));
     }
 
@@ -1362,10 +1406,36 @@ mod tests {
         let v = tunnels_batch(
             &state,
             &json!({"action": "stop", "names": ["ghost"]}),
+            None,
+            None,
         )
         .unwrap();
         let results = v["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["ok"], false);
+    }
+
+    /// FIX (unbounded breadth): a start batch naming many tunnels must process
+    /// ALL of them (chunked under the concurrency cap) and return one result per
+    /// name. On this host-less test state each start takes the "no jump/node"
+    /// early path, so none actually spawn ssh — we just assert the breadth-cap
+    /// loop covers every requested name.
+    #[test]
+    fn tunnels_batch_start_processes_all_names_under_cap() {
+        let state = make_state_with_tunnel("nb", 9500);
+        // 9 names (> BATCH_START_CONCURRENCY=4) → must still yield 9 results.
+        let names: Vec<String> = (0..9).map(|i| format!("missing-{i}")).collect();
+        // Include the real one too.
+        let mut all = vec!["nb".to_string()];
+        all.extend(names);
+        let v = tunnels_batch(
+            &state,
+            &json!({"action": "start", "names": all}),
+            None,
+            None,
+        )
+        .unwrap();
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 10, "every requested name must get a result");
     }
 }

@@ -11,7 +11,8 @@
 //! Methods that require blocking I/O (start_master, sshfs, test login) do so
 //! OFF the State mutex lock — see `crate::workers` for the threading helpers.
 
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use a2fa_core::config::{load_meta, passwords_path, save_meta, HostMeta};
 use a2fa_core::creds::keychain::KeychainStore;
@@ -643,6 +644,34 @@ fn test_login(host: &str, password: &str, secret: &str) -> (bool, String) {
 // host_totp
 // ---------------------------------------------------------------------------
 
+/// Daemon-global set of hosts with a TOTP Keychain read currently in flight.
+///
+/// macOS serializes Keychain access process-wide, so a hung "Always Allow"
+/// prompt blocks the worker thread until it is answered (~30 s from the app's
+/// poll rollover). Without a guard, every `host_totp` IPC call for that host
+/// would spawn another worker that immediately blocks behind the same prompt —
+/// one leaked thread per call. This per-host latch caps it to AT MOST one
+/// in-flight worker per host; concurrent callers get a "busy" error and retry.
+fn totp_in_flight() -> &'static Mutex<HashSet<String>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// RAII guard releasing a host's `totp_in_flight` entry on every exit path
+/// (worker completion or panic). Mirrors `StartGuard` in managers.rs.
+struct TotpInFlightGuard {
+    host: String,
+}
+
+impl Drop for TotpInFlightGuard {
+    fn drop(&mut self) {
+        totp_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.host);
+    }
+}
+
 /// Compute the current 6-digit TOTP code for a host, for live display in the
 /// app (authenticator-style rotating code).
 ///
@@ -675,9 +704,27 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
     // a BOUNDED timeout (mirroring run_ssh_g in ssh/control.rs). This caps the
     // handler's exposure to a hung prompt; on timeout we return an error rather
     // than blocking forever.
+    // Per-host in-flight latch: at most ONE Keychain-reading worker may exist
+    // per host at a time. If one is already in flight (e.g. blocked on a hung
+    // "Always Allow" prompt), do NOT spawn another — return a retryable busy
+    // error so we never pile up leaked threads behind the same prompt.
+    {
+        let mut inflight = totp_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(host_name.clone()) {
+            return Err(Error::Internal(format!(
+                "totp read already in flight for {host_name} — try again"
+            )));
+        }
+    }
+
     let (tx, rx) = std::sync::mpsc::channel();
     let host_owned = host_name.clone();
     std::thread::spawn(move || {
+        // RAII: release the per-host in-flight latch on every exit path
+        // (completion or panic) so the host is never wedged as "busy".
+        let _inflight_guard = TotpInFlightGuard {
+            host: host_owned.clone(),
+        };
         // Read the otpauth URL from the Keychain and compute the code + timing
         // entirely on this worker thread. Do NOT log the code or secret.
         let result = (|| -> Result<(String, u32, u32)> {
@@ -806,6 +853,38 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(matches!(outcome, Err(Error::Internal(_))), "expected timeout error");
         assert!(elapsed < std::time::Duration::from_secs(2), "must not block past the bound");
+    }
+
+    #[test]
+    fn totp_in_flight_blocks_second_concurrent_claim() {
+        // First claim for a host succeeds; a second concurrent claim for the
+        // SAME host must be rejected (insert returns false) until released.
+        let host = "totp-guard-test-host";
+        // Ensure a clean slate (other tests may have used the set).
+        totp_in_flight().lock().unwrap().remove(host);
+
+        // First claim.
+        assert!(
+            totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            "first claim must succeed"
+        );
+        // Second concurrent claim is blocked.
+        assert!(
+            !totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            "second concurrent claim must be blocked"
+        );
+
+        // The RAII guard releases the latch on drop.
+        {
+            let _g = TotpInFlightGuard { host: host.to_owned() };
+        }
+        // After release, a new claim succeeds again.
+        assert!(
+            totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            "claim must succeed after the guard released the latch"
+        );
+        // Clean up.
+        totp_in_flight().lock().unwrap().remove(host);
     }
 
     #[test]

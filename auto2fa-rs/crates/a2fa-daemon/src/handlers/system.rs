@@ -404,6 +404,7 @@ mod tests {
             registry: OtpRegistry::new(),
             runtime: TunnelRuntime::new(),
             wake_recover_guard: WakeRecoverGuard::new(),
+            post_connect_running: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 

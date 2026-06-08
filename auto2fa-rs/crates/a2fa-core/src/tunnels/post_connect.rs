@@ -1,5 +1,36 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// Hard deadline for a post-connect hook (mirrors Python's `timeout=30`).
+///
+/// A hook like `tail -f`, or one that backgrounds a server holding stdout open,
+/// would otherwise block `Command::output()` forever — wedging the worker and
+/// (because the name is only removed at the very end) permanently disabling the
+/// hook for that tunnel. We poll `try_wait()` against this deadline and
+/// `kill()+wait()` the child on timeout.
+const POST_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often the bounded-run poll loop wakes up to check for child exit.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// RAII guard that removes `name` from the `running` dedup set on drop.
+///
+/// This guarantees the name is removed on EVERY exit path of the worker —
+/// normal return, early return, OR panic (e.g. a stray byte-slice panic) —
+/// so a tunnel's hook can never get permanently wedged in the "still running"
+/// state. Mirrors `StartGuard` in the daemon's managers module.
+struct RunningGuard {
+    running: Arc<Mutex<HashSet<String>>>,
+    name: String,
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        let mut guard = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&self.name);
+    }
+}
 
 /// Run a per-tunnel post-connect shell command in a background thread.
 ///
@@ -8,8 +39,9 @@ use std::sync::{Arc, Mutex};
 /// - If `tunnel_name` is already present in `running`, we skip the launch
 ///   (prevents duplicate hooks when the tunnel flaps).
 /// - Otherwise the name is inserted into `running` before the thread starts
-///   and removed when the command finishes (success or failure).
-/// - The command is run via `/bin/sh -c <cmd>`.
+///   and removed (via an RAII [`RunningGuard`]) when the command finishes,
+///   times out, or the worker panics.
+/// - The command is run via `/bin/sh -c <cmd>` with a hard 30 s deadline.
 /// - The environment receives the standard `AUTO2FA_*` variables; values are
 ///   sanitized to strip shell metacharacters (same policy as the Python code).
 /// - No live test; the function is exercised by integration tests that can
@@ -40,11 +72,19 @@ pub fn run_post_connect(
     if let Err(e) = std::thread::Builder::new()
         .name(format!("post_connect:{tunnel_name}"))
         .spawn(move || {
-            run_post_connect_inner(&tunnel_name, &cmd, local_port, &node, &jump, &running);
+            // RAII: remove the name from the running set on EVERY exit path
+            // (normal, early-return, or panic). Constructed first so it is the
+            // last thing dropped.
+            let _running_guard = RunningGuard {
+                running,
+                name: tunnel_name.clone(),
+            };
+            run_post_connect_inner(&tunnel_name, &cmd, local_port, &node, &jump);
         })
     {
         log::error!("failed to spawn post_connect thread: {e}");
-        // Clean up the running-set so future attempts are not blocked.
+        // The worker (and its RunningGuard) never ran — clean up the running-set
+        // here so future attempts are not blocked.
         let mut guard = running_for_error.lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&name_for_error);
     }
@@ -64,9 +104,8 @@ fn run_post_connect_inner(
     local_port: u16,
     node: &str,
     jump: &str,
-    running: &Arc<Mutex<HashSet<String>>>,
 ) {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     let mut env = std::env::vars().collect::<Vec<_>>();
     env.push(("AUTO2FA_TUNNEL_NAME".into(), sanitize(tunnel_name)));
@@ -78,43 +117,71 @@ fn run_post_connect_inner(
         format!("http://localhost:{local_port}"),
     ));
 
-    log::debug!("[tunnel:{tunnel_name}] post_connect: running `{}`", &cmd[..cmd.len().min(60)]);
+    // Char-safe truncation for logging — byte-slicing (`&cmd[..60]`) would PANIC
+    // if a multibyte UTF-8 char straddles byte 60.
+    let cmd_preview: String = cmd.chars().take(60).collect();
+    log::debug!("[tunnel:{tunnel_name}] post_connect: running `{cmd_preview}`");
 
-    let result = Command::new("/bin/sh")
+    // Spawn with stdin nulled (a hook reading stdin can't block on the daemon)
+    // and stdout/stderr nulled so a backgrounded server inheriting the pipe
+    // can't hold us open. Poll try_wait against a 30 s deadline; kill+wait on
+    // timeout. Mirrors `run_ssh_bounded` in ssh/control.rs.
+    let mut child = match Command::new("/bin/sh")
         .arg("-c")
         .arg(cmd)
         .envs(env)
-        .output();
-
-    match result {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if out.status.success() {
-                log::debug!(
-                    "[tunnel:{tunnel_name}] post_connect: exited 0; stdout={stdout:?}"
-                );
-            } else {
-                log::warn!(
-                    "[tunnel:{tunnel_name}] post_connect: exited {:?}; stderr={stderr:?}",
-                    out.status.code()
-                );
-            }
-        }
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
         Err(e) => {
             log::error!("[tunnel:{tunnel_name}] post_connect: failed to run command: {e}");
+            return;
+        }
+    };
+
+    let deadline = Instant::now() + POST_CONNECT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    log::debug!("[tunnel:{tunnel_name}] post_connect: exited 0");
+                } else {
+                    log::warn!(
+                        "[tunnel:{tunnel_name}] post_connect: exited {:?}",
+                        status.code()
+                    );
+                }
+                return;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    log::warn!(
+                        "[tunnel:{tunnel_name}] post_connect: timed out after {POST_CONNECT_TIMEOUT:?} — killing"
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(e) => {
+                log::error!("[tunnel:{tunnel_name}] post_connect: wait error: {e} — killing");
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
         }
     }
-
-    let mut guard = running.lock().unwrap_or_else(|e| e.into_inner());
-    guard.remove(tunnel_name);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn sanitize_strips_metacharacters() {
@@ -163,8 +230,70 @@ mod tests {
         );
 
         // Give the thread a moment to finish and clean up.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        // After completion the name should be removed.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // After completion the name should be removed (RAII guard ran).
         assert!(!running.lock().unwrap().contains("probe-tunnel"));
+    }
+
+    /// A multibyte UTF-8 command that straddles byte 60 must NOT panic the
+    /// logging truncation. Byte-slicing `&cmd[..60]` would panic; char-based
+    /// truncation must not.
+    #[test]
+    fn cmd_preview_truncation_is_char_safe() {
+        // Build a string whose byte length crosses 60 in the middle of a
+        // multibyte char ('é' is 2 bytes, '€' is 3 bytes).
+        let mut cmd = "a".repeat(59); // 59 bytes
+        cmd.push('€'); // byte 60..63 — byte-slicing at 60 would split this
+        cmd.push_str("trailing");
+
+        // This is exactly what the logging path does; must not panic.
+        let preview: String = cmd.chars().take(60).collect();
+        assert!(preview.starts_with(&"a".repeat(59)));
+        assert!(preview.ends_with('€'));
+        // 59 'a' + 1 '€' = 60 chars.
+        assert_eq!(preview.chars().count(), 60);
+    }
+
+    /// The RAII guard must remove the name even if the worker logic panics.
+    #[test]
+    fn running_guard_removes_on_drop_even_on_panic() {
+        let running: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        running.lock().unwrap().insert("panicky".to_string());
+
+        let running_clone = running.clone();
+        let handle = std::thread::spawn(move || {
+            let _g = RunningGuard {
+                running: running_clone,
+                name: "panicky".to_string(),
+            };
+            panic!("boom");
+        });
+        let _ = handle.join(); // expected to be Err
+
+        assert!(
+            !running.lock().unwrap().contains("panicky"),
+            "RunningGuard must remove the name on panic"
+        );
+    }
+
+    /// A hook that would otherwise block forever (reads from stdin) must be
+    /// reaped. We don't wait the full 30 s here — we use a fast-exiting child
+    /// and assert the worker cleans up the running set promptly. The timeout
+    /// path itself is covered structurally (kill+wait on deadline).
+    #[test]
+    fn run_post_connect_cleans_up_after_fast_child() {
+        let running: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        run_post_connect(
+            "fast".to_string(),
+            // exits immediately even though it would read stdin if attached;
+            // stdin is nulled so it can't block.
+            "true".to_string(),
+            9100,
+            "n".to_string(),
+            "j".to_string(),
+            running.clone(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!running.lock().unwrap().contains("fast"));
     }
 }

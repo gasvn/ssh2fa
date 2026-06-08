@@ -21,6 +21,7 @@
 //! connection loop **before** `dispatch` is called.  If `dispatch` receives it
 //! anyway (e.g. in tests), it returns a normal ack.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use a2fa_core::engine::State;
@@ -47,6 +48,10 @@ pub struct DaemonCtx {
     /// Daemon-global coalescing guard for `wake_recover` so overlapping calls
     /// from the Mac's two wake monitors collapse to a single real run.
     pub wake_recover_guard: Arc<WakeRecoverGuard>,
+    /// The ONE post-connect dedup set shared with the maintenance loop. Both the
+    /// IPC `tunnel_start` path and the maintenance loop must use the same set, or
+    /// the dedup is a no-op across paths and duplicate hooks can run concurrently.
+    pub post_connect_running: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Dispatch one request line (raw bytes) and return the response line.
@@ -99,6 +104,7 @@ pub fn dispatch(state: &Arc<Mutex<State>>, line: &[u8]) -> String {
         registry: OtpRegistry::new(),
         runtime: TunnelRuntime::new(),
         wake_recover_guard: WakeRecoverGuard::new(),
+        post_connect_running: Arc::new(Mutex::new(HashSet::new())),
     }, method, params);
 
     match result {
@@ -195,17 +201,17 @@ fn route_with_ctx(
         // --- Tunnels (write/persist) ---
         Method::TunnelAdd         => tunnels::tunnel_add(state, params),
         Method::TunnelRemove      => tunnels::tunnel_remove(state, params, Some(Arc::clone(&ctx.runtime))),
-        Method::TunnelStart       => tunnels::tunnel_start(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelStart       => tunnels::tunnel_start(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
         Method::TunnelStop        => tunnels::tunnel_stop(state, params, Some(Arc::clone(&ctx.runtime))),
-        Method::TunnelToggle      => tunnels::tunnel_toggle(state, params, Some(Arc::clone(&ctx.runtime))),
-        Method::TunnelSetNode     => tunnels::tunnel_set_node(state, params, Some(Arc::clone(&ctx.runtime))),
+        Method::TunnelToggle      => tunnels::tunnel_toggle(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
+        Method::TunnelSetNode     => tunnels::tunnel_set_node(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
         Method::TunnelSetAutostart=> tunnels::tunnel_set_autostart(state, params),
         Method::TunnelSetJumpCandidates => tunnels::tunnel_set_jump_candidates(state, params),
         Method::TunnelSetPostConnect    => tunnels::tunnel_set_post_connect(state, params),
         Method::TunnelSetTags     => tunnels::tunnel_set_tags(state, params),
         Method::TunnelSetUrlPath  => tunnels::tunnel_set_url_path(state, params),
         Method::TunnelRename      => tunnels::tunnel_rename(state, params),
-        Method::TunnelsBatch      => tunnels::tunnels_batch(state, params),
+        Method::TunnelsBatch      => tunnels::tunnels_batch(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
 
         // --- Discovery ---
         Method::DiscoverNodes     => tunnels::discover_nodes(state, params),

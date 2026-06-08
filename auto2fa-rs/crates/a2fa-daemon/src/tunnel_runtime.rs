@@ -142,13 +142,26 @@ impl TunnelRuntime {
     // ---- Child registry -----------------------------------------------
 
     /// Store a child handle after a successful tunnel start.
+    ///
+    /// Two-phase so we never hold the registry lock across a blocking child
+    /// `wait()`: (1) under the lock, REMOVE any stale child into a local and
+    /// drop the lock; (2) `stop_forward` (kill+wait) the stale child OFF-lock —
+    /// a D-state (wedged NFS/ssh) child would otherwise freeze the whole
+    /// maintenance tick, which also locks this registry; (3) re-lock to insert
+    /// the new child. Mirrors `kill_child`'s evict-under-lock / kill-off-lock.
     pub fn store_child(&self, name: &str, child: Child) {
-        let mut inner = self.inner.lock().unwrap();
-        // If a previous child is still there (shouldn't normally happen), kill it.
-        if let Some(old) = inner.children.remove(name) {
+        // Phase 1: evict any stale child under the lock, then drop the lock.
+        let stale = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.children.remove(name)
+        };
+        // Phase 2: reap the stale child OFF-lock (kill+wait may block on D-state).
+        if let Some(old) = stale {
             warn!("[tunnel:{name}] store_child: evicting stale child handle");
             stop_forward(old);
         }
+        // Phase 3: re-lock and insert the new child.
+        let mut inner = self.inner.lock().unwrap();
         inner.children.insert(name.to_owned(), child);
         info!("[tunnel:{name}] child handle stored in registry");
     }
@@ -210,16 +223,22 @@ impl TunnelRuntime {
     /// Remove both the child handle and the runtime state for `name`.
     ///
     /// Called when a tunnel is removed from the daemon entirely.
+    ///
+    /// Two-phase like `store_child`: take the child out UNDER the lock, drop the
+    /// lock, then `stop_forward` (kill+wait) OFF-lock so a D-state child can't
+    /// freeze the maintenance tick (which also locks this registry).
     pub fn remove(&self, name: &str) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(child) = inner.children.remove(name) {
-            // Kill off-lock isn't possible here without a two-phase approach,
-            // but stop_forward (SIGKILL) is fast enough that holding the lock
-            // briefly is acceptable for the remove path (rare operation).
+        let child = {
+            let mut inner = self.inner.lock().unwrap();
+            let child = inner.children.remove(name);
+            inner.rt.remove(name);
+            inner.events.remove(name);
+            child
+        };
+        // Reap OFF-lock (SIGKILL + wait may block on a wedged child).
+        if let Some(child) = child {
             stop_forward(child);
         }
-        inner.rt.remove(name);
-        inner.events.remove(name);
     }
 
     // ---- Event ring buffer ---------------------------------------------
@@ -731,6 +750,47 @@ mod tests {
 
         // Clean up.
         stop_forward(child);
+    }
+
+    #[test]
+    fn store_child_evicts_stale_without_deadlock() {
+        use std::process::Command;
+        let rt = TunnelRuntime::new();
+
+        // Store a first child.
+        let first = Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn first sleep");
+        rt.store_child("nb", first);
+
+        // Storing a SECOND child for the same name must evict + reap the first
+        // (two-phase, off-lock) and complete promptly — no deadlock against the
+        // registry lock.
+        let second = Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn second sleep");
+
+        let start = std::time::Instant::now();
+        rt.store_child("nb", second);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "store_child must not block / deadlock on eviction"
+        );
+
+        // The second child is now registered and alive; the first was reaped.
+        assert_eq!(rt.child_alive("nb"), Some(true));
+
+        // Clean up.
+        rt.kill_child("nb");
+        assert!(rt.take_child("nb").is_none());
     }
 
     #[test]
