@@ -185,11 +185,24 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         let mut needs_redraw = got_daemon_event;
 
         if got_key {
-            if let Event::Key(key) = event::read()? {
-                needs_redraw = true;
-                handle_key(key, &mut app, &mut sheets);
-            } else if let Event::Resize(_, _) = event::read().unwrap_or(Event::FocusLost) {
-                needs_redraw = true;
+            // poll() guarantees exactly ONE event is buffered. Read it once and
+            // match on that single value — calling event::read() a second time
+            // (e.g. for a Mouse event falling through to an else-if) would block
+            // the UI thread on a phantom read of an empty buffer.
+            match event::read()? {
+                Event::Key(key) => {
+                    needs_redraw = true;
+                    handle_key(key, &mut app, &mut sheets);
+                }
+                Event::Resize(_, _) => {
+                    needs_redraw = true;
+                }
+                // Mouse capture is enabled but unused; ignore these (and any
+                // focus/paste events) without a second read.
+                Event::Mouse(_)
+                | Event::FocusGained
+                | Event::FocusLost
+                | Event::Paste(_) => {}
             }
         }
 

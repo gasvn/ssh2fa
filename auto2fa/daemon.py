@@ -664,7 +664,7 @@ class Auto2FADaemon:
                     try:
                         writer.write(ipc.encode(ipc.make_error(
                             "", ipc.ErrCode.INVALID_REQUEST, "request too large")))
-                        await writer.drain()
+                        await asyncio.wait_for(writer.drain(), timeout=5)
                     except Exception:
                         pass
                     break
@@ -679,7 +679,11 @@ class Auto2FADaemon:
                     writer.write(ipc.encode(
                         ipc.make_error("", ipc.ErrCode.INVALID_REQUEST, "bad JSON")
                     ))
-                    await writer.drain()
+                    try:
+                        await asyncio.wait_for(writer.drain(), timeout=5)
+                    except Exception:
+                        # Stuck reader — don't hang this handler task forever.
+                        break
                     continue
 
                 # A valid-JSON but non-object request (e.g. `5`, `"x"`, `[...]`)
@@ -688,19 +692,28 @@ class Auto2FADaemon:
                 if not isinstance(msg, dict):
                     writer.write(ipc.encode(ipc.make_error(
                         "", ipc.ErrCode.INVALID_REQUEST, "request must be a JSON object")))
-                    await writer.drain()
+                    try:
+                        await asyncio.wait_for(writer.drain(), timeout=5)
+                    except Exception:
+                        break
                     continue
 
                 # Special-case subscribe — needs the writer reference
                 if msg.get("method") == ipc.Method.SUBSCRIBE_EVENTS:
                     self._subscribers.add(writer)
                     writer.write(ipc.encode(ipc.make_response(msg.get("id", ""), {"subscribed": True})))
-                    await writer.drain()
+                    try:
+                        await asyncio.wait_for(writer.drain(), timeout=5)
+                    except Exception:
+                        break
                     continue
 
                 resp = await self.handle_request(msg)
                 writer.write(ipc.encode(resp))
-                await writer.drain()
+                try:
+                    await asyncio.wait_for(writer.drain(), timeout=5)
+                except Exception:
+                    break
         except (ConnectionResetError, BrokenPipeError):
             pass
         except Exception:
@@ -1148,11 +1161,19 @@ class Auto2FADaemon:
         for w in list(self._subscribers):
             try:
                 w.write(payload)
-                await w.drain()
+                # A single non-reading subscriber (e.g. an App-Napped client)
+                # would otherwise make drain() suspend forever and freeze the
+                # whole state poll loop (tunnel maintenance + event delivery).
+                # Bound it: on timeout (or any error) treat the writer as dead.
+                await asyncio.wait_for(w.drain(), timeout=2)
             except Exception:
                 dead.append(w)
         for w in dead:
             self._subscribers.discard(w)
+            try:
+                w.close()
+            except Exception:
+                pass
 
     # ---- Server lifecycle ------------------------------------------------
 
