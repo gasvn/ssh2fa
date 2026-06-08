@@ -146,3 +146,46 @@ the master fd is **O_CLOEXEC**. The current pty teardown does NOT leak. (Probe r
 Tests: a2fa-core **127** (+2 sys), a2fa-daemon **147** (+4 creds), cli 15, tui 36 — 0 failures.
 The bug-class invariant is unchanged; this adds **"resolve each external secret once and
 cache it"** + **"raise the process fd limit at startup"** as standing rules.
+
+---
+
+## Round 5 — 140-agent crash/hang audit (zero machine-hang tolerated) — 2026-06-07 (night)
+
+User mandate: "cannot take any risk of crashing the system again." A 140-agent
+adversarially-verified Workflow swept 10 hang/crash dimensions (unbounded-spawn, fd-leak,
+blocking-no-timeout, panic/poison, deadlock/lock-order, unbounded-growth, busy-spin,
+fork-amplification, launchd-crashloop, system-wide-resource), with **3 skeptics per finding**
+(reachability / already-guarded / real machine impact) and a completeness critic + 2nd round.
+**25 raw → 18 confirmed (round 1); critic found 6 gaps → 16 raw → 3 confirmed (round 2);
+21 total confirmed, 4 system-threatening.** Every finding re-verified against current code
+before fixing.
+
+Fixed (commits on `rust-rewrite`):
+| Severity | Finding | Fix |
+|---|---|---|
+| CRIT/sys | host_mount_toggle: sshfs/umount/which unbounded `.output()` on handler thread, no ConnectTimeout, no in-flight latch → macFUSE half-mount can freeze Finder/Spotlight machine-wide; repeated toggles stack sshfs subtrees | ConnectTimeout=10 in sshfs opts + `run_cmd_bounded` (kill-on-deadline) + per-host `MountInFlightGuard` |
+| HIGH/sys | pty_auth login `buf` grows unbounded ≤60s (heap bomb + O(n²) regex) | `cap_transcript` 256 KiB trailing window |
+| HIGH/sys | heartbeat + tunnel-maintenance loop-thread spawns `.expect()` on main thread → EAGAIN-after-boot-storm crashloop | log-and-continue (degrade, never crash); same for tick spawn (was `?`→exit) |
+| CRIT | startup Keychain v1→v2 migration unbounded on main thread before accept → locked-Keychain boot wedge/crashloop | run on worker w/ 15s join timeout |
+| HIGH | cleanup_orphans pgrep/ps/kill unbounded on boot thread before accept | `run_cmd_bounded` (2s/2s/1s) |
+| HIGH | State Mutex held across `save_tunnels()` fsync (7 handler sites + maintenance + workers) → whole-daemon wedge under disk/FS pressure | snapshot off-lock (`persist_tunnels` / clone-then-save) |
+| HIGH | ssh master `-v` → unbounded `/tmp` logs (8 MB/slot, never rotated) → slow /tmp-full machine stall | drop `-v`; truncate per-slot log each start |
+| HIGH | subscribers::register raw `.lock().unwrap()` outside catch_unwind → poison = permanent event-sub outage | `lock_state`; + 9 raw unwraps in tunnel_maintenance |
+| MED | main.rs panics if log file can't open → fast crashloop | stderr fallback, continue |
+| MED | rotated `.gz` logs never pruned | keep newest 3 |
+| LOW | kill_all_children holds runtime lock across child.wait() | drain under lock, kill+reap off-lock |
+
+New helper: `a2fa_core::sys::run_cmd_bounded` (generic kill-on-deadline + reap) — the non-ssh
+sibling of `run_ssh_bounded`, now a chokepoint for which/umount/sshfs/pgrep/ps/kill.
+
+**Accepted residuals (NOT machine-hang vectors, deferred):** #13 host_add Keychain write inline
+on handler thread (user-initiated, one conn, bounded by MAX_CONNS); #21 cleanup_orphans can't
+reap removed-port tunnels / orphan ControlMasters (functional gap, not a hang).
+
+INVARIANT EXTENDED: **non-ssh external commands also go through a bounded chokepoint**
+(`run_cmd_bounded`), **the boot/main thread does no unbounded blocking before the accept loop**
+(migration + cleanup on bounded workers), and **loop-thread spawns degrade, never `.expect`/`?`
+to process exit** (no launchd crashloop).
+
+Tests: a2fa-core **133**, a2fa-daemon **150** (+ mount latch, cap_transcript, run_cmd_bounded,
+log-prune tests), cli 15, tui 36 — 0 failures; clippy no new errors. Not yet deployed.
