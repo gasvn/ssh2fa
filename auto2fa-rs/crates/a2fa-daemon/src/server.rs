@@ -157,27 +157,39 @@ pub fn run() -> Result<()> {
     //        machine this short-circuits instantly. On timeout we proceed with
     //        the file still v1 (load yields 0 hosts; migration retries next
     //        launch) rather than block forever.
+    //        The worker does only the (blocking) Keychain writes via
+    //        prepare_migration and RETURNS the v2 host map; THIS (boot) thread
+    //        does the final save_meta. That guarantees exactly one thread ever
+    //        writes passwords.json: an abandoned/timed-out worker never persists,
+    //        so it can't race a later host_add save_meta (a lost-update). save_meta
+    //        here runs before State::new + the accept loop, so nothing else writes
+    //        the file concurrently either.
     {
         let passwords_for_migrate = passwords_p.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<bool, String>>(1);
+        type MigrateMsg = std::result::Result<
+            Option<std::collections::HashMap<String, a2fa_core::config::HostMeta>>,
+            String,
+        >;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<MigrateMsg>(1);
         let spawn_res = std::thread::Builder::new()
             .name("creds-migrate".into())
             .spawn(move || {
                 let kc = a2fa_core::creds::keychain::KeychainStore;
-                let r = a2fa_core::creds::migrate::migrate_passwords_file_if_needed(
-                    &kc,
-                    &passwords_for_migrate,
-                )
-                .map_err(|e| e.to_string());
+                let r = a2fa_core::creds::migrate::prepare_migration(&kc, &passwords_for_migrate)
+                    .map_err(|e| e.to_string());
                 let _ = tx.send(r);
             });
         match spawn_res {
             Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(15)) {
-                Ok(Ok(true))  => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
-                Ok(Ok(false)) => {}
-                Ok(Err(e))    => log::error!("passwords.json migration failed (continuing): {e}"),
-                Err(_)        => log::error!(
-                    "passwords.json migration timed out (Keychain locked?) — continuing; will retry next launch"
+                Ok(Ok(Some(hosts))) => match a2fa_core::config::save_meta(&passwords_p, &hosts) {
+                    Ok(_) => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
+                    Err(e) => log::error!("migration: persisting v2 passwords.json failed: {e}"),
+                },
+                Ok(Ok(None)) => {}
+                Ok(Err(e))   => log::error!("passwords.json migration failed (continuing): {e}"),
+                Err(_)       => log::error!(
+                    "passwords.json migration timed out (Keychain locked?) — continuing; \
+                     not persisted (no race); will retry next launch"
                 ),
             },
             Err(e) => log::error!("could not spawn migration worker ({e}); skipping migration this run"),

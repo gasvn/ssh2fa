@@ -1,10 +1,43 @@
 //! Process-level system resource configuration.
 
-use std::io::Read;
+use std::io::{ErrorKind, Read};
+use std::os::unix::io::AsRawFd;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use log::{info, warn};
+
+/// Drain whatever is already buffered on a child pipe WITHOUT waiting for EOF.
+///
+/// `read_to_end` blocks until the write-end closes. If the spawned child forks a
+/// daemonized grandchild that INHERITS the pipe (sshfs→FUSE server, any
+/// double-fork), the write-end stays open after the parent exits and a
+/// `read_to_end` would block FOREVER — defeating the whole point of a "bounded"
+/// runner. We only need what the parent wrote before exiting (small output), so
+/// set the fd non-blocking and read until `WouldBlock`/EOF. A grandchild holding
+/// the pipe just means we stop at the buffered data instead of hanging.
+fn drain_nonblocking<R: AsRawFd + Read>(r: &mut R) -> Vec<u8> {
+    // SAFETY: r owns a valid open pipe fd for the duration of this call;
+    // F_GETFL/F_SETFL are side-effect-free flag ops.
+    unsafe {
+        let flags = libc::fcntl(r.as_raw_fd(), libc::F_GETFL);
+        if flags >= 0 {
+            let _ = libc::fcntl(r.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => break, // nothing more buffered
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    out
+}
 
 /// Run an external command with a HARD timeout, killing+reaping it on deadline.
 ///
@@ -42,15 +75,11 @@ pub fn run_cmd_bounded(program: &str, args: &[&str], timeout: Duration) -> Optio
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Child reaped by try_wait; drain the (small) captured output.
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut s) = child.stdout.take() {
-                    let _ = s.read_to_end(&mut stdout);
-                }
-                if let Some(mut s) = child.stderr.take() {
-                    let _ = s.read_to_end(&mut stderr);
-                }
+                // Child reaped by try_wait; drain the (small) buffered output
+                // WITHOUT waiting for EOF (a daemonized grandchild may still
+                // hold the pipe open — read_to_end would hang forever).
+                let stdout = child.stdout.take().map(|mut s| drain_nonblocking(&mut s)).unwrap_or_default();
+                let stderr = child.stderr.take().map(|mut s| drain_nonblocking(&mut s)).unwrap_or_default();
                 return Some(Output { status, stdout, stderr });
             }
             Ok(None) => {
@@ -204,6 +233,28 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(3),
             "must return shortly after the deadline, not after the child's full runtime (elapsed {elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn run_cmd_bounded_does_not_hang_when_grandchild_holds_pipe() {
+        // Reproduce the sshfs/daemonize shape: the parent prints output then
+        // exits, but a backgrounded grandchild INHERITS (and holds) the stdout
+        // pipe. read_to_end would block until the grandchild dies (~5s); the
+        // non-blocking drain must return the buffered output promptly.
+        let start = Instant::now();
+        let out = run_cmd_bounded(
+            "/bin/sh",
+            &["-c", "echo done; sleep 5 &"],
+            Duration::from_secs(10),
+        )
+        .expect("parent exits immediately; must return Some");
+        let elapsed = start.elapsed();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "done");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "must not block on the grandchild holding the pipe (elapsed {elapsed:?})"
         );
     }
 

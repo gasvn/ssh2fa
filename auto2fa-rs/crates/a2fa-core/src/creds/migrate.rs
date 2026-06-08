@@ -177,9 +177,36 @@ pub fn migrate_passwords_file_if_needed<S: SecretStore>(
     store: &S,
     path: &Path,
 ) -> Result<bool> {
+    match prepare_migration(store, path)? {
+        Some(hosts) => {
+            save_meta(path, &hosts)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Do everything EXCEPT persist the v2 file: the checks, the one-time backup,
+/// and the (potentially slow/blocking) Keychain writes. Returns
+/// `Some(hosts)` — the v2 host-metadata map the caller must `save_meta` to
+/// commit the migration — or `None` if there is nothing to migrate.
+///
+/// Split out from [`migrate_passwords_file_if_needed`] so a caller that runs the
+/// blocking Keychain writes on a BOUNDED WORKER thread (the daemon boot path,
+/// which can't risk a locked Keychain wedging boot) can perform the final
+/// `save_meta` ITSELF on its own thread. That guarantees only ONE thread ever
+/// writes `passwords.json`: if the worker times out and is abandoned, it never
+/// persists, so it can never race a concurrent `host_add` `save_meta` (the
+/// lost-update regression the bounded-migration change would otherwise create).
+/// The Keychain writes are idempotent, so an abandoned worker that completes
+/// them late is harmless.
+pub fn prepare_migration<S: SecretStore>(
+    store: &S,
+    path: &Path,
+) -> Result<Option<HashMap<String, HostMeta>>> {
     // 1. Missing file — nothing to migrate.
     if !path.exists() {
-        return Ok(false);
+        return Ok(None);
     }
 
     // 2. Read + parse.
@@ -188,17 +215,17 @@ pub fn migrate_passwords_file_if_needed<S: SecretStore>(
         Ok(v) => v,
         Err(e) => {
             log::warn!("[migrate] passwords.json is not valid JSON — skipping migration: {e}");
-            return Ok(false);
+            return Ok(None);
         }
     };
     if !value.is_object() {
         log::warn!("[migrate] passwords.json is not a JSON object — skipping migration");
-        return Ok(false);
+        return Ok(None);
     }
 
     // 3. Already v2?
     if value.get("schema").and_then(Value::as_u64) == Some(2) {
-        return Ok(false);
+        return Ok(None);
     }
 
     // 4. Any migratable entries?
@@ -206,7 +233,7 @@ pub fn migrate_passwords_file_if_needed<S: SecretStore>(
         log::info!(
             "[migrate] no migratable entries in passwords.json — leaving untouched"
         );
-        return Ok(false);
+        return Ok(None);
     }
 
     // 5. One-time backup.
@@ -234,14 +261,12 @@ pub fn migrate_passwords_file_if_needed<S: SecretStore>(
     // 6. Migrate into store (all-or-nothing via migrate_v1_to_v2).
     let v2 = migrate_v1_to_v2(store, &value)?;
 
-    // 7. Persist as v2 using the audited atomic writer.
-    //    Extract the "hosts" object and deserialise into HashMap<String, HostMeta>.
+    // 7. Extract the v2 host map for the caller to persist (NOT persisted here).
     let hosts_value = v2.get("hosts").cloned().unwrap_or(Value::Object(Map::new()));
     let hosts: HashMap<String, HostMeta> = serde_json::from_value(hosts_value)
         .map_err(|e| Error::Internal(format!("deserialise v2 hosts: {e}")))?;
-    save_meta(path, &hosts)?;
 
-    Ok(true)
+    Ok(Some(hosts))
 }
 
 // ---------------------------------------------------------------------------
