@@ -275,21 +275,26 @@ impl TunnelRuntime {
     /// swallowed so teardown continues for the remaining children.  Panic-safe
     /// (recovers a poisoned mutex).
     pub fn kill_all_children(&self) {
-        let mut inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
+        // Drain the children map UNDER the lock, then kill()+wait() OFF the lock.
+        // Holding `inner` across child.wait() would pin the runtime mutex (which
+        // store_child/remove/record all need) for the duration of every reap —
+        // a slow/stuck child would wedge all tunnel runtime ops. Snapshot-then-IO
+        // mirrors HostManagers::teardown_all.
+        let drained: Vec<(String, _)> = {
+            let mut inner = match self.inner.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            inner.children.drain().collect()
         };
-        let names: Vec<String> = inner.children.keys().cloned().collect();
-        let count = names.len();
-        for name in &names {
-            if let Some(mut child) = inner.children.remove(name) {
-                info!("[tunnel:{name}] kill_all_children: sending SIGKILL");
-                if let Err(e) = child.kill() {
-                    warn!("[tunnel:{name}] kill_all_children: kill() error: {e}");
-                }
-                if let Err(e) = child.wait() {
-                    warn!("[tunnel:{name}] kill_all_children: wait() error: {e}");
-                }
+        let count = drained.len();
+        for (name, mut child) in drained {
+            info!("[tunnel:{name}] kill_all_children: sending SIGKILL");
+            if let Err(e) = child.kill() {
+                warn!("[tunnel:{name}] kill_all_children: kill() error: {e}");
+            }
+            if let Err(e) = child.wait() {
+                warn!("[tunnel:{name}] kill_all_children: wait() error: {e}");
             }
         }
         info!("kill_all_children: killed {count} tunnel child(ren)");
