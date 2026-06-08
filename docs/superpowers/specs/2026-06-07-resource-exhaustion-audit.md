@@ -54,3 +54,52 @@ Full workspace, single-threaded: **a2fa-core 122, a2fa-daemon 140, cli 15, tui 3
 Release compiles. Nothing deployed. Audit: 16 confirmed candidates → 9 distinct issues fixed;
 64 sites checked & cleared (incl. the Python daemon, the Swift timers, the already-guarded
 maintenance loops).
+
+---
+
+## Round 2 (deep stability sweep) + Rounds 3-4 (fixing the fixes) — 2026-06-07
+
+A second, deeper multi-agent sweep (the user asked twice for "仔细仔细检查") verified the
+round-1 fixes AND widened to the full daemon-stability class (panics, deadlocks, lock-ordering,
+poison, block-forever). It found **24 issues — including 3 regressions that round-1 introduced**:
+
+- **CRITICAL (mine):** the round-1 `ChildReaper` `wait()`-on-success **blocked forever on every
+  login** (interactive argv + `ControlPersist`: the foreground ssh client never exits) → slot
+  wedged + thread/child/pty leak per login. Worse than the bug it replaced.
+- **HIGH (mine):** the in-flight guard `.expect()`d on `Builder::spawn` → a transient EAGAIN
+  **panicked the heartbeat thread for the daemon's life** + leaked the token (5 sites).
+- **MED (mine):** the `tunnel_start` latch `.expect()`d on spawn → tunnel stuck `Starting` forever.
+
+Plus a systemic gap: **no `catch_unwind` + non-poison-tolerant loop locks** (one panic under
+`Mutex<State>` poisons it → cascading death), and **`.expect()`/`?` on spawns / unbounded
+`wait()`s** turning transient errors into crashes.
+
+**Round-2 fixes** (`037c0cc` 1f0d6b3 5bc2d0f 73eb8eb 61effc1) addressed all 24 + the 3
+regressions. A **round-2 verification** then found round-2 *itself* left 4 residuals (the
+host_totp fix repeated the bare-`thread::spawn` latch-leak; ChildReaper detach left one zombie
+per login; server line-read was post-hoc-bounded + truncating). **Round-3** (`6be0c1e`) fixed
+those: ChildReaper now **takes the child → drops pty fds (SIGHUP backgrounds the master) →
+reaps on a detached thread** (no block, no zombie, master survives); host_totp releases its
+latch on spawn-Err; server read is truly bounded + non-truncating. **Round-4** (`bc47af8`)
+converted the last 2 production bare `thread::spawn` to `Builder` — **production now has ZERO
+bare spawns.**
+
+A final read-only verification returned **GO**: all checks PASS, the ChildReaper's two prior
+failure modes are structurally impossible (take-before-drop + detached wait), and no round-2/3/4
+fix broke normal operation (login, master pool, tunnels, events all verified intact).
+
+### Invariant — EXTENDED
+
+To the original (in-flight guard + hard timeout + reap-on-every-path + off-loop + bounded
+collections), the audits added two rules that the fixes now follow everywhere:
+6. **Never `.expect()`/`?` a thread spawn; never `wait()` without a deadline (or on a detached
+   thread).** Every production spawn is `Builder::spawn` with the `Err` handled (release token /
+   reset status / fall back) — zero bare `thread::spawn` in production.
+7. **No panic while holding a lock; every long-lived loop is poison-tolerant.** Dispatch is
+   `catch_unwind`-wrapped (removes the poison source); both core loops use `lock_state()`
+   (`into_inner()` recovery) + per-tick `catch_unwind` (survive + continue).
+
+### Status
+Full workspace single-threaded: a2fa-core 125, a2fa-daemon 143, cli 15, tui 36 — 0 failures;
+Python compiles; release compiles. `rust-rewrite` ~72 commits ahead of main. **Not deployed.**
+Verdict: **GO** — no known reachable hang/crash/leak/deadlock; normal operation verified intact.
