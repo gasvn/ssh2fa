@@ -187,9 +187,13 @@ pub fn run() -> Result<()> {
                 },
                 Ok(Ok(None)) => {}
                 Ok(Err(e))   => log::error!("passwords.json migration failed (continuing): {e}"),
-                Err(_)       => log::error!(
-                    "passwords.json migration timed out (Keychain locked?) — continuing; \
-                     not persisted (no race); will retry next launch"
+                Err(_)       => log::warn!(
+                    "passwords.json migration timed out (Keychain locked?) — continuing un-migrated \
+                     (file left v1, not persisted, no race). It will retry next launch. CAUTION: if a \
+                     host is ADDED before migration succeeds, the new v2 file may omit the not-yet-\
+                     migrated hosts' auto_connect metadata; recover from the <passwords.json>.\
+                     pre-keychain-backup written before migration. Credentials themselves are safe in \
+                     the Keychain."
                 ),
             },
             Err(e) => log::error!("could not spawn migration worker ({e}); skipping migration this run"),

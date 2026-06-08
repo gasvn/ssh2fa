@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -150,16 +151,28 @@ pub fn load_tunnels(path: &Path) -> Vec<Tunnel> {
 /// the directory (mirrors tunnels.py `save()`). Only PERSISTED_FIELDS are
 /// written; runtime fields are dropped.
 pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
+    // UNIQUE temp path per call. The persist sites are intentionally off the
+    // State lock (no fsync under the lock — that would wedge the daemon), so two
+    // writers (two IPC handler threads, or a handler + a maintenance worker) can
+    // run save_tunnels concurrently. A SHARED "tunnels.json.tmp" would let them
+    // truncate-interleave each other's tmp or fail the rename with ENOENT. A
+    // per-call name (pid + monotonic counter) gives each writer its own tmp, so
+    // the atomic rename yields safe last-writer-wins: tunnels.json is always a
+    // complete snapshot from exactly one writer.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp_path = {
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
         let mut p = path.to_path_buf();
+        let suffix = format!(".{pid}.{seq}.tmp");
         let file_name = p
             .file_name()
             .map(|n| {
                 let mut s = n.to_os_string();
-                s.push(".tmp");
+                s.push(&suffix);
                 s
             })
-            .unwrap_or_else(|| std::ffi::OsString::from("tunnels.json.tmp"));
+            .unwrap_or_else(|| std::ffi::OsString::from(format!("tunnels.json{suffix}")));
         p.set_file_name(file_name);
         p
     };
@@ -186,17 +199,20 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
     let json_text = serde_json::to_string_pretty(&payload)
         .map_err(|e| Error::Internal(format!("serialize tunnels: {e}")))?;
 
-    // Write to tmp, fsync, then rename
-    {
-        let mut f = std::fs::File::create(&tmp_path)
-            .map_err(Error::Io)?;
-        f.write_all(json_text.as_bytes())
-            .map_err(Error::Io)?;
+    // Write to the unique tmp, fsync, then atomically rename. On ANY failure,
+    // unlink the unique tmp so an aborted writer can't leak temp files.
+    let write_result = (|| -> Result<()> {
+        let mut f = std::fs::File::create(&tmp_path).map_err(Error::Io)?;
+        f.write_all(json_text.as_bytes()).map_err(Error::Io)?;
         f.flush().map_err(Error::Io)?;
         f.sync_all().map_err(Error::Io)?;
+        std::fs::rename(&tmp_path, path).map_err(Error::Io)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
-
-    std::fs::rename(&tmp_path, path).map_err(Error::Io)?;
+    write_result?;
 
     // fsync the directory so the rename is durable
     if let Some(dir) = path.parent() {
@@ -241,5 +257,50 @@ mod tests {
     fn missing_file_is_empty() {
         let d = tempfile::tempdir().unwrap();
         assert!(load_tunnels(&d.path().join("nope.json")).is_empty());
+    }
+
+    #[test]
+    fn concurrent_saves_yield_valid_file_and_no_tmp_leak() {
+        // With a SHARED tmp path, concurrent off-lock saves truncate-interleave
+        // or fail the rename with ENOENT (→ unwrap panic here). With a per-call
+        // unique tmp, every writer renames its own complete snapshot, so the
+        // published file is always valid and no .tmp leaks.
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(
+            &p,
+            r#"{"tunnels":{"t1":{"local_port":9001,"remote_port":9001,"status":"idle"}}}"#,
+        )
+        .unwrap();
+        let base = load_tunnels(&p);
+        assert_eq!(base.len(), 1);
+
+        let mut handles = vec![];
+        for _ in 0..16 {
+            let path = p.clone();
+            let tuns = base.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    save_tunnels(&path, &tuns).expect("concurrent save must not fail");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Published file is a complete, valid snapshot.
+        let final_tuns = load_tunnels(&p);
+        assert_eq!(final_tuns.len(), 1);
+        assert_eq!(final_tuns[0].name, "t1");
+
+        // No leaked per-call tmp files.
+        let leftover: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(leftover.is_empty(), "no .tmp files should leak, found {leftover:?}");
     }
 }
