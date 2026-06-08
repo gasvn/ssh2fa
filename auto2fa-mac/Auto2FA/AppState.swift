@@ -49,6 +49,10 @@ final class AppState: ObservableObject {
     let client = BackendClient()
     private var eventTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    /// Consecutive background-reload failures. A single transient timeout (a
+    /// busy daemon, a brief blip) is NOT shown to the user — only a sustained
+    /// run of failures surfaces a (friendly) banner. Reset on any success.
+    private var reloadFailStreak = 0
 
     func bootstrap() async {
         NSLog("[Auto2FA] bootstrap: connecting to daemon")
@@ -179,8 +183,22 @@ final class AppState: ObservableObject {
                     self.lastNotchSignature[t.name] = t.status
                 }
             }
+            // Success → the daemon is reachable. Clear any stale transient
+            // banner and reset the failure streak.
+            reloadFailStreak = 0
+            if connectionError != nil { connectionError = nil }
         } catch {
-            connectionError = error.localizedDescription
+            // A single background-poll timeout is almost always a transient blip
+            // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
+            // and the next 5s poll usually succeeds. Don't alarm the user on the
+            // first miss; only surface a FRIENDLY banner after several
+            // consecutive failures. Genuine socket disconnects are handled
+            // separately by the connection watcher (startConnectionWatcher).
+            reloadFailStreak += 1
+            NSLog("[Auto2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
+            if reloadFailStreak >= 3 {
+                connectionError = "Daemon is slow to respond — retrying…"
+            }
         }
     }
 
@@ -188,7 +206,13 @@ final class AppState: ObservableObject {
         do {
             self.hosts = try await client.listHosts()
             updateDockBadge()
-        } catch { connectionError = error.localizedDescription }
+            if connectionError != nil { connectionError = nil }
+        } catch {
+            // Event-driven refresh — swallow transient errors (don't flash a
+            // banner). reloadAll's streak logic + the connection watcher own
+            // the user-visible connection state.
+            NSLog("[Auto2FA] reloadHostsOnly failed: \(error.localizedDescription)")
+        }
     }
 
     func reloadTunnelsOnly() async {
@@ -200,7 +224,11 @@ final class AppState: ObservableObject {
             // a future tunnel re-using an old name gets a real first notch.
             let liveNames = Set(self.tunnels.map(\.name))
             self.lastNotchSignature = self.lastNotchSignature.filter { liveNames.contains($0.key) }
-        } catch { connectionError = error.localizedDescription }
+            if connectionError != nil { connectionError = nil }
+        } catch {
+            // Event-driven refresh — swallow transient errors (see reloadHostsOnly).
+            NSLog("[Auto2FA] reloadTunnelsOnly failed: \(error.localizedDescription)")
+        }
     }
 
     /// Set the Dock-tile badge to the # of alive tunnels (or to the # of
