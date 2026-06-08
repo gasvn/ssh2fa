@@ -81,12 +81,17 @@ struct TunnelRow: View {
             }
             .frame(minWidth: 90, alignment: .leading)
 
-            // Ports :local → :remote — fixed column (mono).
+            // Ports :local → :remote — sized to its content so the ports are
+            // NEVER clipped. u16 ports can be 5 digits each (":65535 → :65535"),
+            // which overflowed the old fixed 110pt column and clipped the remote
+            // port's tail. fixedSize lets it take its natural width at any font
+            // size; minWidth keeps short ports aligned with the column.
             Text(":\(tunnel.localPort) → :\(tunnel.remotePort)")
                 .font(.rowIdentifier)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(width: 110, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 110, alignment: .leading)
 
             // Node (secondary; "(no node)" tertiary) — flexible column.
             Group {
