@@ -62,7 +62,10 @@ pub fn forward_events(mut stream: UnixStream, rx: mpsc::Receiver<String>) {
 /// spawned.
 pub fn register(state: &Arc<Mutex<State>>) -> Option<mpsc::Receiver<String>> {
     let (tx, rx) = mpsc::sync_channel::<String>(SUBSCRIBER_CHANNEL_CAP);
-    if state.lock().unwrap().subscribe(tx) {
+    // Poison-tolerant: register() runs OUTSIDE the dispatch catch_unwind, so a
+    // raw .lock().unwrap() would turn a one-off State poison into a permanent
+    // outage of event subscription for every client. lock_state recovers.
+    if crate::lock_state(state).subscribe(tx) {
         Some(rx)
     } else {
         None

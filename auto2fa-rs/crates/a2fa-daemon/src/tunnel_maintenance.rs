@@ -59,10 +59,15 @@ pub fn start_tunnel_maintenance(
     runtime: Arc<TunnelRuntime>,
     post_connect_running: Arc<Mutex<HashSet<String>>>,
 ) {
-    std::thread::Builder::new()
+    // Degrade, never crash: see start_heartbeat. A panic here (the LAST of the
+    // three boot spawns, after boot_autostart already fired) would crashloop the
+    // daemon and re-trigger the spawn storm on every launchd respawn.
+    if let Err(e) = std::thread::Builder::new()
         .name("tunnel-maintenance".into())
         .spawn(move || maintenance_loop(state, runtime, post_connect_running))
-        .expect("failed to spawn tunnel-maintenance thread");
+    {
+        log::error!("failed to spawn tunnel-maintenance thread ({e}); tunnel auto-maintenance disabled this run");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +351,7 @@ fn run_squeue_check(
     let jump = match &snap.active_jump {
         Some(j) => j.clone(),
         None => {
-            let guard = state.lock().unwrap();
+            let guard = crate::lock_state(state);
             let candidates = guard
                 .tunnels
                 .iter()
@@ -381,7 +386,7 @@ fn run_squeue_check(
 
     // Check that the jump master is ready (re-snapshot under brief lock).
     let master_ready = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard
             .hosts
             .iter()
@@ -403,7 +408,7 @@ fn run_squeue_check(
         Err(e) => {
             warn!("[tunnel:{name}] squeue discovery error: {e}");
             // Update last_msg in State.
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                 t.last_msg = format!("squeue err: {}", &e.to_string()[..e.to_string().len().min(30)]);
             }
@@ -437,7 +442,7 @@ fn run_squeue_check(
         // left squeue.  Marking it Stale stops that futile loop (the new
         // `tunnel_action` Stale arm returns Skip).
         let should_mark_stale = {
-            let guard = state.lock().unwrap();
+            let guard = crate::lock_state(state);
             guard
                 .tunnels
                 .iter()
@@ -463,7 +468,7 @@ fn run_squeue_check(
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
 
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                 t.status = TunnelStatus::Stale;
                 t.active_jump = None;
@@ -686,7 +691,7 @@ fn spawn_tunnel_start_with_runtime(
                     warn!("[tunnel:{name}] maintenance: spawn failed: {e}");
                     let msg = format!("spawn failed: {e}");
                     runtime.record(&name, now_unix(), &msg);
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
@@ -713,7 +718,7 @@ fn spawn_tunnel_start_with_runtime(
 
                     // Update State.
                     {
-                        let mut guard = state.lock().unwrap();
+                        let mut guard = crate::lock_state(&state);
                         if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                             t.status = TunnelStatus::Alive;
                             t.wants_alive = true;
@@ -724,10 +729,14 @@ fn spawn_tunnel_start_with_runtime(
                         }
                     }
 
-                    // Persist wants_alive.
+                    // Persist wants_alive (off-lock — never fsync under the
+                    // State lock, which would freeze tick/heartbeat/IPC).
                     {
-                        let guard = state.lock().unwrap();
-                        let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+                        let (path, tunnels) = {
+                            let g = crate::lock_state(&state);
+                            (g.tunnels_path.clone(), g.tunnels.clone())
+                        };
+                        let _ = save_tunnels(&path, &tunnels);
                     }
 
                     // Post-connect hook.
@@ -745,7 +754,7 @@ fn spawn_tunnel_start_with_runtime(
                 Ok((false, _child)) => {
                     warn!("[tunnel:{name}] maintenance: probe timed out");
                     runtime.record(&name, now_unix(), "probe timed out");
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
@@ -757,7 +766,7 @@ fn spawn_tunnel_start_with_runtime(
                     warn!("[tunnel:{name}] maintenance: probe error: {e}");
                     let msg = format!("probe error: {e}");
                     runtime.record(&name, now_unix(), &msg);
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;

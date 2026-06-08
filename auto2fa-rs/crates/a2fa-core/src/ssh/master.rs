@@ -219,13 +219,18 @@ pub fn start_master(
     //       -o ControlPersist=yes \
     //       <host>
     //
-    // Note: -v and -E are kept for debuggability (written to /tmp); they do
-    // not affect connection semantics.
+    // Note: -E sends ssh's own diagnostics to a per-slot file under /tmp for
+    // debuggability; it does not affect connection semantics. We deliberately
+    // do NOT pass -v: at verbose level a long-lived ControlPersist master
+    // streams keepalive/debug spam into this append-only file forever (observed
+    // at 8+ MB per slot), and nothing rotates it — a slow-burn /tmp (boot
+    // volume) fill that can wedge the whole machine. Default verbosity keeps the
+    // file tiny. Truncate any pre-existing (possibly huge, -v-era) file first.
     let log_file = format!("/tmp/auto2fa_ssh_master_{}_{index}.log", state.host);
+    let _ = std::fs::OpenOptions::new().write(true).truncate(true).open(&log_file);
     let control_path_str = path.to_string_lossy().into_owned();
 
     let argv: Vec<String> = vec![
-        "-v".into(),
         "-E".into(),      log_file,
         "-o".into(),      "StrictHostKeyChecking=no".into(),
         "-o".into(),      "UserKnownHostsFile=/dev/null".into(),

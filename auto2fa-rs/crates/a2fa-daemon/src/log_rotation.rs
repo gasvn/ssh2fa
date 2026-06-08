@@ -12,6 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const LOG_PATH: &str = "/tmp/auto2fa_daemon.log";
 
+/// How many rotated `<log>.<secs>.gz` archives to keep. Older ones are pruned
+/// on each rotation so the archives can't accumulate without bound in /tmp.
+const KEEP_ROTATIONS: usize = 3;
+
 /// Convenience entry-point used by `main.rs`.
 pub fn rotate_daemon_log() {
     rotate_log_if_huge(LOG_PATH, DEFAULT_MAX_BYTES);
@@ -61,7 +65,44 @@ fn try_rotate(path: &str, max_bytes: u64) -> io::Result<()> {
         .truncate(true)
         .open(path)?;
 
+    // Prune old archives so .gz files don't accumulate forever in /tmp.
+    prune_old_rotations(path, KEEP_ROTATIONS);
+
     Ok(())
+}
+
+/// Keep only the newest `keep` `<path>.<secs>.gz` archives, deleting older ones.
+/// Best-effort: errors are swallowed (pruning must never crash the daemon).
+/// The `<secs>` timestamp is fixed-width for the next ~250 years, so a lexical
+/// sort of the file names is also chronological.
+fn prune_old_rotations(path: &str, keep: usize) {
+    let p = std::path::Path::new(path);
+    let (dir, prefix) = match (p.parent(), p.file_name().and_then(|n| n.to_str())) {
+        (Some(d), Some(f)) => (d.to_path_buf(), format!("{f}.")),
+        _ => return,
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut archives: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|pb| {
+            pb.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&prefix) && n.ends_with(".gz"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if archives.len() <= keep {
+        return;
+    }
+    archives.sort(); // chronological by embedded unix-secs
+    let remove_count = archives.len() - keep;
+    for old in archives.into_iter().take(remove_count) {
+        let _ = fs::remove_file(old);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +199,34 @@ mod tests {
         assert!(gz_found, "a .gz rotated file should exist after rotation");
 
         cleanup(&p);
+    }
+
+    #[test]
+    fn prune_keeps_only_newest_archives() {
+        let base = tmp_path("a2fa_log_prune_test.log");
+        cleanup(&base);
+        let base_str = base.to_str().unwrap();
+
+        // Create 6 fake rotated archives with ascending unix-secs suffixes.
+        let mut made = Vec::new();
+        for secs in [100u64, 200, 300, 400, 500, 600] {
+            let gz = format!("{base_str}.{secs}.gz");
+            fs::write(&gz, b"x").unwrap();
+            made.push(gz);
+        }
+
+        prune_old_rotations(base_str, 3);
+
+        // Only the 3 newest (400,500,600) should survive.
+        for secs in [100u64, 200, 300] {
+            assert!(!std::path::Path::new(&format!("{base_str}.{secs}.gz")).exists(),
+                "old archive {secs} should be pruned");
+        }
+        for secs in [400u64, 500, 600] {
+            assert!(std::path::Path::new(&format!("{base_str}.{secs}.gz")).exists(),
+                "recent archive {secs} should be kept");
+        }
+        cleanup(&base);
     }
 
     #[test]

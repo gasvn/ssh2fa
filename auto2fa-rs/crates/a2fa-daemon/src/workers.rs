@@ -401,13 +401,13 @@ fn spawn_tunnel_start_inner(
                     }
                     drop(guard);
 
-                    // Persist wants_alive.
+                    // Persist wants_alive (off-lock — no fsync under State lock).
                     {
-                        let guard = state.lock().unwrap();
-                        let _ = a2fa_core::config::save_tunnels(
-                            &guard.tunnels_path,
-                            &guard.tunnels,
-                        );
+                        let (path, tunnels) = {
+                            let g = crate::lock_state(&state);
+                            (g.tunnels_path.clone(), g.tunnels.clone())
+                        };
+                        let _ = a2fa_core::config::save_tunnels(&path, &tunnels);
                     }
 
                     // Post-connect hook.

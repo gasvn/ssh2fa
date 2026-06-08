@@ -21,6 +21,7 @@ use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
 use a2fa_core::ssh::control::update_symlink;
+use a2fa_core::sys::run_cmd_bounded;
 use a2fa_core::totp::{extract_secret, totp_now_detailed};
 use serde_json::{json, Value};
 
@@ -261,15 +262,57 @@ pub fn host_toggle_managed(
 // host_mount_toggle
 // ---------------------------------------------------------------------------
 
+/// Per-host in-flight latch for mount/unmount, mirroring `totp_in_flight`.
+///
+/// sshfs/umount can block for many seconds (or wedge entirely on a dead login
+/// node). Without this latch, repeated `host_mount_toggle` calls for the same
+/// host (a held key, a TUI auto-refresh) each spawn ANOTHER sshfs→ssh subtree,
+/// piling up wedged mounts/processes — the unbounded-spawn class. The latch caps
+/// it to at most one mount op per host in flight; concurrent callers get "busy".
+fn mount_in_flight() -> &'static Mutex<HashSet<String>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// RAII guard releasing a host's `mount_in_flight` entry on every exit path.
+struct MountInFlightGuard {
+    host: String,
+}
+
+impl Drop for MountInFlightGuard {
+    fn drop(&mut self) {
+        mount_in_flight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.host);
+    }
+}
+
 /// Toggle sshfs mount for a host: mount if not mounted, unmount if mounted.
 ///
-/// Runs the mount/unmount off the State lock to avoid blocking the daemon.
+/// Every external command (which/umount/sshfs) runs through `run_cmd_bounded`
+/// with a hard kill-on-deadline so a wedged login node can never pin the handler
+/// thread forever; sshfs carries `ConnectTimeout=10` so its embedded ssh fails
+/// fast; and a per-host in-flight latch prevents duplicate mount subtrees.
 /// Mirrors `SSHHostManager.toggle_mount` in backend.py.
 pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
     let host_name = params["host"]
         .as_str()
         .ok_or_else(|| Error::BadParams("host required".into()))?
         .to_owned();
+
+    // Claim the per-host latch FIRST (RAII release on every path). A second
+    // toggle for the same host while one is in flight returns "busy" instead of
+    // stacking another sshfs→ssh subtree.
+    {
+        let mut inflight = mount_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(host_name.clone()) {
+            return Err(Error::Internal(format!(
+                "mount/unmount already in progress for {host_name}"
+            )));
+        }
+    }
+    let _mount_guard = MountInFlightGuard { host: host_name.clone() };
 
     // Snapshot current mount state.
     let is_mounted = {
@@ -288,13 +331,11 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         return Err(Error::BadParams("invalid host name for mount".into()));
     }
 
-    // Check sshfs is installed.
-    if std::process::Command::new("which")
-        .arg("sshfs")
-        .output()
-        .map(|o| !o.status.success())
-        .unwrap_or(true)
-    {
+    // Check sshfs is installed (bounded — `which` is instant, but never block).
+    let sshfs_ok = run_cmd_bounded("which", &["sshfs"], std::time::Duration::from_secs(5))
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !sshfs_ok {
         return Err(Error::Internal(
             "sshfs not installed — install macFUSE + sshfs to use this feature".into(),
         ));
@@ -314,9 +355,9 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             }
         }
         let mp_str = mount_point.to_string_lossy().into_owned();
-        let result = std::process::Command::new("umount")
-            .args(["-f", &mp_str])
-            .output();
+        // Bounded: a kernel-stuck `umount -f` on a wedged macFUSE mount must not
+        // pin the handler thread forever.
+        let result = run_cmd_bounded("umount", &["-f", &mp_str], std::time::Duration::from_secs(10));
         let unmounted = result
             .map(|o| o.status.success() && !is_mount_point(&mount_point))
             .unwrap_or(false);
@@ -335,17 +376,22 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             }
         }
         let mp_str2 = mount_point.to_string_lossy().into_owned();
-        let result = std::process::Command::new("sshfs")
-            .args([
-                &format!("{host_name}:/"),
-                &mp_str2,
-                "-o",
-                &format!(
-                    "reconnect,ServerAliveInterval=15,volname={host_name},\
-                     StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
-                ),
-            ])
-            .output();
+        let src = format!("{host_name}:/");
+        // ConnectTimeout=10 makes the embedded ssh fail fast on a dead/slow
+        // login node (the single highest-value change — without it sshfs hangs
+        // on TCP connect / auth and a stat of the half-made mount can freeze
+        // Finder/Spotlight machine-wide). run_cmd_bounded is a generous 45s
+        // backstop: sshfs daemonizes after a successful mount so .wait already
+        // returns on success; the deadline only fires on a never-returning child.
+        let opts = format!(
+            "reconnect,ConnectTimeout=10,ServerAliveInterval=15,ServerAliveCountMax=3,\
+             volname={host_name},StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
+        );
+        let result = run_cmd_bounded(
+            "sshfs",
+            &[&src, &mp_str2, "-o", &opts],
+            std::time::Duration::from_secs(45),
+        );
         let mounted = result
             .map(|o| o.status.success() && is_mount_point(&mount_point))
             .unwrap_or(false);
@@ -908,6 +954,43 @@ mod tests {
         );
         // Clean up.
         totp_in_flight().lock().unwrap().remove(host);
+    }
+
+    #[test]
+    fn mount_in_flight_blocks_second_concurrent_claim() {
+        let host = "mount-guard-test-host";
+        mount_in_flight().lock().unwrap().remove(host);
+        assert!(
+            mount_in_flight().lock().unwrap().insert(host.to_owned()),
+            "first mount claim must succeed"
+        );
+        assert!(
+            !mount_in_flight().lock().unwrap().insert(host.to_owned()),
+            "second concurrent mount claim must be blocked (no duplicate sshfs subtree)"
+        );
+        {
+            let _g = MountInFlightGuard { host: host.to_owned() };
+        }
+        assert!(
+            mount_in_flight().lock().unwrap().insert(host.to_owned()),
+            "mount claim must succeed after the guard released the latch"
+        );
+        mount_in_flight().lock().unwrap().remove(host);
+    }
+
+    #[test]
+    fn host_mount_toggle_busy_when_in_flight() {
+        // With the latch already held for a host, host_mount_toggle returns a
+        // busy error instead of spawning a duplicate mount op.
+        let host = "mount-busy-test-host";
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        mount_in_flight().lock().unwrap().insert(host.to_owned());
+        let err = host_mount_toggle(&state, &json!({"host": host})).unwrap_err();
+        assert!(
+            matches!(err, Error::Internal(ref m) if m.contains("already in progress")),
+            "expected busy error, got {err:?}"
+        );
+        mount_in_flight().lock().unwrap().remove(host);
     }
 
     #[test]

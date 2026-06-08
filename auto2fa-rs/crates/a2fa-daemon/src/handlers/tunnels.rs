@@ -30,6 +30,24 @@ use serde_json::{json, Value};
 use crate::tunnel_runtime::TunnelRuntime;
 use crate::workers::{spawn_tunnel_start, spawn_tunnel_start_with_runtime};
 
+/// Persist the tunnel list to disk WITHOUT holding the State lock across the
+/// fsync.
+///
+/// `save_tunnels` fsyncs, whose latency is unbounded under disk pressure / a
+/// wedged FS (and the daemon manages sshfs mounts on the same machine). Holding
+/// `Mutex<State>` across that fsync freezes the 0.5 s tick loop, the 3 s
+/// heartbeat, the tunnel-maintenance loop, AND every IPC handler — a whole-
+/// daemon wedge until the fsync returns. Snapshot path+tunnels under a brief
+/// (poison-tolerant) lock, drop it, then save. Best-effort, matching the
+/// already-correct off-lock sites (tunnel_add / tunnel_remove).
+pub(crate) fn persist_tunnels(state: &Arc<Mutex<State>>) {
+    let (path, tunnels) = {
+        let g = crate::lock_state(state);
+        (g.tunnels_path.clone(), g.tunnels.clone())
+    };
+    let _ = save_tunnels(&path, &tunnels);
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot helper (mirrors `_tunnel_snapshot` in daemon.py)
 // ---------------------------------------------------------------------------
@@ -500,11 +518,8 @@ pub fn tunnel_set_node(
         (prev_node, prev_status)
     };
 
-    // Persist the new node assignment.
-    {
-        let guard = state.lock().unwrap();
-        let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
-    }
+    // Persist the new node assignment (off-lock — no fsync under State lock).
+    persist_tunnels(state);
 
     let params_with_name = json!({"name": name});
 
@@ -550,8 +565,7 @@ pub fn tunnel_set_autostart(state: &Arc<Mutex<State>>, params: &Value) -> Result
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 
@@ -591,8 +605,7 @@ pub fn tunnel_set_jump_candidates(state: &Arc<Mutex<State>>, params: &Value) -> 
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 
@@ -624,8 +637,7 @@ pub fn tunnel_set_post_connect(state: &Arc<Mutex<State>>, params: &Value) -> Res
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 
@@ -661,8 +673,7 @@ pub fn tunnel_set_tags(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 
@@ -694,8 +705,7 @@ pub fn tunnel_set_url_path(state: &Arc<Mutex<State>>, params: &Value) -> Result<
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 
@@ -750,8 +760,7 @@ pub fn tunnel_rename(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
         tunnel_snapshot(t)
     };
 
-    let guard = state.lock().unwrap();
-    let _ = save_tunnels(&guard.tunnels_path, &guard.tunnels);
+    persist_tunnels(state);
     Ok(snap)
 }
 

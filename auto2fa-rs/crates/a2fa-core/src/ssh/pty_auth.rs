@@ -129,6 +129,17 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Chunk size for pty reads.
 const READ_BUF: usize = 4096;
 
+/// Hard cap on the retained login transcript.
+///
+/// A misbehaving / malicious / merely chatty server can stream data into the
+/// pty for up to `LOGIN_TIMEOUT`. Without a cap, `buf` would grow to hundreds of
+/// MB (heap exhaustion across concurrent login workers) AND every loop iteration
+/// re-runs the prompt regexes over the WHOLE buffer (O(n²) CPU) — the exact
+/// memory+CPU exhaustion class that has hung this machine. All prompts
+/// (Password:/Verification code:/shell `$`) appear at the TAIL, so retaining
+/// only the trailing window keeps detection correct while bounding both.
+const MAX_TRANSCRIPT: usize = 256 * 1024;
+
 // ---------------------------------------------------------------------------
 // Compiled regexes (constructed once per call — regex! macro not available)
 // ---------------------------------------------------------------------------
@@ -287,6 +298,7 @@ pub fn run_login(
             Ok(n) => {
                 let chunk = String::from_utf8_lossy(&raw[..n]);
                 buf.push_str(&chunk);
+                cap_transcript(&mut buf, MAX_TRANSCRIPT);
                 debug!("pty chunk: {:?}", &chunk);
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -413,6 +425,21 @@ pub fn run_login(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Keep `buf` bounded by retaining only its trailing window once it exceeds
+/// `max`. Prompts always appear at the tail, so dropping the head never breaks
+/// detection. Drains to a char boundary so the `String` stays valid UTF-8.
+fn cap_transcript(buf: &mut String, max: usize) {
+    if buf.len() <= max {
+        return;
+    }
+    // Target keeping the last max/2 bytes (leaves headroom before the next cap).
+    let mut cut = buf.len() - max / 2;
+    while cut < buf.len() && !buf.is_char_boundary(cut) {
+        cut += 1;
+    }
+    buf.drain(..cut);
+}
+
 fn write_line(w: &mut dyn Write, s: &str) -> Result<()> {
     let line = format!("{s}\n");
     w.write_all(line.as_bytes())
@@ -494,6 +521,45 @@ mod tests {
             waits: waits.clone(),
         });
         (ChildReaper::new(child), kills, waits)
+    }
+
+    #[test]
+    fn cap_transcript_bounds_size_and_preserves_tail_prompt() {
+        let max = 1024;
+        let mut buf = String::new();
+        // Simulate a server flooding the pty, then finally emitting the prompt.
+        for _ in 0..10_000 {
+            buf.push_str("noise noise noise noise ");
+            cap_transcript(&mut buf, max);
+            // Must stay bounded at every step (never balloon to MBs).
+            assert!(buf.len() <= max, "transcript exceeded cap: {}", buf.len());
+        }
+        buf.push_str("Password:");
+        cap_transcript(&mut buf, max);
+        assert!(buf.len() <= max);
+        // The tail prompt the expect loop matches on must survive.
+        assert!(buf.ends_with("Password:"), "tail prompt must be retained: {buf:?}");
+        let pat = Patterns::new().unwrap();
+        assert!(pat.password.is_match(&buf), "password regex must still match after capping");
+    }
+
+    #[test]
+    fn cap_transcript_noop_when_under_cap() {
+        let mut buf = "short transcript ending in Password:".to_string();
+        let before = buf.clone();
+        cap_transcript(&mut buf, 256 * 1024);
+        assert_eq!(buf, before, "under-cap transcript must be untouched");
+    }
+
+    #[test]
+    fn cap_transcript_keeps_valid_utf8_on_multibyte_boundary() {
+        let max = 16;
+        // Fill with a multibyte char so a naive byte cut would split it.
+        let mut buf = "🔒".repeat(50); // 4 bytes each
+        cap_transcript(&mut buf, max);
+        assert!(buf.len() <= max);
+        // If this is reachable, the String is valid UTF-8 (would have panicked otherwise).
+        assert!(buf.chars().all(|c| c == '🔒'));
     }
 
     #[test]

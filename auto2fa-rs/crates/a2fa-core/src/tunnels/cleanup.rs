@@ -4,7 +4,9 @@
 //! [`cleanup_orphans`] is called once at boot (after State is loaded).  It is
 //! **best-effort**: every error is logged as a warning and execution continues.
 
-use std::process::Command;
+use std::time::Duration;
+
+use crate::sys::run_cmd_bounded;
 
 // ---------------------------------------------------------------------------
 // Public helpers (also exposed for unit-testing)
@@ -58,13 +60,12 @@ pub fn cleanup_orphans(local_ports: &[u16]) -> usize {
         let pattern = orphan_pattern(port);
 
         // --- pgrep -----------------------------------------------------------
-        let pgrep_out = match Command::new("pgrep")
-            .args(["-f", &pattern])
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("cleanup_orphans: pgrep failed for port {port}: {e}");
+        // Bounded: a wedged pgrep must never pin the boot thread (this runs
+        // before the accept loop; a stall here would wedge the whole daemon).
+        let pgrep_out = match run_cmd_bounded("pgrep", &["-f", &pattern], Duration::from_secs(2)) {
+            Some(o) => o,
+            None => {
+                log::warn!("cleanup_orphans: pgrep timed out / failed for port {port}");
                 continue;
             }
         };
@@ -86,13 +87,14 @@ pub fn cleanup_orphans(local_ports: &[u16]) -> usize {
             };
 
             // --- ps confirmation --------------------------------------------
-            let ps_out = match Command::new("ps")
-                .args(["-o", "args=", "-p", pid_str.trim()])
-                .output()
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    log::warn!("cleanup_orphans: ps failed for pid {pid}: {e}");
+            let ps_out = match run_cmd_bounded(
+                "ps",
+                &["-o", "args=", "-p", pid_str.trim()],
+                Duration::from_secs(2),
+            ) {
+                Some(o) => o,
+                None => {
+                    log::warn!("cleanup_orphans: ps timed out / failed for pid {pid}");
                     continue;
                 }
             };
@@ -112,22 +114,20 @@ pub fn cleanup_orphans(local_ports: &[u16]) -> usize {
             }
 
             // --- SIGTERM -----------------------------------------------------
-            let kill_result = Command::new("kill")
-                .args(["-TERM", pid_str.trim()])
-                .output();
+            let kill_result = run_cmd_bounded("kill", &["-TERM", pid_str.trim()], Duration::from_secs(1));
 
             match kill_result {
-                Ok(o) if o.status.success() => {
+                Some(o) if o.status.success() => {
                     log::info!("cleanup_orphans: sent SIGTERM to stray tunnel pid {pid} (port {port})");
                     reaped += 1;
                 }
-                Ok(o) => {
+                Some(o) => {
                     // Already gone or permission denied — not an error.
                     let stderr = String::from_utf8_lossy(&o.stderr);
                     log::warn!("cleanup_orphans: kill -TERM {pid} failed: {stderr}");
                 }
-                Err(e) => {
-                    log::warn!("cleanup_orphans: kill command error for pid {pid}: {e}");
+                None => {
+                    log::warn!("cleanup_orphans: kill -TERM {pid} timed out / failed");
                 }
             }
         }

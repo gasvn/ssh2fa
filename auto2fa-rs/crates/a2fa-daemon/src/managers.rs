@@ -795,10 +795,17 @@ pub fn start_heartbeat(
     managers: Arc<HostManagers>,
     registry: Arc<OtpRegistry>,
 ) {
-    std::thread::Builder::new()
+    // Degrade, never crash: a transient EAGAIN on spawn must NOT abort the
+    // process. .expect() here would panic the main thread → process exit →
+    // launchd KeepAlive respawns → boot_autostart re-fires the login spawn
+    // wave → the exact spawn-storm/machine-hang feedback loop. Log and continue
+    // with auto-reconnect disabled for this process lifetime instead.
+    if let Err(e) = std::thread::Builder::new()
         .name("heartbeat".into())
         .spawn(move || heartbeat_loop(state, managers, registry))
-        .expect("failed to spawn heartbeat thread");
+    {
+        log::error!("failed to spawn heartbeat thread ({e}); auto-reconnect disabled this run");
+    }
 }
 
 fn heartbeat_loop(

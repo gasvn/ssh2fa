@@ -1,6 +1,79 @@
 //! Process-level system resource configuration.
 
+use std::io::Read;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
 use log::{info, warn};
+
+/// Run an external command with a HARD timeout, killing+reaping it on deadline.
+///
+/// This is the generic sibling of `ssh::control::run_ssh_bounded` for non-ssh
+/// helpers (pgrep/ps/kill, which/umount/sshfs). It enforces the closing
+/// invariant for any blocking external spawn: a hard kill-on-deadline plus
+/// `wait()`-reap on EVERY exit path, so a wedged child can never pin the caller
+/// thread forever and never leaks a zombie/fd.
+///
+/// Returns `Some(Output)` if the child exits before `timeout`, `None` if it had
+/// to be killed (deadline) or could not be spawned. stdin is `/dev/null`;
+/// stdout/stderr are captured.
+///
+/// NOTE: output is read only AFTER the child exits, so this is intended for
+/// commands that produce a SMALL amount of output (well under the ~64 KiB pipe
+/// buffer). All current callers (pgrep/ps/kill/which/umount/sshfs) qualify; a
+/// child that floods stdout could block on a full pipe and then be killed on
+/// the deadline — acceptable for these helpers, not a general streaming runner.
+pub fn run_cmd_bounded(program: &str, args: &[&str], timeout: Duration) -> Option<Output> {
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("run_cmd_bounded: spawn {program} failed: {e}");
+            return None;
+        }
+    };
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Child reaped by try_wait; drain the (small) captured output.
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
+                }
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Some(Output { status, stdout, stderr });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    warn!(
+                        "run_cmd_bounded: {program} exceeded {}s — killing",
+                        timeout.as_secs()
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait(); // reap so no zombie
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                warn!("run_cmd_bounded: try_wait {program} failed: {e}");
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
 
 /// Target soft limit for open file descriptors.
 ///
@@ -112,6 +185,32 @@ mod tests {
                 assert_eq!(after, before, "no-op call must leave the limit unchanged");
             }
         }
+    }
+
+    #[test]
+    fn run_cmd_bounded_returns_output_for_fast_command() {
+        let out = run_cmd_bounded("/bin/echo", &["hello"], Duration::from_secs(5))
+            .expect("echo should complete well within timeout");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+    }
+
+    #[test]
+    fn run_cmd_bounded_kills_on_deadline() {
+        let start = Instant::now();
+        let out = run_cmd_bounded("/bin/sleep", &["10"], Duration::from_millis(300));
+        let elapsed = start.elapsed();
+        assert!(out.is_none(), "a 10s sleep must be killed by a 300ms deadline");
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "must return shortly after the deadline, not after the child's full runtime (elapsed {elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn run_cmd_bounded_none_for_missing_program() {
+        let out = run_cmd_bounded("/nonexistent/program/zzz", &[], Duration::from_secs(1));
+        assert!(out.is_none(), "a missing program must yield None, not panic");
     }
 
     #[test]

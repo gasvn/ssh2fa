@@ -148,12 +148,39 @@ pub fn run() -> Result<()> {
     // 5-pre. Migrate passwords.json v1 → v2 (one-time, idempotent).
     //        Must run BEFORE State::new, which calls load_meta and silently
     //        returns zero hosts for any non-v2 file.
+    //        Bounded: migrate_v1_to_v2 writes to the Keychain (SecItem*, which
+    //        serializes process-wide and blocks indefinitely on a locked /
+    //        prompting Keychain). Run it on a worker with a hard join timeout so
+    //        a locked Keychain at login/reboot can never wedge the boot thread
+    //        (which would never reach the accept loop → launchd respawns into
+    //        the same wedge → hard-reboot-only crashloop). On the already-v2
+    //        machine this short-circuits instantly. On timeout we proceed with
+    //        the file still v1 (load yields 0 hosts; migration retries next
+    //        launch) rather than block forever.
     {
-        let kc = a2fa_core::creds::keychain::KeychainStore;
-        match a2fa_core::creds::migrate::migrate_passwords_file_if_needed(&kc, &passwords_p) {
-            Ok(true)  => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
-            Ok(false) => {}
-            Err(e)    => log::error!("passwords.json migration failed (continuing): {e}"),
+        let passwords_for_migrate = passwords_p.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<bool, String>>(1);
+        let spawn_res = std::thread::Builder::new()
+            .name("creds-migrate".into())
+            .spawn(move || {
+                let kc = a2fa_core::creds::keychain::KeychainStore;
+                let r = a2fa_core::creds::migrate::migrate_passwords_file_if_needed(
+                    &kc,
+                    &passwords_for_migrate,
+                )
+                .map_err(|e| e.to_string());
+                let _ = tx.send(r);
+            });
+        match spawn_res {
+            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(Ok(true))  => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
+                Ok(Ok(false)) => {}
+                Ok(Err(e))    => log::error!("passwords.json migration failed (continuing): {e}"),
+                Err(_)        => log::error!(
+                    "passwords.json migration timed out (Keychain locked?) — continuing; will retry next launch"
+                ),
+            },
+            Err(e) => log::error!("could not spawn migration worker ({e}); skipping migration this run"),
         }
     }
 
@@ -208,10 +235,16 @@ pub fn run() -> Result<()> {
     {
         let state2 = Arc::clone(&state);
         let stop2 = Arc::clone(&stop);
-        std::thread::Builder::new()
+        // Degrade, never crash: a spawn Err must not propagate out of run() and
+        // exit the process (main.rs does process::exit(1) on Err → launchd
+        // respawn → boot_autostart spawn storm). Log and continue without the
+        // tick loop; the daemon still serves IPC.
+        if let Err(e) = std::thread::Builder::new()
             .name("tick-loop".into())
             .spawn(move || poll_loop(&state2, &stop2))
-            .context("spawn tick thread")?;
+        {
+            log::error!("failed to spawn tick thread ({e}); periodic tick disabled this run");
+        }
     }
 
     // 6b. Spawn heartbeat / auto-reconnect thread.
