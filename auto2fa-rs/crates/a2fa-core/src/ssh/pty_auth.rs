@@ -335,11 +335,10 @@ pub fn run_login(
             if let Some(child) = child {
                 // Detached reaper: never blocks run_login, never leaves a
                 // zombie. Builder::spawn so a spawn-Err (EAGAIN) can't panic.
-                // On spawn-Err the closure never ran, so `child` is handed back
-                // to us in the SpawnError — fall back to a one-shot non-blocking
-                // try_wait (won't block run_login). The foreground client is
-                // exiting; if it hasn't yet this may leave a transient zombie,
-                // but we must NOT block here.
+                // On spawn-Err we log a warn and skip the detached reap (we must
+                // NOT block run_login). At worst this leaves a transient zombie
+                // of an already-exiting foreground client, reaped by the OS when
+                // the daemon eventually exits.
                 let spawn_res = std::thread::Builder::new()
                     .name("login-reap".into())
                     .spawn(move || {

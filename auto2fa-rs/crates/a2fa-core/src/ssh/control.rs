@@ -93,56 +93,65 @@ fn run_ssh_g(host: &str) -> Option<String> {
     // is killed+reaped instead of left running as an orphan. Mirrors
     // `run_ssh_bounded`. (`Command::output()` would block until the child
     // exits, leaking the process past our recv_timeout.)
-    std::thread::spawn(move || {
-        let child = Command::new("ssh")
-            .args(["-G", &host_owned])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let mut child = match child {
-            Ok(c) => c,
-            Err(_) => {
-                let _ = tx.send(None);
-                return;
-            }
-        };
-
-        let deadline = Instant::now() + SSH_G_TIMEOUT;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let stdout = if status.success() {
-                        let mut s = String::new();
-                        if let Some(mut out) = child.stdout.take() {
-                            use std::io::Read;
-                            let _ = out.read_to_string(&mut s);
-                        }
-                        Some(s)
-                    } else {
-                        None
-                    };
-                    let _ = tx.send(stdout);
+    let spawn_res = std::thread::Builder::new()
+        .name("ssh-g".into())
+        .spawn(move || {
+            let child = Command::new("ssh")
+                .args(["-G", &host_owned])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            let mut child = match child {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = tx.send(None);
                     return;
                 }
-                Ok(None) => {
-                    if Instant::now() >= deadline {
+            };
+
+            let deadline = Instant::now() + SSH_G_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let stdout = if status.success() {
+                            let mut s = String::new();
+                            if let Some(mut out) = child.stdout.take() {
+                                use std::io::Read;
+                                let _ = out.read_to_string(&mut s);
+                            }
+                            Some(s)
+                        } else {
+                            None
+                        };
+                        let _ = tx.send(stdout);
+                        return;
+                    }
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = tx.send(None);
+                            return;
+                        }
+                        std::thread::sleep(BOUNDED_POLL_INTERVAL);
+                    }
+                    Err(_) => {
                         let _ = child.kill();
                         let _ = child.wait();
                         let _ = tx.send(None);
                         return;
                     }
-                    std::thread::sleep(BOUNDED_POLL_INTERVAL);
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = tx.send(None);
-                    return;
                 }
             }
-        }
-    });
+        });
+    if let Err(e) = spawn_res {
+        // Spawn failed (e.g. transient EAGAIN). The worker never ran, so don't
+        // wait on the channel — return None and let the caller fall back to the
+        // default ControlPath (resolve_control_base treats None as the fallback).
+        warn!("could not spawn ssh-g thread ({e}); falling back to default ControlPath");
+        return None;
+    }
     // Give the worker a little slack beyond its own deadline to report back;
     // if even that elapses, treat as no result (the worker still reaps).
     match rx.recv_timeout(SSH_G_TIMEOUT + Duration::from_secs(1)) {

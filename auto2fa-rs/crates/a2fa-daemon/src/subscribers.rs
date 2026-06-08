@@ -32,15 +32,23 @@ const FORWARD_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub fn forward_events(mut stream: UnixStream, rx: mpsc::Receiver<String>) {
     // A stuck client must not pin this thread forever on a blocked write.
     let _ = stream.set_write_timeout(Some(FORWARD_WRITE_TIMEOUT));
-    std::thread::spawn(move || {
-        for event_line in rx {
-            if stream.write_all(event_line.as_bytes()).is_err() {
-                break;
+    let spawn_res = std::thread::Builder::new()
+        .name("subscriber-forward".into())
+        .spawn(move || {
+            for event_line in rx {
+                if stream.write_all(event_line.as_bytes()).is_err() {
+                    break;
+                }
             }
-        }
-        // Best-effort shutdown — ignore errors.
-        let _ = stream.shutdown(Shutdown::Both);
-    });
+            // Best-effort shutdown — ignore errors.
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+    if let Err(e) = spawn_res {
+        // Spawn failed (e.g. transient EAGAIN). The closure never ran, so the
+        // captured `stream` and `rx` drop here; the registered sender is pruned
+        // by `State::emit` on the next event (no leak, no panic).
+        log::warn!("could not spawn subscriber-forward thread ({e}); subscriber dropped");
+    }
 }
 
 /// Register a new subscriber with the shared engine state.
