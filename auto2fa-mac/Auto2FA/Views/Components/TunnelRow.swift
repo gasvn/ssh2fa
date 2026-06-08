@@ -30,6 +30,14 @@ struct TunnelRow: View {
         return tunnel.displayState == .starting
     }
 
+    /// The tunnel is "on" — running OR trying to (alive/starting). Used so the
+    /// toggle shows a STOP affordance whenever the tunnel is up or attempting,
+    /// not only when fully alive (otherwise a tunnel stuck "starting" forever
+    /// could never be stopped).
+    private var tunnelIsOn: Bool {
+        tunnel.displayState == .alive || tunnel.displayState == .starting
+    }
+
     private var busyLabel: String {
         let msg = tunnel.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         return msg.isEmpty ? "Working…" : msg
@@ -210,17 +218,19 @@ struct TunnelRow: View {
                     HStack(spacing: Spacing.xs) {
                         ProgressView().controlSize(.small).scaleEffect(0.6)
                             .frame(width: 14, height: 14)
-                        Text(tunnel.displayState == .alive ? "Stop" : "Start")
+                        Text(tunnelIsOn ? "Stop" : "Start")
                             .font(.caption)
                     }
                 } else {
-                    Label(tunnel.displayState == .alive ? "Stop" : "Start",
-                          systemImage: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
+                    Label(tunnelIsOn ? "Stop" : "Start",
+                          systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
                 }
             }
-            .help(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
-            .accessibilityLabel(tunnel.displayState == .alive ? "Stop tunnel" : "Start tunnel")
-            .disabled(isBusy)
+            .help(tunnelIsOn ? "Stop tunnel" : "Start tunnel")
+            .accessibilityLabel(tunnelIsOn ? "Stop tunnel" : "Start tunnel")
+            // Only block during the brief in-flight RPC, never for the whole
+            // "starting" state — so a tunnel stuck starting can always be stopped.
+            .disabled(appState.inFlightTunnels.contains(tunnel.name))
 
             // Node (pick compute node).
             Button {
@@ -281,10 +291,10 @@ struct TunnelRow: View {
         Button {
             Task { await appState.toggleTunnel(tunnel) }
         } label: {
-            Label(tunnel.displayState == .alive ? "Stop" : "Start",
-                  systemImage: tunnel.displayState == .alive ? "stop.fill" : "play.fill")
+            Label(tunnelIsOn ? "Stop" : "Start",
+                  systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
         }
-        .disabled(isBusy)
+        .disabled(appState.inFlightTunnels.contains(tunnel.name))
 
         Button {
             appState.presentNodePicker(for: tunnel)

@@ -171,7 +171,13 @@ struct HostRow: View {
             }
             .help(host.active ? "Disconnect host" : "Connect host")
             .accessibilityLabel(host.active ? "Disconnect host" : "Connect host")
-            .disabled(isBusy)
+            // Only disable during the brief in-flight toggle RPC (prevents a
+            // double-click), NOT for the whole "connecting" state. Otherwise a
+            // host stuck connecting forever (e.g. its login node is down) could
+            // NEVER be stopped — the Disconnect button stayed disabled. The
+            // spinner still shows via isBusy; the button stays clickable so you
+            // can always stop an active host.
+            .disabled(appState.inFlightHosts.contains(host.host))
 
             // Mount / Unmount.
             Button {
@@ -227,7 +233,9 @@ struct HostRow: View {
             Label(host.active ? "Disconnect" : "Connect",
                   systemImage: host.active ? "stop.fill" : "play.fill")
         }
-        .disabled(isBusy)
+        // Always allow stopping an active host (see inline actions note) —
+        // only block during the brief in-flight toggle RPC.
+        .disabled(appState.inFlightHosts.contains(host.host))
 
         Button {
             Task { await appState.toggleMount(host) }

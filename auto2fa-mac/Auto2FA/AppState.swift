@@ -359,8 +359,11 @@ final class AppState: ObservableObject {
         defer { inFlightHosts.remove(host.host) }
         // Immediate notch so the user sees their click landed.
         notchPresenter.show(
-            systemImage: host.displayState == .connected ? "stop.fill" : "arrow.triangle.2.circlepath",
-            title: host.displayState == .connected ? "Stopping" : "Starting",
+            // Verb is based on whether the host is currently ON (active), not on
+            // whether it's fully connected — so stopping a host stuck
+            // reconnecting correctly shows "Stopping", not "Starting".
+            systemImage: host.active ? "stop.fill" : "arrow.triangle.2.circlepath",
+            title: host.active ? "Stopping" : "Starting",
             description: host.host,
             tint: .yellow
         )
@@ -373,8 +376,8 @@ final class AppState: ObservableObject {
         inFlightTunnels.insert(tunnel.name)
         defer { inFlightTunnels.remove(tunnel.name) }
         notchPresenter.show(
-            systemImage: tunnel.displayState == .alive ? "stop.fill" : "arrow.triangle.2.circlepath",
-            title: tunnel.displayState == .alive ? "Stopping" : "Starting",
+            systemImage: (tunnel.displayState == .alive || tunnel.displayState == .starting) ? "stop.fill" : "arrow.triangle.2.circlepath",
+            title: (tunnel.displayState == .alive || tunnel.displayState == .starting) ? "Stopping" : "Starting",
             description: tunnel.name,
             tint: .yellow
         )

@@ -6,7 +6,6 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
-    @State private var confirmingReset = false
     @State private var showingWelcome = false
     @State private var showingPalette = false
 
@@ -16,15 +15,6 @@ struct ContentView: View {
     // warning (real builds were ~3s slower because of it).
     var body: some View {
         mainStack
-            .toolbar { toolbarItems }
-            .confirmationDialog("Reset everything?",
-                                isPresented: $confirmingReset,
-                                titleVisibility: .visible) {
-                Button("Reset", role: .destructive) { Task { await appState.resetAll() } }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Stops every tunnel and rebuilds every active SSH master. Use this when tunnels are wedged in stale/failed state. Your interactive ssh sessions WILL be dropped.")
-            }
             .overlay(alignment: .top) { errorBanner }
             .overlay(alignment: .bottom) { undoSnackbar }
             .animation(.easeInOut(duration: 0.2), value: appState.undoableDelete?.name)
@@ -71,25 +61,6 @@ struct ContentView: View {
         Rectangle()
             .fill(Color(nsColor: .windowBackgroundColor))
             .ignoresSafeArea()
-    }
-
-    @ToolbarContentBuilder
-    private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup {
-            Button { appState.presentAddHost() } label: {
-                Label("Add Host", systemImage: "server.rack")
-            }
-            .help("Register a new SSH host (with 2FA)")
-            Button { appState.presentNewTunnel() } label: {
-                Label("New Tunnel", systemImage: "plus.circle")
-            }
-            .help("Create a new tunnel (⌘N)")
-            Button { confirmingReset = true } label: {
-                Label("Reset", systemImage: "exclamationmark.arrow.circlepath")
-                    .foregroundStyle(.red)
-            }
-            .help("Stop every tunnel + rebuild every SSH master (use when things wedge)")
-        }
     }
 
     @ViewBuilder
