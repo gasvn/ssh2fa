@@ -5,5 +5,6 @@ pub mod error;
 pub mod model;
 pub mod proto;
 pub mod ssh;
+pub mod sys;
 pub mod totp;
 pub mod tunnels;

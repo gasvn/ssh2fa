@@ -19,6 +19,12 @@ fn main() {
     WriteLogger::init(LevelFilter::Info, Config::default(), log_file)
         .expect("logger init failed");
 
+    // launchd hands user agents a soft RLIMIT_NOFILE of only 256, which a
+    // long-lived SSH/pty/tunnel daemon can exhaust — after which every spawn
+    // fails with "Too many open files" and the daemon retry-storms. Raise it
+    // before doing any real work. Best-effort; logs the outcome.
+    a2fa_core::sys::raise_fd_limit();
+
     if let Err(e) = a2fa_daemon::server::run() {
         log::error!("daemon exited with error: {e:#}");
         eprintln!("daemon error: {e:#}");

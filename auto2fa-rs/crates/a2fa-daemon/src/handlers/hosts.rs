@@ -481,6 +481,9 @@ pub fn host_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
     // These are I/O ops but they're fast (local disk / Keychain daemon).
     let ks = KeychainStore;
     store_credentials(&ks, &host_name, &password, &otpauth_url)?;
+    // The stored creds just changed — drop any cached copy so the next login
+    // re-reads the new secret instead of serving a stale one.
+    crate::managers::invalidate_creds_cache(&host_name);
 
     // Update passwords.json metadata.
     let meta_path = passwords_path();

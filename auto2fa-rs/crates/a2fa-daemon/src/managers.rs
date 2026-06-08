@@ -45,7 +45,7 @@
 //! manual activation starts fresh, matching Python behaviour).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use log::{info, warn};
@@ -56,7 +56,37 @@ use a2fa_core::ssh::master::{start_master, stop_all, PoolState, SlotStatus, POOL
 
 use crate::workers::{make_otp_closure, OtpRegistry};
 
-/// Read a host's `(password, secret)` from the macOS Keychain.
+/// Process-lifetime cache of resolved `(password, secret)` per host.
+///
+/// macOS issues a Keychain "Always Allow" authorization prompt the first time a
+/// process reads a protected item. Without this cache the daemon re-reads the
+/// Keychain on *every* login attempt (5 call sites), so a host whose login
+/// keeps failing — rate-limited cluster, down compute node — re-triggers a
+/// prompt on each retry. Across a session that is the observed "countless
+/// Keychain prompts" storm. Caching caps Keychain reads at **one per host per
+/// daemon lifetime**, no matter how often logins retry.
+fn creds_cache() -> &'static Mutex<HashMap<String, (String, String)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `true` when both fields are present — only complete creds are worth caching
+/// (a partial/failed read must be retried, not cached as the permanent answer).
+fn creds_complete(creds: &(String, String)) -> bool {
+    !creds.0.is_empty() && !creds.1.is_empty()
+}
+
+/// Drop a host's cached credentials. MUST be called whenever the stored creds
+/// change (host added / re-keyed / removed) so the next login re-reads the
+/// Keychain instead of serving stale secrets. Poison-tolerant.
+pub fn invalidate_creds_cache(host: &str) {
+    let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.remove(host);
+}
+
+/// Read a host's `(password, secret)`, served from the process cache when
+/// present and otherwise read once from the macOS Keychain (and cached if
+/// complete).
 ///
 /// IMPORTANT: This MUST only ever be called from inside a spawned worker
 /// thread, NEVER on the daemon's synchronous startup/accept path or the
@@ -66,8 +96,17 @@ use crate::workers::{make_otp_closure, OtpRegistry};
 /// prompt only stalls that one host's login, never the daemon.
 ///
 /// Missing / unreadable creds degrade to empty strings (login then simply
-/// fails for that host) rather than propagating an error.
+/// fails for that host) rather than propagating an error, and are NOT cached
+/// so a later attempt retries the read.
 fn load_creds(host: &str) -> (String, String) {
+    // Fast path: serve from cache so retries never re-prompt the Keychain.
+    {
+        let cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(creds) = cache.get(host) {
+            return creds.clone();
+        }
+    }
+
     use a2fa_core::creds::keychain::KeychainStore;
     use a2fa_core::creds::{get_otpauth, get_password};
     use a2fa_core::totp::extract_secret;
@@ -76,7 +115,15 @@ fn load_creds(host: &str) -> (String, String) {
     let password = get_password(&ks, host).ok().flatten().unwrap_or_default();
     let otpauth = get_otpauth(&ks, host).ok().flatten().unwrap_or_default();
     let secret = extract_secret(&otpauth).unwrap_or_default();
-    (password, secret)
+    let creds = (password, secret);
+
+    // Cache only complete creds — a partial read (e.g. a dismissed prompt)
+    // must retry next time rather than poison the cache with empties.
+    if creds_complete(&creds) {
+        let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(host.to_string(), creds.clone());
+    }
+    creds
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,6 +1240,60 @@ pub fn spawn_warmup_slot1(
 mod tests {
     use super::*;
     use a2fa_core::ssh::master::{OTP_COOLDOWN, OTP_FAILURE_THRESHOLD};
+
+    // -----------------------------------------------------------------------
+    // Credential cache — caps Keychain reads at one per host per lifetime
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn creds_complete_requires_both_fields() {
+        assert!(creds_complete(&("pw".into(), "secret".into())));
+        assert!(!creds_complete(&("".into(), "secret".into())));
+        assert!(!creds_complete(&("pw".into(), "".into())));
+        assert!(!creds_complete(&("".into(), "".into())));
+    }
+
+    #[test]
+    fn load_creds_serves_from_cache_without_touching_keychain() {
+        // Pre-populate the cache for a unique host; load_creds must return the
+        // cached value on the fast path (a Keychain read for this fake host
+        // would yield empty, so a non-empty result proves the cache was used).
+        let host = "cache-hit-test-host-zzz1";
+        {
+            let mut c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+            c.insert(host.to_string(), ("cached-pw".into(), "cached-secret".into()));
+        }
+        let got = load_creds(host);
+        assert_eq!(got, ("cached-pw".to_string(), "cached-secret".to_string()));
+        invalidate_creds_cache(host);
+    }
+
+    #[test]
+    fn invalidate_creds_cache_removes_entry() {
+        let host = "cache-invalidate-test-host-zzz2";
+        {
+            let mut c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+            c.insert(host.to_string(), ("p".into(), "s".into()));
+        }
+        invalidate_creds_cache(host);
+        let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!c.contains_key(host), "entry must be gone after invalidate");
+    }
+
+    #[test]
+    fn load_creds_does_not_cache_empty_results() {
+        // A host with no Keychain entry resolves to empties (no prompt for a
+        // nonexistent item) and must NOT be cached, so a later add+login retries.
+        let host = "definitely-nonexistent-host-zzz3-auto2fa-test";
+        invalidate_creds_cache(host);
+        let got = load_creds(host);
+        assert_eq!(got, (String::new(), String::new()));
+        let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !c.contains_key(host),
+            "incomplete/empty creds must not be cached (must retry later)"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // HostManagers — persistent state survives multiple accesses
