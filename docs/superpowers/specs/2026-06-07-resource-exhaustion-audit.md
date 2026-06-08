@@ -189,3 +189,33 @@ to process exit** (no launchd crashloop).
 
 Tests: a2fa-core **133**, a2fa-daemon **150** (+ mount latch, cap_transcript, run_cmd_bounded,
 log-prune tests), cli 15, tui 36 — 0 failures; clippy no new errors. Not yet deployed.
+
+### Round 5b — fix-verification pass (do the fixes regress?) — 2026-06-07
+
+A 25-agent adversarial pass reviewed the Round-5 fixes for self-introduced regressions (one
+reviewer per fix unit hunting new-hang / incomplete-fix / normal-op-regression, then 3 skeptics
+per suspected regression: reachable / actually-worse-than-prefix / real severity). **The run hit
+the session token limit and 6 verify agents died**, so the verdict is PARTIAL — but it caught
+the two that matter:
+
+1. **CONFIRMED regression — migration worker race (medium).** The bounded migration worker
+   called `save_meta` itself; on the 15s-timeout path it was abandoned but stayed alive and
+   could `save_meta` passwords.json AFTER the accept loop opened, racing a concurrent `host_add`
+   `save_meta` (non-atomic RMW) → last-writer-wins lost-update of host metadata (only reachable
+   on a first-ever v1→v2 migration with a locked Keychain; this machine is already v2). FIXED:
+   split `migrate` into `prepare_migration` (Keychain writes, returns the v2 map, no persist) +
+   wrapper; the daemon worker only does Keychain writes, the BOOT thread does the single
+   `save_meta` before State::new/accept. Abandoned worker never persists → no race.
+2. **Latent hang — `run_cmd_bounded` post-exit read (reproduced, verify incomplete).** A
+   reviewer reproduced (>8s) that `read_to_end` blocks if a daemonized grandchild holds the
+   pipe; does not fire on this machine's sshfs (redirects fds on daemonize) but fragile across
+   variants. FIXED defensively: drain pipes NON-BLOCKING (O_NONBLOCK, read to WouldBlock/EOF) —
+   never wait for EOF.
+
+Other fix units (pty cap, spawn-degrade, persist-off-lock, lock_state conversions, master log,
+main stderr-fallback, kill_all_children, mount latch) generated few/no suspected regressions and
+were judged sound. **Accepted residual (low, non-hang):** a failed/timed-out sshfs leaves a
+daemonized go-nfsv4/FUSE process that cleanup_orphans (matches only `ssh -N -J … -L`) doesn't
+reap — a slow resource leak under repeated failed mounts, not a machine hang.
+
+Tests after 5b: a2fa-core **134**, a2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
