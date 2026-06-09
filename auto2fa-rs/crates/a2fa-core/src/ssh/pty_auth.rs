@@ -52,11 +52,18 @@ use crate::error::{Error, Result};
 ///
 /// The child lives in an `Option`:
 ///
-/// * FAILURE/abort path (the child is still owned here) — Drop does `kill()`
-///   then `wait()`. Used on every failure/abort path (timeout, auth-failed,
-///   eof, otp/write `?` errors, panic, system error) where the client is still
-///   blocked at a prompt and must be force-terminated and reaped (no zombie /
-///   leaked pty fd).
+/// * FAILURE/abort path (the child is still owned here) — Drop `kill()`s the
+///   client, then reaps it on a DETACHED, BOUNDED thread. Used on every
+///   failure/abort path (timeout, auth-failed, eof, otp/write `?` errors,
+///   panic, system error). The reap is detached because a synchronous
+///   `wait()` in Drop blocked FOREVER for ssh children that ignore SIGKILL
+///   while stuck in an uninterruptible syscall — and Drop runs on the per-host
+///   login worker thread, so a blocked wait() wedged the worker, which then
+///   never released its `StartGuard` token → the heartbeat saw "restart already
+///   in flight" forever and reconnection starved process-wide (observed: ~14
+///   workers stuck in this Drop, the daemon stopped maintaining EVERY
+///   connection). Detaching frees the worker; bounding keeps the detached
+///   reaper from leaking forever if the child is truly un-reapable.
 ///
 /// * SUCCESS path — the caller pulls the child OUT with [`take_child`] and
 ///   reaps it on a detached thread AFTER dropping the pty fds (see `run_login`).
@@ -93,11 +100,38 @@ impl Drop for ChildReaper {
     fn drop(&mut self) {
         // Only the FAILURE/abort path still owns the child here. The success
         // path took the child via `take_child`, leaving `None` → no-op.
-        if let Some(child) = self.child.as_mut() {
-            // Force-terminate the still-blocked client and reap it so no
-            // zombie / leaked pty fd remains. Best-effort.
+        if let Some(mut child) = self.child.take() {
+            // Force-terminate the still-blocked client, then reap on a DETACHED,
+            // BOUNDED thread. NEVER block here: a synchronous `child.wait()` in
+            // Drop wedged the login worker (and starved reconnection) whenever a
+            // killed ssh child ignored SIGKILL in an uninterruptible syscall.
             let _ = child.kill();
-            let _ = child.wait();
+            let spawned = std::thread::Builder::new()
+                .name("login-reap-fail".into())
+                .spawn(move || {
+                    // Poll for the killed child up to a deadline, then give up
+                    // (the OS reaps the zombie when the daemon exits — a bounded
+                    // leak, never a wedge).
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(_)) => break,           // reaped
+                            Ok(None) => {
+                                if Instant::now() >= deadline {
+                                    let _ = child.kill();   // last-ditch
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(100));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            // If even the reaper thread can't spawn (EAGAIN under thread
+            // pressure), do NOT fall back to a blocking wait() — that blocking
+            // is exactly the wedge we are removing. Drop the (killed) child
+            // unreaped; it becomes a transient zombie reaped at daemon exit.
+            let _ = spawned;
         }
     }
 }
@@ -478,31 +512,38 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// A fake `Child` whose `kill`/`wait` bump shared counters so a test can
-    /// assert what the reaper's `Drop` did after the reaper is dropped.
+    /// A fake `Child` whose `kill`/`wait`/`try_wait` bump shared counters so a
+    /// test can assert what the reaper's `Drop` did. `try_wait` reports the
+    /// child as exited once it has been killed, so the failure-path detached
+    /// reaper (which polls `try_wait`) reaps promptly instead of spinning.
     #[derive(Debug)]
     struct FakeChild {
         kills: Arc<AtomicUsize>,
         waits: Arc<AtomicUsize>,
+        try_waits: Arc<AtomicUsize>,
+        killed: bool,
     }
 
     impl ChildKiller for FakeChild {
         fn kill(&mut self) -> std::io::Result<()> {
             self.kills.fetch_add(1, Ordering::SeqCst);
+            self.killed = true;
             Ok(())
         }
         fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-            // Not exercised by the reaper; return an independent no-op-ish killer.
             Box::new(FakeChild {
                 kills: self.kills.clone(),
                 waits: self.waits.clone(),
+                try_waits: self.try_waits.clone(),
+                killed: self.killed,
             })
         }
     }
 
     impl Child for FakeChild {
         fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-            Ok(None)
+            self.try_waits.fetch_add(1, Ordering::SeqCst);
+            Ok(if self.killed { Some(ExitStatus::with_exit_code(0)) } else { None })
         }
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
             self.waits.fetch_add(1, Ordering::SeqCst);
@@ -513,14 +554,17 @@ mod tests {
         }
     }
 
-    fn fake() -> (ChildReaper, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    fn fake() -> (ChildReaper, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let kills = Arc::new(AtomicUsize::new(0));
         let waits = Arc::new(AtomicUsize::new(0));
+        let try_waits = Arc::new(AtomicUsize::new(0));
         let child = Box::new(FakeChild {
             kills: kills.clone(),
             waits: waits.clone(),
+            try_waits: try_waits.clone(),
+            killed: false,
         });
-        (ChildReaper::new(child), kills, waits)
+        (ChildReaper::new(child), kills, waits, try_waits)
     }
 
     #[test]
@@ -563,12 +607,24 @@ mod tests {
     }
 
     #[test]
-    fn drop_default_kills_then_waits_exactly_once() {
-        // Failure/abort path: detach_on_drop stays false → kill() + wait().
-        let (reaper, kills, waits) = fake();
-        drop(reaper);
+    fn drop_failure_path_kills_then_reaps_detached_without_blocking() {
+        // Failure/abort path: Drop kills synchronously, then reaps on a DETACHED
+        // bounded thread — it must NOT block the dropping (worker) thread. The
+        // old synchronous wait()-in-Drop wedged login workers and starved
+        // reconnection.
+        let (reaper, kills, _waits, try_waits) = fake();
+        drop(reaper); // must return immediately (no blocking wait here)
         assert_eq!(kills.load(Ordering::SeqCst), 1, "must kill once on failure path");
-        assert_eq!(waits.load(Ordering::SeqCst), 1, "must reap (wait) exactly once");
+        // The reap runs on a detached thread — poll briefly for it.
+        let mut reaped = false;
+        for _ in 0..200 {
+            if try_waits.load(Ordering::SeqCst) >= 1 {
+                reaped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(reaped, "detached reaper must try_wait()-reap the killed child");
     }
 
     #[test]
@@ -578,7 +634,7 @@ mod tests {
         // pty fds). The reaper itself must then NOT kill (would tear down the
         // ControlPersist master) and must NOT wait on drop. The detached reap
         // is what wait()s the exiting foreground client (no zombie).
-        let (mut reaper, kills, waits) = fake();
+        let (mut reaper, kills, waits, try_waits) = fake();
         let mut child = reaper
             .take_child()
             .expect("take_child yields the child on the success path");
@@ -593,6 +649,11 @@ mod tests {
             waits.load(Ordering::SeqCst),
             0,
             "reaper drop must NOT wait after the child was taken"
+        );
+        assert_eq!(
+            try_waits.load(Ordering::SeqCst),
+            0,
+            "reaper drop with child taken must not reap at all"
         );
         // The caller's detached reaper waits the now-exiting foreground client
         // exactly once → reaped, not zombied. (Done inline here in the test.)
