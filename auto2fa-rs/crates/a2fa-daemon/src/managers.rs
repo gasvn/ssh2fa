@@ -280,7 +280,7 @@ impl HostManagers {
         // HashSet::insert returns true iff the value was NEWLY inserted.
         self.starting
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert((host.to_owned(), slot))
     }
 
@@ -288,7 +288,7 @@ impl HostManagers {
     pub fn end_start(&self, host: &str, slot: usize) {
         self.starting
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&(host.to_owned(), slot));
     }
 
@@ -298,7 +298,7 @@ impl HostManagers {
     /// internal map is held only for the duration of `f` — `f` must be brief
     /// (no ssh I/O, no sleeps).
     pub fn with_pool_mut<R>(&self, host: &str, f: impl FnOnce(&mut PoolState) -> R) -> R {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let pool = map
             .entry(host.to_owned())
             .or_insert_with(|| PoolState::new(host));
@@ -309,7 +309,7 @@ impl HostManagers {
     ///
     /// Returns `None` if no state exists for this host yet.
     pub fn with_pool<R>(&self, host: &str, f: impl FnOnce(&PoolState) -> R) -> Option<R> {
-        let map = self.map.lock().unwrap();
+        let map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         map.get(host).map(f)
     }
 

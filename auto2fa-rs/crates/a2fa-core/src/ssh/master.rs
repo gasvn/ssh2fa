@@ -139,6 +139,25 @@ impl PoolState {
         let now = Instant::now();
         let other = (self.active_index + 1) % POOL_SIZE;
 
+        // Rotation is a RECOVERY action: flip away from a DOWN active slot onto a
+        // Ready spare. If the active slot is itself Ready, there is nothing to
+        // recover — rotating between two Ready slots just flip-flops the active
+        // symlink pointlessly. Worse, the ping-pong guard below then re-arms
+        // `probe_backoff` every rotation tick, and the dead-slot Restart/Rotate
+        // paths skip while `in_probe_backoff()` — so a healthy pool's pointless
+        // rotation also SUPPRESSES legitimate restarts. A healthy active slot
+        // must never rotate. (This was the "rotation ping-pong detected" churn
+        // logged every ~7s on connected hosts.)
+        if self.slot_status[self.active_index] == SlotStatus::Ready {
+            return false;
+        }
+
+        // Respect an armed probe/rotation backoff (the guard sets it but nothing
+        // here honored it before, so the "backing off 60s" never took effect).
+        if self.in_probe_backoff() {
+            return false;
+        }
+
         if self.slot_status[other] != SlotStatus::Ready {
             return false;
         }
@@ -385,6 +404,37 @@ mod tests {
         assert_eq!(pool.consecutive_login_failures, 0);
         assert!(pool.cooldown_until.is_none());
         assert!(!pool.in_cooldown());
+    }
+
+    #[test]
+    fn try_rotate_noops_when_active_slot_ready() {
+        // The live "rotation ping-pong" bug: a healthy active slot must NOT
+        // rotate. Rotating between two Ready slots flip-flops the active symlink
+        // pointlessly AND re-arms probe_backoff (which then suppressed real
+        // restarts). A healthy pool must be a no-op with no backoff armed.
+        let mut pool = PoolState::new("auto2fa-unittest-rotate-ready");
+        pool.slot_status = [SlotStatus::Ready, SlotStatus::Ready];
+        pool.active_index = 0;
+        for _ in 0..5 {
+            assert!(!pool.try_rotate(), "must not rotate a healthy active slot");
+        }
+        assert_eq!(pool.active_index, 0, "active slot must not flip-flop");
+        assert!(
+            pool.probe_backoff_until.is_none(),
+            "a healthy pool must never arm the ping-pong backoff"
+        );
+    }
+
+    #[test]
+    fn try_rotate_respects_probe_backoff() {
+        // Even with a down active slot + Ready spare, an armed probe backoff must
+        // suppress rotation (previously the backoff was written but never read).
+        let mut pool = PoolState::new("auto2fa-unittest-rotate-backoff");
+        pool.slot_status = [SlotStatus::Dead, SlotStatus::Ready];
+        pool.active_index = 0;
+        pool.probe_backoff_until = Some(Instant::now() + Duration::from_secs(60));
+        assert!(!pool.try_rotate(), "must not rotate while in probe backoff");
+        assert_eq!(pool.active_index, 0);
     }
 
     #[test]

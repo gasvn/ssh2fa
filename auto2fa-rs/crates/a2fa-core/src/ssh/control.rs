@@ -293,6 +293,29 @@ impl BoundedOutcome {
 /// (reaping the child to avoid a zombie) and report [`BoundedOutcome::TimedOut`].
 ///
 /// `label` is used only for log messages (e.g. "ssh -O check").
+/// Reap a JUST-KILLED child without blocking unboundedly.
+///
+/// `run_ssh_bounded` runs on the heartbeat thread (via `master_check`). The
+/// previous `child.wait()` after `child.kill()` could block FOREVER if the
+/// killed ssh ignores SIGKILL while stuck in an uninterruptible syscall — which
+/// would wedge the heartbeat (the exact class that wedged the pty `ChildReaper`).
+/// Poll `try_wait` for a short deadline, then give up; the OS reaps the (tiny,
+/// control-channel) zombie when the daemon exits. Bounded, never a wedge.
+fn bounded_reap(child: &mut std::process::Child) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return; // give up; OS reaps the zombie at daemon exit
+                }
+                std::thread::sleep(BOUNDED_POLL_INTERVAL);
+            }
+        }
+    }
+}
+
 fn run_ssh_bounded(args: &[&str], host: &str, timeout: Duration, label: &str) -> BoundedOutcome {
     let mut child = match Command::new("ssh")
         .args(args)
@@ -321,7 +344,7 @@ fn run_ssh_bounded(args: &[&str], host: &str, timeout: Duration, label: &str) ->
                 if Instant::now() >= deadline {
                     warn!("[{host}] {label} timed out after {timeout:?} — killing");
                     let _ = child.kill();
-                    let _ = child.wait();
+                    bounded_reap(&mut child);
                     return BoundedOutcome::TimedOut;
                 }
                 std::thread::sleep(BOUNDED_POLL_INTERVAL);
@@ -329,7 +352,7 @@ fn run_ssh_bounded(args: &[&str], host: &str, timeout: Duration, label: &str) ->
             Err(e) => {
                 warn!("[{host}] {label} wait error: {e}");
                 let _ = child.kill();
-                let _ = child.wait();
+                bounded_reap(&mut child);
                 return BoundedOutcome::SpawnError;
             }
         }
@@ -393,25 +416,84 @@ pub fn master_exit(control_path: &Path, host: &str) {
 /// [`run_ssh_bounded`] so a wedged socket cannot block the pre-login cleanup
 /// forever. The socket file is force-removed afterward regardless of outcome.
 pub fn cleanup_stale_socket(path: &Path, host: &str) {
-    if path.exists() {
-        // Polite exit (ignore outcome — socket may be stale; bounded so a
-        // wedged socket can't hang this pre-login cleanup).
+    // 1. Polite exit via the control socket (only meaningful if the socket is
+    //    live). A clean Success means the master is gone; anything else means it
+    //    may still be alive and must be PID-killed below.
+    let exit_outcome = if path.exists() {
         let control_opt = format!("ControlPath={}", path.display());
-        let _ = run_ssh_bounded(
+        run_ssh_bounded(
             &["-o", &control_opt, "-O", "exit", host],
             host,
             MASTER_EXIT_TIMEOUT,
             "ssh -O exit (cleanup)",
-        );
+        )
+    } else {
+        // No socket → `ssh -O exit` can't work. Treat as "not cleanly exited"
+        // so an ORPHANED (socket-deleted) master still gets PID-killed below —
+        // this is exactly the 4.5h-orphan case.
+        BoundedOutcome::Failure
+    };
 
-        // Force-remove the socket file if still present
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(path) {
-                warn!("[{host}] Could not remove stale socket {}: {e}", path.display());
-            } else {
-                info!("[{host}] Removed stale socket {}", path.display());
+    // 2. PID-based zombie-kill. If the polite exit did NOT cleanly succeed, a
+    //    wedged/orphaned master may still be running (`ssh -O exit` can't reach
+    //    it once the socket is wedged or gone). Find it by its ControlPath
+    //    proctitle and SIGTERM->SIGKILL it. Ports backend.py's zombie-kill that
+    //    the Rust rewrite dropped (the doc here used to say "handled at a higher
+    //    layer" — there was no such layer, so masters leaked).
+    if exit_outcome != BoundedOutcome::Success {
+        kill_orphaned_master(path, host);
+    }
+
+    // 3. Force-remove the socket file if still present.
+    if path.exists() {
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!("[{host}] Could not remove stale socket {}: {e}", path.display());
+        } else {
+            info!("[{host}] Removed stale socket {}", path.display());
+        }
+    }
+}
+
+/// Kill an orphaned/wedged ControlMaster process by PID when socket-based
+/// `ssh -O exit` can't (wedged control socket, or socket already deleted).
+///
+/// ssh sets the persistent master's proctitle to `ssh: <ControlPath> [mux]`, so
+/// we match the unique per-slot ControlPath and require the `[mux]` marker
+/// before killing — so a transient `ssh -O`/login client that merely passes the
+/// same path is never hit. SIGTERM, brief grace, then SIGKILL (mirrors
+/// backend.py:169-176). Bounded helpers only; runs on the login/teardown worker
+/// (never the heartbeat tick).
+fn kill_orphaned_master(control_path: &Path, host: &str) {
+    let needle = control_path.to_string_lossy().into_owned();
+    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", &needle], Duration::from_secs(2)) {
+        Some(o) if o.status.success() => o, // exit 0 → at least one match
+        _ => return,                         // no match / pgrep unavailable
+    };
+    for pid_str in String::from_utf8_lossy(&found.stdout).split_whitespace() {
+        let pid_str = pid_str.trim();
+        let pid: i32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // Confirm it's the ssh MUX master, not a transient client.
+        let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str], Duration::from_secs(2))
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !cmd.contains("[mux]") {
+            continue;
+        }
+        // SAFETY: kill() with a valid signal id; harmless (ESRCH) if the pid
+        // already exited. SIGTERM, 300ms grace, then SIGKILL if still alive.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        unsafe {
+            if libc::kill(pid, 0) == 0 {
+                libc::kill(pid, libc::SIGKILL);
             }
         }
+        warn!("[{host}] killed orphaned ControlMaster pid {pid} ({needle})");
     }
 }
 
