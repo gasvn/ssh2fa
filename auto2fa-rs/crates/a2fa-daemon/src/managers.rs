@@ -218,8 +218,9 @@ pub fn next_action(
         SlotStatus::Ready => check_alive == Some(false),
     };
 
-    // Suppress restart if in probe backoff.
-    if needs_restart && !pool.in_probe_backoff() {
+    // Suppress restart while in probe backoff (rotation) OR flap backoff
+    // (connect-then-drop) — both mean "stop hammering this host for a while".
+    if needs_restart && !pool.in_probe_backoff() && !pool.in_flap_backoff() {
         return MaintenanceAction::Restart;
     }
 
@@ -325,6 +326,9 @@ impl HostManagers {
             cooldown_until: p.cooldown_until,
             last_rotate: p.last_rotate,
             probe_backoff_until: p.probe_backoff_until,
+            slot_ready_since: p.slot_ready_since,
+            flap_count: p.flap_count,
+            flap_backoff_until: p.flap_backoff_until,
         })
     }
 
@@ -357,6 +361,9 @@ impl HostManagers {
                     cooldown_until: p.cooldown_until,
                     last_rotate: p.last_rotate,
                     probe_backoff_until: p.probe_backoff_until,
+                    slot_ready_since: p.slot_ready_since,
+                    flap_count: p.flap_count,
+                    flap_backoff_until: p.flap_backoff_until,
                 })
                 .collect()
         };
@@ -903,6 +910,12 @@ fn tick_host(
             _ => Some(master_check(&path, host_name)),
         };
 
+        // Flap accounting: a Ready slot whose live check passes and that has been
+        // up long enough is a STABLE connection → clear any flap state.
+        if pool.slot_status[slot] == SlotStatus::Ready && check_result == Some(true) {
+            managers.with_pool_mut(host_name, |p| p.note_slot_alive(slot));
+        }
+
         let action = next_action(&pool, slot, true, check_result, now);
 
         match action {
@@ -911,8 +924,15 @@ fn tick_host(
                     "[{host_name}] heartbeat: slot {slot} needs restart (status={:?}, check={:?})",
                     pool.slot_status[slot], check_result
                 );
+                // A Ready slot whose check failed is a DROP — feed flap detection
+                // (a short-lived connection counts toward the flap back-off).
+                let was_ready_drop =
+                    pool.slot_status[slot] == SlotStatus::Ready && check_result == Some(false);
                 // Mark slot Dead in the persistent registry.
                 managers.with_pool_mut(host_name, |p| {
+                    if was_ready_drop {
+                        p.note_slot_dropped(slot);
+                    }
                     p.slot_status[slot] = SlotStatus::Dead;
                 });
                 // Update engine State.

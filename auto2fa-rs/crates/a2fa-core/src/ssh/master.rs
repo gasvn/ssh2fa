@@ -36,6 +36,20 @@ pub const OTP_FAILURE_THRESHOLD: u32 = 5;
 /// How long to sit out when rate-limit cooldown is triggered.
 pub const OTP_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// A master that stays Ready at least this long counts as a STABLE connection
+/// (clears the flap counter). A Ready slot that dies sooner than this is a
+/// "flap" (connect-then-drop).
+pub const FLAP_MIN_UPTIME: Duration = Duration::from_secs(30);
+
+/// Consecutive flaps before arming the flap back-off.
+pub const FLAP_THRESHOLD: u32 = 4;
+
+/// How long to back off restarting a slot that keeps flapping. Stops a host
+/// that authenticates then immediately drops from being reconnected (full 2FA)
+/// every few seconds forever — the connect-then-drop case the login-failure
+/// breaker never caught (it resets on every successful login).
+pub const FLAP_BACKOFF: Duration = Duration::from_secs(60);
+
 /// Ping-pong window: if we rotate twice within this window, back off.
 pub const ROTATION_PING_PONG_WINDOW: Duration = Duration::from_secs(30);
 
@@ -74,6 +88,12 @@ pub struct PoolState {
     // Rotation ping-pong detection
     pub last_rotate: Option<Instant>,
     pub probe_backoff_until: Option<Instant>,
+
+    // Flap detection (connect-then-drop): when each slot became Ready, a count
+    // of consecutive short-lived connections, and a back-off once they pile up.
+    pub slot_ready_since: [Option<Instant>; POOL_SIZE],
+    pub flap_count: u32,
+    pub flap_backoff_until: Option<Instant>,
 }
 
 impl PoolState {
@@ -86,6 +106,9 @@ impl PoolState {
             cooldown_until: None,
             last_rotate: None,
             probe_backoff_until: None,
+            slot_ready_since: [None; POOL_SIZE],
+            flap_count: 0,
+            flap_backoff_until: None,
         }
     }
 
@@ -101,6 +124,68 @@ impl PoolState {
         self.probe_backoff_until
             .map(|t| Instant::now() < t)
             .unwrap_or(false)
+    }
+
+    /// True while a flap (connect-then-drop) back-off is active — the heartbeat
+    /// must NOT restart the slot during this window.
+    pub fn in_flap_backoff(&self) -> bool {
+        self.flap_backoff_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    /// Record that a slot just became Ready (login success). Starts its uptime
+    /// clock for flap detection.
+    pub fn mark_slot_ready(&mut self, index: usize) {
+        if index < POOL_SIZE {
+            self.slot_ready_since[index] = Some(Instant::now());
+        }
+    }
+
+    /// A Ready slot's live check just PASSED. If it has now been up at least
+    /// [`FLAP_MIN_UPTIME`], the connection is proven stable → clear flap state.
+    pub fn note_slot_alive(&mut self, index: usize) {
+        if index >= POOL_SIZE {
+            return;
+        }
+        if let Some(since) = self.slot_ready_since[index] {
+            if since.elapsed() >= FLAP_MIN_UPTIME
+                && (self.flap_count > 0 || self.flap_backoff_until.is_some())
+            {
+                self.flap_count = 0;
+                self.flap_backoff_until = None;
+            }
+        }
+    }
+
+    /// A Ready slot was found DROPPED. A drop after < [`FLAP_MIN_UPTIME`] is a
+    /// flap; [`FLAP_THRESHOLD`] consecutive flaps arm a [`FLAP_BACKOFF`] so a
+    /// host that connects-then-drops isn't reconnected (full 2FA) every few
+    /// seconds forever. A drop after a long stable run is NOT a flap (it resets
+    /// the counter). The login-failure breaker never caught this because it
+    /// resets `consecutive_login_failures` on every successful login.
+    pub fn note_slot_dropped(&mut self, index: usize) {
+        if index >= POOL_SIZE {
+            return;
+        }
+        match self.slot_ready_since[index].take().map(|t| t.elapsed()) {
+            Some(uptime) if uptime < FLAP_MIN_UPTIME => {
+                self.flap_count += 1;
+                if self.flap_count >= FLAP_THRESHOLD {
+                    self.flap_backoff_until = Some(Instant::now() + FLAP_BACKOFF);
+                    warn!(
+                        "[{}] {} short-lived connections (flapping) — backing off {}s",
+                        self.host,
+                        self.flap_count,
+                        FLAP_BACKOFF.as_secs()
+                    );
+                }
+            }
+            _ => {
+                // Long-lived connection died (or never marked Ready) — not a flap.
+                self.flap_count = 0;
+            }
+        }
     }
 
     /// Record one failed login attempt against the circuit breaker: bump the
@@ -126,6 +211,8 @@ impl PoolState {
         self.consecutive_login_failures = 0;
         self.cooldown_until = None;
         self.probe_backoff_until = None;
+        self.flap_count = 0;
+        self.flap_backoff_until = None;
     }
 
     /// Return the ControlPath for a pool slot.
@@ -269,6 +356,8 @@ pub fn start_master(
             state.slot_status[index] = SlotStatus::Ready;
             state.consecutive_login_failures = 0;
             state.cooldown_until = None;
+            // Start the uptime clock for flap detection (connect-then-drop).
+            state.mark_slot_ready(index);
             info!("[{}] master slot {index} Ready", state.host);
             true
         }
@@ -435,6 +524,48 @@ mod tests {
         pool.probe_backoff_until = Some(Instant::now() + Duration::from_secs(60));
         assert!(!pool.try_rotate(), "must not rotate while in probe backoff");
         assert_eq!(pool.active_index, 0);
+    }
+
+    #[test]
+    fn flapping_connection_arms_backoff() {
+        // Connect-then-immediate-drop FLAP_THRESHOLD times → arm the flap backoff
+        // (the connect-then-drop case the login-failure breaker never caught).
+        let mut pool = PoolState::new("auto2fa-unittest-flap");
+        assert!(!pool.in_flap_backoff());
+        for i in 1..=FLAP_THRESHOLD {
+            pool.mark_slot_ready(0);
+            pool.note_slot_dropped(0); // uptime ~0 < FLAP_MIN_UPTIME → flap
+            assert_eq!(pool.flap_count, i);
+        }
+        assert!(pool.in_flap_backoff(), "must back off after {FLAP_THRESHOLD} flaps");
+        // A user toggle (reset) clears it.
+        pool.reset_circuit_breakers();
+        assert_eq!(pool.flap_count, 0);
+        assert!(!pool.in_flap_backoff());
+    }
+
+    #[test]
+    fn drop_without_ready_marker_is_not_a_flap() {
+        // A slot that was never marked Ready (no uptime clock) dropping must not
+        // count as a flap.
+        let mut pool = PoolState::new("auto2fa-unittest-noflap");
+        pool.note_slot_dropped(0);
+        assert_eq!(pool.flap_count, 0);
+        assert!(!pool.in_flap_backoff());
+    }
+
+    #[test]
+    fn long_lived_drop_resets_flaps() {
+        // A connection that stayed up well past FLAP_MIN_UPTIME then died is NOT a
+        // flap — it resets the counter. (Guarded so it's robust on a just-booted
+        // host where Instant can't go back far enough.)
+        if let Some(past) = Instant::now().checked_sub(FLAP_MIN_UPTIME + Duration::from_secs(5)) {
+            let mut pool = PoolState::new("auto2fa-unittest-stable-drop");
+            pool.flap_count = 2;
+            pool.slot_ready_since[0] = Some(past);
+            pool.note_slot_dropped(0);
+            assert_eq!(pool.flap_count, 0, "a long-lived connection's death is not a flap");
+        }
     }
 
     #[test]

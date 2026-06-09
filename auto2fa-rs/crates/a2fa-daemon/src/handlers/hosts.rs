@@ -308,6 +308,35 @@ impl Drop for MountInFlightGuard {
     }
 }
 
+/// Reap the leaked artifacts of a FAILED sshfs mount.
+///
+/// sshfs's macFUSE backend (`go-nfsv4`) is a separately-daemonized process: when
+/// the mount fails (or `run_cmd_bounded` kills the sshfs child on its deadline),
+/// the backend survives, holding a half-made mount. Targeted by the exact mount
+/// point so an unrelated mount is never touched. Bounded helpers only; runs off
+/// the State lock.
+fn reap_failed_sshfs(mount_point: &std::path::Path) {
+    use std::time::Duration;
+    let mp = mount_point.to_string_lossy().into_owned();
+    // 1. Kill the leaked backend(s) whose argv carries this mount path.
+    if let Some(o) = run_cmd_bounded("pgrep", &["-f", &mp], Duration::from_secs(2)) {
+        if o.status.success() {
+            for pid in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+                let cmd = run_cmd_bounded("ps", &["-o", "command=", "-p", pid], Duration::from_secs(2))
+                    .map(|x| String::from_utf8_lossy(&x.stdout).into_owned())
+                    .unwrap_or_default();
+                // Only kill sshfs / its macFUSE backend for THIS mount path.
+                if cmd.contains("go-nfsv4") || cmd.contains("sshfs") {
+                    let _ = run_cmd_bounded("kill", &["-9", pid], Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    // 2. Force-unmount a half-made mount, then remove the now-empty dir.
+    let _ = run_cmd_bounded("umount", &["-f", &mp], Duration::from_secs(10));
+    let _ = std::fs::remove_dir(mount_point); // only succeeds if empty
+}
+
 /// Toggle sshfs mount for a host: mount if not mounted, unmount if mounted.
 ///
 /// Every external command (which/umount/sshfs) runs through `run_cmd_bounded`
@@ -415,6 +444,14 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         let mounted = result
             .map(|o| o.status.success() && is_mount_point(&mount_point))
             .unwrap_or(false);
+        if !mounted {
+            // A failed/killed sshfs leaves its DAEMONIZED macFUSE backend
+            // (go-nfsv4) running — run_cmd_bounded only killed the direct sshfs
+            // child, not the double-forked backend — plus a possibly half-made
+            // mount + the created dir. Reap them so failed mounts don't leak
+            // (observed: 5+ orphaned go-nfsv4 processes).
+            reap_failed_sshfs(&mount_point);
+        }
         let mut guard = state.lock().unwrap();
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.is_mounted = mounted;
