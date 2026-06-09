@@ -140,7 +140,17 @@ pub fn save_meta(path: &Path, hosts: &HashMap<String, HostMeta>) -> Result<()> {
     };
 
     {
-        let mut f = std::fs::File::create(&tmp_path).map_err(Error::Io)?;
+        // 0600: the file holds only v2 metadata (no secrets), but it lives in
+        // ~/.ssh and there's no reason for other users to read it. The rename
+        // below carries these permissions onto the final path.
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)
+            .map_err(Error::Io)?;
         f.write_all(json_text.as_bytes()).map_err(Error::Io)?;
         f.flush().map_err(Error::Io)?;
         f.sync_all().map_err(Error::Io)?;
@@ -181,6 +191,25 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded["k6"].auto_connect, true);
         assert_eq!(loaded["k8"].auto_connect, false);
+    }
+
+    #[test]
+    fn save_meta_writes_0600() {
+        // The file lives in ~/.ssh; it must not be group/world-readable. The
+        // rename must carry the temp file's 0600 onto the final path — even
+        // when overwriting a pre-existing looser (0644) file.
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("passwords.json");
+        std::fs::write(&p, "{}").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut hosts = HashMap::new();
+        hosts.insert("k8".to_owned(), HostMeta { auto_connect: true });
+        save_meta(&p, &hosts).unwrap();
+
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "passwords.json must be 0600, got {mode:o}");
     }
 
     #[test]

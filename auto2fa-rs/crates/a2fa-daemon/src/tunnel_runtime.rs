@@ -74,6 +74,11 @@ pub struct TunnelRtState {
     /// When did this tunnel last enter the Alive status?  Used to accumulate
     /// uptime when it leaves Alive.  `None` = not currently alive.
     pub alive_since: Option<f64>,
+
+    /// Consecutive short-lived Alive runs (died before
+    /// [`TUNNEL_FLAP_MIN_UPTIME_SEC`]). At [`TUNNEL_FLAP_THRESHOLD`] the
+    /// StopDead → immediate-recover path backs off instead of respawning.
+    pub consecutive_flaps: u32,
 }
 
 impl Default for TunnelRtState {
@@ -83,7 +88,37 @@ impl Default for TunnelRtState {
             last_squeue_check_ts: 0.0,
             consecutive_squeue_misses: 0,
             alive_since: None,
+            consecutive_flaps: 0,
         }
+    }
+}
+
+/// Flap accounting for the StopDead path. Called when an Alive tunnel is found
+/// dead, with the uptime of the run that just ended (`None` = unknown).
+///
+/// Updates `consecutive_flaps` and sets `last_recovery_attempt_ts` so that:
+/// * a one-off drop (or a long stable run) still recovers IMMEDIATELY — the
+///   responsive-UX behavior StopDead always had;
+/// * a tunnel that keeps dying within [`TUNNEL_FLAP_MIN_UPTIME_SEC`] of each
+///   (re)start backs off [`TUNNEL_FLAP_BACKOFF_SEC`] once it hits
+///   [`TUNNEL_FLAP_THRESHOLD`], instead of kill+respawn every ~1-2 s forever.
+///
+/// Returns `true` if the backoff was armed (caller logs it).
+pub fn note_stop_dead_flap(rt: &mut TunnelRtState, uptime_sec: Option<f64>, now: f64) -> bool {
+    match uptime_sec {
+        Some(u) if u < TUNNEL_FLAP_MIN_UPTIME_SEC => rt.consecutive_flaps += 1,
+        Some(_) => rt.consecutive_flaps = 0, // long stable run → not a flap
+        None => {}                           // unknown uptime → leave counter as-is
+    }
+    if rt.consecutive_flaps >= TUNNEL_FLAP_THRESHOLD {
+        // The Recover gate is `now - last_recovery_attempt_ts >= AUTO_RECOVERY_
+        // INTERVAL_SEC`, so writing a timestamp this far ahead delays the next
+        // attempt by exactly TUNNEL_FLAP_BACKOFF_SEC.
+        rt.last_recovery_attempt_ts = now + TUNNEL_FLAP_BACKOFF_SEC - AUTO_RECOVERY_INTERVAL_SEC;
+        true
+    } else {
+        rt.last_recovery_attempt_ts = 0.0; // immediate recover (one-off drop)
+        false
     }
 }
 
@@ -103,6 +138,19 @@ pub const STALE_MISS_THRESHOLD: u32 = 2;
 
 /// Boot grace period before auto-start fires (mirrors Python `now - startup_ts >= 3.0`).
 pub const BOOT_GRACE_SEC: f64 = 3.0;
+
+/// A tunnel that stays Alive at least this long counts as a STABLE run
+/// (clears the flap counter). Dying sooner is a "flap" (start-then-drop).
+pub const TUNNEL_FLAP_MIN_UPTIME_SEC: f64 = 30.0;
+
+/// Consecutive flaps before the StopDead → immediate-recover path backs off.
+pub const TUNNEL_FLAP_THRESHOLD: u32 = 4;
+
+/// How long a flapping tunnel sits out before the next recovery attempt.
+/// Without this, StopDead reset the recovery throttle to 0 unconditionally, so
+/// a tunnel that dies right after every (re)start was killed + respawned every
+/// ~1-2 s forever — the same churn class as the ssh-master flap backoff.
+pub const TUNNEL_FLAP_BACKOFF_SEC: f64 = 60.0;
 
 /// Daemon-global registry: child handles + per-tunnel runtime counters.
 ///
@@ -136,7 +184,7 @@ impl TunnelRuntime {
 
     /// Record the daemon startup time.  Must be called once from `server::run`.
     pub fn set_startup_ts(&self, ts: f64) {
-        self.inner.lock().unwrap().startup_ts = ts;
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).startup_ts = ts;
     }
 
     // ---- Child registry -----------------------------------------------
@@ -152,7 +200,7 @@ impl TunnelRuntime {
     pub fn store_child(&self, name: &str, child: Child) {
         // Phase 1: evict any stale child under the lock, then drop the lock.
         let stale = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.children.remove(name)
         };
         // Phase 2: reap the stale child OFF-lock (kill+wait may block on D-state).
@@ -161,7 +209,7 @@ impl TunnelRuntime {
             stop_forward(old);
         }
         // Phase 3: re-lock and insert the new child.
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.children.insert(name.to_owned(), child);
         info!("[tunnel:{name}] child handle stored in registry");
     }
@@ -171,7 +219,7 @@ impl TunnelRuntime {
     /// Returns `None` when no child is registered (tunnel never started, or
     /// already reaped).
     pub fn take_child(&self, name: &str) -> Option<Child> {
-        self.inner.lock().unwrap().children.remove(name)
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).children.remove(name)
     }
 
     /// Kill the child for `name` (if any) via `stop_forward` (SIGKILL + wait).
@@ -192,12 +240,17 @@ impl TunnelRuntime {
     /// * `Some(true)`  — child is still running.
     /// * `Some(false)` — child has exited (reaped from the process table).
     pub fn child_alive(&self, name: &str) -> Option<bool> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let child = inner.children.get_mut(name)?;
         match child.try_wait() {
             Ok(None) => Some(true),   // still running
             Ok(Some(_)) => Some(false), // exited
-            Err(_) => Some(false),    // can't determine — treat as dead
+            // A transient try_wait error (e.g. EINTR) must NOT report "dead" —
+            // that force-killed and respawned a perfectly healthy tunnel. Claim
+            // alive and let the next tick (1 s) re-check; if the child is truly
+            // dead the local-port probe (`!port_bound` → StopDead) is the
+            // backstop, so a persistent error can't mask a real death.
+            Err(_) => Some(true),
         }
     }
 
@@ -207,7 +260,7 @@ impl TunnelRuntime {
     ///
     /// Creates a default `TunnelRtState` if none exists yet.
     pub fn with_rt_mut<R>(&self, name: &str, f: impl FnOnce(&mut TunnelRtState) -> R) -> R {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let rt = inner.rt.entry(name.to_owned()).or_default();
         f(rt)
     }
@@ -216,7 +269,7 @@ impl TunnelRuntime {
     ///
     /// Returns `None` if no state exists yet for this tunnel.
     pub fn with_rt<R>(&self, name: &str, f: impl FnOnce(&TunnelRtState) -> R) -> Option<R> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.rt.get(name).map(f)
     }
 
@@ -229,7 +282,7 @@ impl TunnelRuntime {
     /// freeze the maintenance tick (which also locks this registry).
     pub fn remove(&self, name: &str) {
         let child = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let child = inner.children.remove(name);
             inner.rt.remove(name);
             inner.events.remove(name);
@@ -249,7 +302,7 @@ impl TunnelRuntime {
     /// buffer never exceeds [`EVENT_BUFFER_LIMIT`] entries (oldest dropped).
     pub fn record(&self, name: &str, ts: f64, msg: impl Into<String>) {
         let event = TunnelEvent { ts, msg: msg.into() };
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let deque = inner.events.entry(name.to_owned()).or_default();
         deque.push_back(event);
         while deque.len() > EVENT_BUFFER_LIMIT {
@@ -261,7 +314,7 @@ impl TunnelRuntime {
     ///
     /// Returns an empty `Vec` if no events have been recorded for this tunnel.
     pub fn events(&self, name: &str) -> Vec<TunnelEvent> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match inner.events.get(name) {
             Some(deque) => deque.iter().cloned().collect(),
             None => vec![],
@@ -304,13 +357,13 @@ impl TunnelRuntime {
 
     /// Returns `(startup_ts, auto_started)`.
     pub fn boot_state(&self) -> (f64, bool) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         (inner.startup_ts, inner.auto_started)
     }
 
     /// Mark the one-shot boot auto-start as completed.
     pub fn mark_auto_started(&self) {
-        self.inner.lock().unwrap().auto_started = true;
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).auto_started = true;
     }
 }
 
@@ -962,5 +1015,54 @@ mod tests {
         rt.remove("t3");
 
         assert!(rt.events("t3").is_empty(), "remove() must clear the event buffer");
+    }
+
+    // ---- note_stop_dead_flap (StopDead flap backoff) ---------------------
+
+    #[test]
+    fn one_off_drop_recovers_immediately() {
+        // A single drop (even short-lived) keeps the responsive immediate-
+        // recover behavior — backoff only after sustained flapping.
+        let mut rt = TunnelRtState::default();
+        let armed = note_stop_dead_flap(&mut rt, Some(2.0), 1000.0);
+        assert!(!armed);
+        assert_eq!(rt.consecutive_flaps, 1);
+        assert_eq!(rt.last_recovery_attempt_ts, 0.0, "must recover immediately");
+    }
+
+    #[test]
+    fn sustained_flapping_arms_backoff() {
+        let mut rt = TunnelRtState::default();
+        let mut now = 1000.0;
+        for i in 1..TUNNEL_FLAP_THRESHOLD {
+            assert!(!note_stop_dead_flap(&mut rt, Some(1.0), now), "no backoff at flap {i}");
+            now += 5.0;
+        }
+        // The THRESHOLDth short-lived run arms the backoff.
+        assert!(note_stop_dead_flap(&mut rt, Some(1.0), now), "backoff at threshold");
+        assert_eq!(rt.consecutive_flaps, TUNNEL_FLAP_THRESHOLD);
+        // The Recover gate (now - ts >= AUTO_RECOVERY_INTERVAL_SEC) must not
+        // pass again until TUNNEL_FLAP_BACKOFF_SEC from now.
+        let next_allowed = rt.last_recovery_attempt_ts + AUTO_RECOVERY_INTERVAL_SEC;
+        assert!((next_allowed - (now + TUNNEL_FLAP_BACKOFF_SEC)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn long_stable_run_resets_flap_counter() {
+        let mut rt = TunnelRtState::default();
+        rt.consecutive_flaps = TUNNEL_FLAP_THRESHOLD - 1;
+        let armed = note_stop_dead_flap(&mut rt, Some(TUNNEL_FLAP_MIN_UPTIME_SEC + 1.0), 1000.0);
+        assert!(!armed);
+        assert_eq!(rt.consecutive_flaps, 0, "a stable run is not a flap");
+        assert_eq!(rt.last_recovery_attempt_ts, 0.0);
+    }
+
+    #[test]
+    fn unknown_uptime_leaves_counter_unchanged() {
+        let mut rt = TunnelRtState::default();
+        rt.consecutive_flaps = 2;
+        let armed = note_stop_dead_flap(&mut rt, None, 1000.0);
+        assert!(!armed);
+        assert_eq!(rt.consecutive_flaps, 2, "unknown uptime must not count either way");
     }
 }

@@ -203,7 +203,7 @@ pub fn run() -> Result<()> {
     let state = Arc::new(Mutex::new(State::new(tunnels_path, &passwords_p)));
 
     {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         log::info!(
             "state loaded: {} hosts, {} tunnels",
             guard.hosts.len(),
@@ -343,14 +343,19 @@ pub fn run() -> Result<()> {
                     continue;
                 }
                 let ctx2 = ctx.clone();
-                let counter = Arc::clone(&conn_count);
+                // Claim the connection slot BEFORE spawning: incrementing inside
+                // the spawned thread let a connect burst race past the cap check
+                // above (several spawns before any increment landed). If the
+                // spawn fails the closure — and the guard moved into it — is
+                // dropped, releasing the slot. RAII covers every path.
+                let guard = ConnGuard::new(Arc::clone(&conn_count));
                 // A transient spawn failure (e.g. EAGAIN under fd/thread
                 // pressure) must NOT kill the daemon: drop this connection,
                 // log a warning, and keep accepting. Never `?`/propagate.
                 if let Err(e) = std::thread::Builder::new()
                     .name("conn".into())
                     .spawn(move || {
-                        let _guard = ConnGuard::new(counter);
+                        let _guard = guard;
                         handle_connection(stream, ctx2);
                     })
                 {

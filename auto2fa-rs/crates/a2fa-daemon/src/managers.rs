@@ -438,7 +438,7 @@ pub fn boot_autostart(
 ) {
     // Collect active hosts under the lock.
     let active_hosts: Vec<String> = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         guard
             .hosts
             .iter()
@@ -456,7 +456,7 @@ pub fn boot_autostart(
         if a2fa_core::ssh::master::adopt_if_alive(&mut pool) {
             let idx = pool.active_index;
             managers.write_back(&host_name, &pool);
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
                 h.is_master_ready = true;
                 h.pool_alive = 1;
@@ -473,7 +473,7 @@ pub fn boot_autostart(
         // creds inside its own worker thread, so a blocked "Always Allow"
         // prompt can never wedge the daemon's startup path.
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
                 h.last_msg = "Boot auto-connecting…".into();
                 h.status = "Connecting".into();
@@ -555,7 +555,7 @@ pub fn spawn_managed_start(
             managers.write_back(&host_name, &pool);
 
             // 5. Update engine State.
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 if ready {
                     h.is_master_ready = true;
@@ -641,7 +641,7 @@ pub fn spawn_master_rebuild(
             // Reflect the torn-down state in engine State immediately so the UI
             // doesn't show a stale "Connected" while the rebuild is in flight.
             {
-                let mut guard = state.lock().unwrap();
+                let mut guard = crate::lock_state(&state);
                 if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                     h.is_master_ready = false;
                     h.pool_alive = 0;
@@ -658,7 +658,7 @@ pub fn spawn_master_rebuild(
             managers.write_back(&host_name, &pool);
 
             // --- Phase 3: update engine State (mirrors spawn_managed_start) ---
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 if ready {
                     h.is_master_ready = true;
@@ -702,7 +702,7 @@ pub fn rebuild_masters(
 ) -> usize {
     // Filter the requested hosts down to those currently active (brief lock).
     let to_rebuild: Vec<String> = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         hosts
             .iter()
             .filter(|name| {
@@ -733,7 +733,7 @@ pub fn rebuild_masters(
 
 /// Return the names of every host currently `active` in `State`.
 pub fn active_host_names(state: &Arc<Mutex<State>>) -> Vec<String> {
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(&state);
     guard
         .hosts
         .iter()
@@ -768,7 +768,7 @@ pub fn spawn_managed_stop(
             managers.write_back(&host_name, &pool);
 
             // 4. Update engine State.
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.is_master_ready = false;
                 h.pool_alive = 0;
@@ -989,7 +989,7 @@ fn tick_host(
                         // Re-check active flag — host may have been toggled off
                         // during the throttle.
                         let still_active = {
-                            let guard = state2.lock().unwrap();
+                            let guard = crate::lock_state(&state2);
                             guard
                                 .hosts
                                 .iter()
@@ -1017,7 +1017,7 @@ fn tick_host(
 
                         // Write result back to engine State.
                         {
-                            let mut guard = state2.lock().unwrap();
+                            let mut guard = crate::lock_state(&state2);
                             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
                                 if ready {
                                     h.is_master_ready = true;
@@ -1089,7 +1089,7 @@ fn tick_host(
                         std::thread::sleep(SLOT1_STAGGER);
                         // Guard: re-check active state after the stagger.
                         let still_active = {
-                            let guard = state2.lock().unwrap();
+                            let guard = crate::lock_state(&state2);
                             guard
                                 .hosts
                                 .iter()
@@ -1117,7 +1117,7 @@ fn tick_host(
                             warn!("[{host_owned}] warm-slot-1: slot 1 failed");
                         }
                         // Update engine State slot count if newly ready.
-                        let mut guard = state2.lock().unwrap();
+                        let mut guard = crate::lock_state(&state2);
                         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
                             if ready {
                                 h.pool_alive = h.pool_alive.max(1) + 1;
@@ -1219,7 +1219,7 @@ pub fn spawn_warmup_slot1(
 
             // Guard: re-check desired state after the stagger.
             let still_active = {
-                let guard = state.lock().unwrap();
+                let guard = crate::lock_state(&state);
                 guard
                     .hosts
                     .iter()
@@ -1242,7 +1242,7 @@ pub fn spawn_warmup_slot1(
 
             if ready {
                 info!("[{host_name}] warmup_slot1: slot 1 Ready");
-                let mut guard = state.lock().unwrap();
+                let mut guard = crate::lock_state(&state);
                 if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                     h.pool_alive = h.pool_alive.max(1) + 1;
                 }

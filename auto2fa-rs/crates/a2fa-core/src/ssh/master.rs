@@ -332,8 +332,24 @@ pub fn start_master(
     // at 8+ MB per slot), and nothing rotates it — a slow-burn /tmp (boot
     // volume) fill that can wedge the whole machine. Default verbosity keeps the
     // file tiny. Truncate any pre-existing (possibly huge, -v-era) file first.
+    //
+    // Pre-create with mode 0600 (and chmod an existing file down): the path is
+    // fixed/predictable in shared /tmp, so on a multi-user machine the ssh
+    // diagnostics (connection metadata — never the password/OTP, which go over
+    // the pty) should not be world-readable. ssh -E appends to the existing
+    // file, inheriting these permissions.
     let log_file = format!("/tmp/auto2fa_ssh_master_{}_{index}.log", state.host);
-    let _ = std::fs::OpenOptions::new().write(true).truncate(true).open(&log_file);
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&log_file);
+        // mode() only applies at creation — tighten a pre-existing 0644 file.
+        let _ = std::fs::set_permissions(&log_file, std::fs::Permissions::from_mode(0o600));
+    }
     let control_path_str = path.to_string_lossy().into_owned();
 
     let argv: Vec<String> = vec![

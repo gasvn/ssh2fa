@@ -40,8 +40,8 @@ use a2fa_core::tunnels::uptime::now_unix;
 use a2fa_core::ssh::control::active_symlink_path;
 
 use crate::tunnel_runtime::{
-    should_autostart, tunnel_action, TunnelAction, TunnelRuntime, TunnelStatusKind,
-    STALE_MISS_THRESHOLD,
+    note_stop_dead_flap, should_autostart, tunnel_action, TunnelAction, TunnelRuntime,
+    TunnelStatusKind, STALE_MISS_THRESHOLD, TUNNEL_FLAP_BACKOFF_SEC, TUNNEL_FLAP_THRESHOLD,
 };
 
 /// How often the maintenance loop wakes up.
@@ -233,13 +233,29 @@ fn process_tunnel(
             };
             warn!("[tunnel:{name}] {reason}, respawning");
             runtime.record(name, now, reason);
+            // Peek the uptime of the run that just ended BEFORE accumulate_uptime
+            // clears alive_since — it feeds the flap detector below.
+            let uptime = runtime
+                .with_rt(name, |r| r.alive_since)
+                .flatten()
+                .map(|since| (now - since).max(0.0));
             // Accumulate uptime before marking non-alive.
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
             mark_tunnel_idle(name, state, /*wants_alive_stays=*/ true, "respawning");
-            // If wants_alive still set (non-user stop), attempt recovery.
-            // We set the throttle timestamp to 0 so recovery fires immediately.
-            runtime.with_rt_mut(name, |r| r.last_recovery_attempt_ts = 0.0);
+            // If wants_alive still set (non-user stop), attempt recovery. A
+            // one-off drop recovers immediately, but a tunnel that keeps dying
+            // right after each respawn (flapping) backs off — otherwise this
+            // path kill+respawned it every ~1-2 s forever.
+            let backed_off = runtime
+                .with_rt_mut(name, |r| note_stop_dead_flap(r, uptime, now));
+            if backed_off {
+                warn!(
+                    "[tunnel:{name}] flapping ({}+ short-lived runs) — backing off {}s",
+                    TUNNEL_FLAP_THRESHOLD, TUNNEL_FLAP_BACKOFF_SEC
+                );
+                runtime.record(name, now, "flapping — backing off");
+            }
         }
 
         TunnelAction::StopDisabledJump => {

@@ -148,7 +148,10 @@ pub fn expand_first_node(nodelist: &str) -> (String, bool) {
     // Group 1 — prefix (e.g. "holygpu")
     // Group 2 — bracket contents (e.g. "01-03" or "01,03,05")
     // Group 3 — optional suffix after the bracket (e.g. ".rc.fas.harvard.edu")
-    let re = Regex::new(r"^([a-zA-Z0-9_.\\-]+)\[([^\]]+)\](.*)$")
+    // NB: in this raw string `\\` would be an ESCAPED BACKSLASH inside the
+    // character class (accepting a literal `\` in a node prefix) — not needed
+    // and not in the Python reference. `-` is literal because it's last.
+    let re = Regex::new(r"^([a-zA-Z0-9_.-]+)\[([^\]]+)\](.*)$")
         .expect("expand_first_node regex is valid");
 
     match re.captures(nodelist) {
@@ -300,6 +303,10 @@ mod tests {
             ("holygpu[unclosed",                   "holygpu[unclosed",                   false),
             // Empty string → returned unchanged.
             ("",                                   "",                                   false),
+            // A backslash is NOT a valid node-prefix character (the old regex
+            // class accidentally accepted it via an escaped `\\`) — no match,
+            // returned unchanged.
+            ("holy\\gpu[01-03]",                   "holy\\gpu[01-03]",                   false),
         ];
 
         for (input, want_node, want_range) in cases {
