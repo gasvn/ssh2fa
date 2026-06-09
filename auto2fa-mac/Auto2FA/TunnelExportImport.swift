@@ -21,6 +21,9 @@ enum TunnelExportImport {
         let auto_start: Bool
         let post_connect_cmd: String?
         let tags: [String]
+        /// Browser URL suffix (e.g. a jupyter "?token=…"). Optional so files
+        /// exported before this field existed still decode (nil).
+        var url_path: String?
     }
 
     struct ExportFile: Codable {
@@ -99,7 +102,8 @@ enum TunnelExportImport {
             last_user: t.lastUser,
             auto_start: t.autoStart,
             post_connect_cmd: t.postConnectCmd,
-            tags: t.tags
+            tags: t.tags,
+            url_path: t.urlPath
         )
     }
 

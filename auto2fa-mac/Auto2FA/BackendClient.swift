@@ -54,31 +54,59 @@ actor BackendClient {
     private var lastWakeRecoverAt: Date?
     private let wakeRecoverMinInterval: TimeInterval = 5.0
 
-    // Event stream — set up at init so callers can subscribe before connect()
-    nonisolated let events: AsyncStream<DaemonEvent>
-    private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
+    // Event / connection-state fan-out.
+    //
+    // NOT single shared AsyncStreams: an AsyncStream is single-use — cancelling
+    // the task iterating it FINISHES the stream (later yields are dropped and a
+    // new `for await` returns immediately). AppState cancels + re-subscribes on
+    // every reconnect, so with shared streams all pushed events (and disconnect
+    // detection) silently died after the FIRST reconnect. Instead each
+    // subscription gets a fresh stream; yields fan out to all live subscribers
+    // and onTermination prunes just that subscriber.
+    private var eventSubscribers: [UUID: AsyncStream<DaemonEvent>.Continuation] = [:]
+    private var stateSubscribers: [UUID: AsyncStream<Bool>.Continuation] = [:]
 
-    // True/false connection state pushes — AppState observes this to
-    // re-bootstrap on reconnect and surface error banners on disconnect.
-    nonisolated let connectionStates: AsyncStream<Bool>
-    private let connectionStateCont: AsyncStream<Bool>.Continuation
-
-    init() {
-        var cont: AsyncStream<DaemonEvent>.Continuation!
-        let stream = AsyncStream<DaemonEvent> { cont = $0 }
-        self.events = stream
-        self.eventContinuation = cont
-
-        var stateCont: AsyncStream<Bool>.Continuation!
-        let stateStream = AsyncStream<Bool> { stateCont = $0 }
-        self.connectionStates = stateStream
-        self.connectionStateCont = stateCont
+    /// A fresh per-subscriber event stream (safe to drop/re-call on reconnect).
+    func eventStream() -> AsyncStream<DaemonEvent> {
+        let id = UUID()
+        return AsyncStream { cont in
+            self.eventSubscribers[id] = cont
+            cont.onTermination = { @Sendable _ in
+                Task { await self.removeEventSubscriber(id) }
+            }
+        }
     }
+
+    /// A fresh per-subscriber connection-state stream.
+    func connectionStateStream() -> AsyncStream<Bool> {
+        let id = UUID()
+        return AsyncStream { cont in
+            self.stateSubscribers[id] = cont
+            cont.onTermination = { @Sendable _ in
+                Task { await self.removeStateSubscriber(id) }
+            }
+        }
+    }
+
+    private func removeEventSubscriber(_ id: UUID) { eventSubscribers[id] = nil }
+    private func removeStateSubscriber(_ id: UUID) { stateSubscribers[id] = nil }
+    private func yieldEvent(_ e: DaemonEvent) {
+        for c in eventSubscribers.values { c.yield(e) }
+    }
+    private func yieldConnectionState(_ up: Bool) {
+        for c in stateSubscribers.values { c.yield(up) }
+    }
+
+    init() {}
 
     // MARK: - Connect
 
     func connect() async throws {
         guard connection == nil else { return }
+        // A partial line left over from the OLD connection would prepend
+        // itself to the first response on the new one (corrupting it and
+        // burning that request's timeout) — start clean.
+        receiveBuffer.removeAll()
         let path = NWEndpoint.unix(path: BackendClient.socketPath)
         let conn = NWConnection(to: path, using: .tcp)
         connection = conn
@@ -100,7 +128,7 @@ actor BackendClient {
                         if resumed.fire() {
                             cont.resume(throwing: ClientError.transport(err.localizedDescription))
                         } else {
-                            Task { await self?.handleClosed() }
+                            Task { await self?.handleClosed(conn) }
                         }
                     case .waiting(let err):
                         // For a unix socket, .waiting usually means the socket file
@@ -111,7 +139,7 @@ actor BackendClient {
                         }
                     case .cancelled:
                         if !resumed.fire() {
-                            Task { await self?.handleClosed() }
+                            Task { await self?.handleClosed(conn) }
                         }
                     default:
                         break
@@ -142,10 +170,11 @@ actor BackendClient {
 
     /// Replace the connect-time handler with one that only reacts to drops.
     private func installPostConnectHandler() {
-        connection?.stateUpdateHandler = { [weak self] state in
+        guard let conn = connection else { return }
+        conn.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed, .cancelled:
-                Task { await self?.handleClosed() }
+                Task { await self?.handleClosed(conn) }
             default:
                 break
             }
@@ -173,7 +202,11 @@ actor BackendClient {
         case "tunnel_set_node", "tunnel_toggle",
              "tunnel_start", "tunnel_rename",
              "tunnels_batch", "tunnel_set_jump_candidates",
-             "wake_recover", "reset_all":
+             "wake_recover", "reset_all",
+             // sshfs mount/unmount runs inline in the daemon with deadlines up
+             // to 45s+10s — a 10s client timeout reported "timed out" for
+             // mounts that then succeeded.
+             "host_mount_toggle":
             return 30
         case "host_test_credentials", "host_add":
             return 45
@@ -242,17 +275,20 @@ actor BackendClient {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                Task { await self.handleIncoming(data) }
+                Task { await self.handleIncoming(data, from: conn) }
             }
             if isComplete || error != nil {
-                Task { await self.handleClosed() }
+                Task { await self.handleClosed(conn) }
                 return
             }
             Task { await self.beginReceive() }
         }
     }
 
-    private func handleIncoming(_ data: Data) {
+    private func handleIncoming(_ data: Data, from conn: NWConnection) {
+        // A late callback from a superseded connection must not pollute the
+        // new connection's line buffer.
+        guard conn === connection else { return }
         receiveBuffer.append(data)
         while let nl = receiveBuffer.firstIndex(of: 0x0a) {
             let line = receiveBuffer.subdata(in: receiveBuffer.startIndex..<nl)
@@ -262,7 +298,14 @@ actor BackendClient {
         }
     }
 
-    private func handleClosed() {
+    private func handleClosed(_ closed: NWConnection?) {
+        // Identity guard: NW callbacks from the OLD connection can land AFTER
+        // a successful reconnect — without this check they nil'd the NEW
+        // connection, failed its pending requests, and yielded a spurious
+        // "down". Only the CURRENT connection's close is real.
+        if let closed, let current = connection, closed !== current { return }
+        // Cancel the dropped connection so its fd doesn't linger to dealloc.
+        (closed ?? connection)?.cancel()
         connection = nil
         for (_, c) in pendingRequests {
             c.resume(throwing: ClientError.notConnected)
@@ -271,7 +314,7 @@ actor BackendClient {
         // Notify subscribers we're down. AppState reacts by starting a
         // bounded reconnect-retry loop (with backoff) until ensureConnected
         // succeeds.
-        connectionStateCont.yield(false)
+        yieldConnectionState(false)
     }
 
     /// Best-effort retry: tries connect() up to ~2 minutes with backoff.
@@ -289,7 +332,7 @@ actor BackendClient {
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             do {
                 try await connect()
-                connectionStateCont.yield(true)
+                yieldConnectionState(true)
                 return true
             } catch {
                 // keep trying
@@ -306,7 +349,7 @@ actor BackendClient {
         if let eventName = json["event"] as? String {
             let dataDict = (json["data"] as? [String: Any]) ?? [:]
             let event = DaemonEvent.from(name: eventName, dict: dataDict)
-            eventContinuation.yield(event)
+            yieldEvent(event)
             return
         }
         // Response

@@ -29,17 +29,25 @@ struct SSHHost: Identifiable, Codable, Equatable, Hashable {
 
     var displayState: DisplayState {
         let lc = status.lowercased()
-        if lc.contains("connected") || (lc.contains("active") && !lc.contains("fail")) {
-            return .connected
-        }
-        if lc.contains("init") || lc.contains("connecting") || lc.contains("spawn") || lc.contains("starting") {
-            return .connecting
+        // ORDER MATTERS — check negative words before the substrings they
+        // contain ("inactive" contains "active", "reconnect failed" contains
+        // "connect"): stopped/failed first, then connected.
+        if lc.contains("stop") || lc.contains("inactive") || lc == "idle" {
+            // The daemon's stopped status is the literal "Idle" — it used to
+            // fall through every branch and render as "?" in the menu bar.
+            return .stopped
         }
         if lc.contains("fail") || lc.contains("error") || lc.contains("crash") {
             return .failed
         }
-        if lc.contains("stop") || lc.contains("inactive") {
-            return .stopped
+        if lc.contains("init") || lc.contains("connecting") || lc.contains("spawn")
+            || lc.contains("starting") || lc.contains("cooldown") || lc.contains("reconnect") {
+            // "Cooldown"/"Cooldown (Ns)" = rate-limit sit-out before the next
+            // attempt → show as in-progress, not "?".
+            return .connecting
+        }
+        if lc.contains("connected") || (lc.contains("active") && !lc.contains("fail")) {
+            return .connected
         }
         return .unknown
     }

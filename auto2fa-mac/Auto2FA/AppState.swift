@@ -88,8 +88,13 @@ final class AppState: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private func startConnectionWatcher() {
         connWatcherTask?.cancel()
-        let stream = client.connectionStates
         connWatcherTask = Task { [weak self] in
+            // Fresh per-subscriber stream: cancelling the previous watcher task
+            // FINISHED its stream (AsyncStream is single-use), so re-iterating
+            // a shared stream after the first daemon respawn silently dropped
+            // all future disconnect notifications.
+            guard let client = self?.client else { return }
+            let stream = await client.connectionStateStream()
             for await connected in stream {
                 guard let self else { return }
                 if connected {
@@ -258,8 +263,13 @@ final class AppState: ObservableObject {
 
     private func startEventTask() {
         eventTask?.cancel()
-        let stream = client.events
         eventTask = Task { [weak self] in
+            // Fresh per-subscriber stream each (re)subscription — cancelling
+            // the old task finished its stream, so re-iterating a SHARED
+            // stream after the first reconnect silently dropped every event
+            // (the app degraded to 5s polling without telling anyone).
+            guard let client = self?.client else { return }
+            let stream = await client.eventStream()
             for await event in stream {
                 guard let self else { return }
                 await self.apply(event: event)
@@ -273,13 +283,14 @@ final class AppState: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s safety net
                 guard let self else { return }
-                // Don't spam the daemon with reloadAll while we know it's
-                // disconnected — reconnectWithBackoff is already retrying
-                // and reloadAll's failure would just overwrite the
-                // connectionError banner with the same message each tick.
-                if self.connectionError == nil {
-                    await self.reloadAll()
-                }
+                // ALWAYS poll. Gating on `connectionError == nil` permanently
+                // disabled the poll once reloadAll itself set the "slow to
+                // respond — retrying…" banner (which nothing then retried) or
+                // any per-action error set connectionError: the banner claimed
+                // retrying while the app sat frozen. The socket-level
+                // disconnect case is handled separately (reconnectWithBackoff)
+                // and reloadAll fails fast + cheap while down.
+                await self.reloadAll()
             }
         }
     }
@@ -417,9 +428,17 @@ final class AppState: ObservableObject {
     func deleteTunnel(_ tunnel: Tunnel) async {
         inFlightTunnels.insert(tunnel.name)
         defer { inFlightTunnels.remove(tunnel.name) }
+        var deleted = true
         do { try await client.removeTunnel(tunnel.name) }
-        catch { connectionError = error.localizedDescription }
+        catch {
+            deleted = false
+            connectionError = error.localizedDescription
+        }
         await reloadAll()
+        // Offer Undo ONLY if the delete actually happened — otherwise the
+        // snackbar said "Deleted" for a tunnel that's still there, and Undo
+        // then failed with a duplicate-name error.
+        guard deleted else { return }
         // Stash a snapshot so the snackbar can offer Undo for ~8s.
         undoableDelete = tunnel
         undoExpireTask?.cancel()
@@ -450,7 +469,11 @@ final class AppState: ObservableObject {
         undoableDelete = nil
         undoExpireTask?.cancel()
         do {
-            _ = try await client.addTunnel(name: t.name, localPort: t.localPort)
+            // remote_port MUST be passed: addTunnel defaults remote=local on
+            // the daemon side, so undoing "9999 → 8888" used to recreate
+            // "9999 → 9999" — silent config corruption.
+            _ = try await client.addTunnel(name: t.name, localPort: t.localPort,
+                                           remotePort: t.remotePort)
             if t.autoStart {
                 try? await client.setTunnelAutostart(t.name, value: true)
             }
@@ -462,6 +485,9 @@ final class AppState: ObservableObject {
             }
             if let jc = t.jumpCandidates {
                 try? await client.setTunnelJumpCandidates(t.name, candidates: jc)
+            }
+            if let up = t.urlPath, !up.isEmpty {
+                try? await client.setTunnelUrlPath(t.name, path: up)
             }
             // Only re-set the node (and thus restart the tunnel) if it was
             // alive at delete time. Idle tunnels stay idle.
@@ -491,7 +517,10 @@ final class AppState: ObservableObject {
         let newName = nextCloneName(for: t.name)
         do {
             let newPort = try await client.suggestPort(base: t.localPort + 1)
-            _ = try await client.addTunnel(name: newName, localPort: newPort)
+            // Keep the ORIGINAL remote port: a clone of "8888 → 6006" must
+            // forward to 6006, not to its own new local port.
+            _ = try await client.addTunnel(name: newName, localPort: newPort,
+                                           remotePort: t.remotePort)
             if !t.tags.isEmpty {
                 try? await client.setTunnelTags(newName, tags: t.tags)
             }
@@ -500,6 +529,9 @@ final class AppState: ObservableObject {
             }
             if let jc = t.jumpCandidates {
                 try? await client.setTunnelJumpCandidates(newName, candidates: jc)
+            }
+            if let up = t.urlPath, !up.isEmpty {
+                try? await client.setTunnelUrlPath(newName, path: up)
             }
             if let node = t.lastNode, !node.isEmpty {
                 try? await client.setTunnelNode(newName, node: node,
@@ -651,7 +683,11 @@ final class AppState: ObservableObject {
         for t in imported {
             if existing.contains(t.name) { skipped += 1; continue }
             do {
-                _ = try await client.addTunnel(name: t.name, localPort: t.local_port)
+                // remote_port is in the export file and MUST be passed —
+                // otherwise "8888 → 6006" imports as "8888 → 8888" and the
+                // forward silently targets the wrong remote port.
+                _ = try await client.addTunnel(name: t.name, localPort: t.local_port,
+                                               remotePort: t.remote_port)
                 if t.auto_start {
                     try? await client.setTunnelAutostart(t.name, value: true)
                 }
@@ -663,6 +699,9 @@ final class AppState: ObservableObject {
                 }
                 if let jc = t.jump_candidates {
                     try? await client.setTunnelJumpCandidates(t.name, candidates: jc)
+                }
+                if let up = t.url_path, !up.isEmpty {
+                    try? await client.setTunnelUrlPath(t.name, path: up)
                 }
                 if let node = t.last_node, !node.isEmpty {
                     try? await client.setTunnelNode(t.name, node: node,
