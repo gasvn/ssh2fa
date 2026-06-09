@@ -80,7 +80,7 @@ impl OtpRegistry {
     /// Return the group state for `secret`, creating it if needed.
     pub fn get_group(&self, secret: &str) -> Arc<Mutex<OtpGroupState>> {
         let key = otp_group_key(secret);
-        let mut map = self.groups.lock().unwrap();
+        let mut map = self.groups.lock().unwrap_or_else(|e| e.into_inner());
         map.entry(key)
             .or_insert_with(|| {
                 Arc::new(Mutex::new(OtpGroupState {
@@ -125,7 +125,7 @@ pub fn make_otp_closure(
         let group_arc = registry.get_group(&secret);
         loop {
             // Acquire the group lock — serializes OTP submission.
-            let mut grp = group_arc.lock().unwrap();
+            let mut grp = group_arc.lock().unwrap_or_else(|e| e.into_inner());
 
             let code = totp_now(&secret)?;
 
@@ -198,7 +198,7 @@ pub fn spawn_host_start(
             let ready = start_master(&mut pool, slot, &password, otp_closure);
 
             // Write result back to State (fast, no I/O).
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 if ready {
                     h.is_master_ready = true;
@@ -240,7 +240,7 @@ pub fn spawn_host_stop(host_name: String, state: Arc<Mutex<State>>) {
             info!("[{host_name}] host-stop worker: stopping all master slots");
             stop_all(&mut pool);
 
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.is_master_ready = false;
                 h.pool_alive = 0;
@@ -363,7 +363,7 @@ fn spawn_tunnel_start_inner(
                         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                         rt.record(&name, ts, &msg);
                     }
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.status = TunnelStatus::Failed;
                         t.last_msg = msg;
@@ -389,7 +389,7 @@ fn spawn_tunnel_start_inner(
                         rt.record(&name, now, format!("connected via {jump} → {node}:{remote_port}"));
                     }
 
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.status = TunnelStatus::Alive;
                         t.wants_alive = true;
@@ -428,7 +428,7 @@ fn spawn_tunnel_start_inner(
                         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                         rt.record(&name, ts, "probe timed out");
                     }
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
@@ -443,7 +443,7 @@ fn spawn_tunnel_start_inner(
                         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                         rt.record(&name, ts, &msg);
                     }
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
@@ -520,7 +520,7 @@ mod tests {
                 let s = secret.to_string();
                 std::thread::spawn(move || {
                     let group = reg.get_group(&s);
-                    let _guard = group.lock().unwrap();
+                    let _guard = group.lock().unwrap_or_else(|e| e.into_inner());
                     // Inside the lock — measure concurrency.
                     let prev = ic.fetch_add(1, Ordering::SeqCst);
                     mc.fetch_max(prev + 1, Ordering::SeqCst);
@@ -568,7 +568,7 @@ mod tests {
                     let group = reg.get_group(&secret);
                     // Both threads wait here so they enter the lock attempt together.
                     b.wait();
-                    let _guard = group.lock().unwrap();
+                    let _guard = group.lock().unwrap_or_else(|e| e.into_inner());
                     let prev = ic.fetch_add(1, Ordering::SeqCst);
                     mc.fetch_max(prev + 1, Ordering::SeqCst);
                     // Hold for a moment to make overlap visible.

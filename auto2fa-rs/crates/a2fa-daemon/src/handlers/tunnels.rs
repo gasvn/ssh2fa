@@ -79,7 +79,7 @@ pub fn tunnel_snapshot(t: &Tunnel) -> Value {
 // ---------------------------------------------------------------------------
 
 pub fn list_tunnels(state: &Arc<Mutex<State>>) -> Result<Value> {
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(state);
     let snaps: Vec<Value> = guard.tunnels.iter().map(tunnel_snapshot).collect();
     Ok(json!(snaps))
 }
@@ -121,7 +121,7 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         .map(|p| p as u16)
         .unwrap_or(local_port);
 
-    let mut guard = state.lock().unwrap();
+    let mut guard = crate::lock_state(state);
 
     // Duplicate check (by name).
     if guard.tunnels.iter().any(|t| t.name == name) {
@@ -194,7 +194,7 @@ pub fn tunnel_remove(
         });
     }
 
-    let mut guard = state.lock().unwrap();
+    let mut guard = crate::lock_state(state);
     let pos = guard
         .tunnels
         .iter()
@@ -242,7 +242,7 @@ pub fn tunnel_start(
 
     // Snapshot everything we need under the lock.
     let (jump, user, node, local_port, remote_port, post_connect_cmd) = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -378,7 +378,7 @@ pub fn tunnel_stop(
     // Clear wants_alive and mark Idle under the State lock FIRST, so the
     // maintenance loop sees the user's intent immediately.
     {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -407,7 +407,7 @@ pub fn tunnel_stop(
         });
         if let Some(since) = alive_since {
             let delta = (a2fa_core::tunnels::uptime::now_unix() - since).max(0.0);
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                 t.total_uptime_sec += delta;
             }
@@ -415,7 +415,7 @@ pub fn tunnel_stop(
     }
 
     // Persist the change.
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(state);
     let path = guard.tunnels_path.clone();
     let tunnels = guard.tunnels.clone();
     drop(guard);
@@ -444,7 +444,7 @@ pub fn tunnel_toggle(
         .ok_or_else(|| Error::BadParams("name required".into()))?;
 
     let should_stop = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         let status = &guard
             .tunnels
             .iter()
@@ -499,7 +499,7 @@ pub fn tunnel_set_node(
         .to_owned();
 
     let (old_node, old_status) = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -555,7 +555,7 @@ pub fn tunnel_set_autostart(state: &Arc<Mutex<State>>, params: &Value) -> Result
         .unwrap_or(false);
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -589,7 +589,7 @@ pub fn tunnel_set_jump_candidates(state: &Arc<Mutex<State>>, params: &Value) -> 
     };
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         // Filter to known hosts (drop unknown names).
         let known_hosts: Vec<String> = guard.hosts.iter().map(|h| h.host.clone()).collect();
         let filtered = cands.map(|cs| {
@@ -627,7 +627,7 @@ pub fn tunnel_set_post_connect(state: &Arc<Mutex<State>>, params: &Value) -> Res
     };
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -663,7 +663,7 @@ pub fn tunnel_set_tags(state: &Arc<Mutex<State>>, params: &Value) -> Result<Valu
     };
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -695,7 +695,7 @@ pub fn tunnel_set_url_path(state: &Arc<Mutex<State>>, params: &Value) -> Result<
     };
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
             .iter_mut()
@@ -728,7 +728,7 @@ pub fn tunnel_rename(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
     }
 
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
 
         if old == new {
             let t = guard
@@ -850,7 +850,7 @@ pub fn tunnel_events(
 
     // Validate tunnel exists.
     {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard
             .tunnels
             .iter()
@@ -891,7 +891,7 @@ pub fn discover_nodes(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value
 
     // Verify the host exists and its master is ready.
     {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         let host = guard
             .hosts
             .iter()
@@ -937,7 +937,7 @@ pub fn port_suggest(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> 
         .unwrap_or(8888) as u16;
 
     let taken: Vec<u16> = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard.tunnels.iter().map(|t| t.local_port).collect()
     };
 
@@ -1089,7 +1089,7 @@ mod tests {
     fn tunnel_stop_marks_idle_and_clears_wants_alive() {
         let state = make_alive_tunnel("nb", 9300);
         tunnel_stop(&state, &json!({"name": "nb"}), None).unwrap();
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         let t = &guard.tunnels[0];
         assert_eq!(t.status, TunnelStatus::Idle);
         assert!(!t.wants_alive);
@@ -1100,7 +1100,7 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9301);
         // Already idle — should be a no-op, no error.
         tunnel_stop(&state, &json!({"name": "nb"}), None).unwrap();
-        assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
+        assert_eq!(crate::lock_state(&state).tunnels[0].status, TunnelStatus::Idle);
     }
 
     #[test]
@@ -1125,7 +1125,7 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9302);
         // No ready host → no jump; no node → picks the "no node" path.
         tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
-        let msg = state.lock().unwrap().tunnels[0].last_msg.clone();
+        let msg = crate::lock_state(&state).tunnels[0].last_msg.clone();
         assert!(msg.contains("no node") || msg.contains("waiting") || msg.contains("jump"));
     }
 
@@ -1135,10 +1135,10 @@ mod tests {
     #[test]
     fn tunnel_start_already_alive_is_noop() {
         let state = make_alive_tunnel("nb", 9310);
-        let before = state.lock().unwrap().tunnels[0].last_msg.clone();
+        let before = crate::lock_state(&state).tunnels[0].last_msg.clone();
         let v = tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(v, Value::Null);
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         let t = &guard.tunnels[0];
         assert_eq!(t.status, TunnelStatus::Alive, "status must stay Alive");
         assert_eq!(t.last_msg, before, "early-return must not touch last_msg");
@@ -1157,10 +1157,10 @@ mod tests {
     #[test]
     fn tunnel_start_already_starting_is_noop() {
         let state = make_tunnel_with_status("nb", 9311, TunnelStatus::Starting);
-        let before = state.lock().unwrap().tunnels[0].last_msg.clone();
+        let before = crate::lock_state(&state).tunnels[0].last_msg.clone();
         let v = tunnel_start(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(v, Value::Null);
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         let t = &guard.tunnels[0];
         assert_eq!(
             t.status,
@@ -1179,7 +1179,7 @@ mod tests {
     fn tunnel_toggle_alive_stops() {
         let state = make_alive_tunnel("nb", 9400);
         tunnel_toggle(&state, &json!({"name": "nb"}), None, None).unwrap();
-        assert_eq!(state.lock().unwrap().tunnels[0].status, TunnelStatus::Idle);
+        assert_eq!(crate::lock_state(&state).tunnels[0].status, TunnelStatus::Idle);
     }
 
     /// Toggle on a Starting tunnel must stop it (FIX 3 — parity with Python).
@@ -1188,7 +1188,7 @@ mod tests {
         let state = make_tunnel_with_status("nb", 9401, TunnelStatus::Starting);
         tunnel_toggle(&state, &json!({"name": "nb"}), None, None).unwrap();
         assert_eq!(
-            state.lock().unwrap().tunnels[0].status,
+            crate::lock_state(&state).tunnels[0].status,
             TunnelStatus::Idle,
             "toggle on Starting tunnel must stop it"
         );
@@ -1206,7 +1206,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu01"));
         assert_eq!(guard.tunnels[0].last_user.as_deref(), Some("jdoe"));
     }
@@ -1223,7 +1223,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         assert_eq!(
             guard.tunnels[0].last_node.as_deref(),
             Some("holygpu01"),
@@ -1255,7 +1255,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         // After set_node on a stale tunnel, the tunnel should no longer be Stale;
         // it will be Idle (no ready jump host in test state) or Starting.
         assert_ne!(
@@ -1276,7 +1276,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         // After set_node on a PortBusy tunnel, it must not remain PortBusy.
         assert_ne!(
             guard.tunnels[0].status,
@@ -1292,7 +1292,7 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9600);
         let v = tunnel_rename(&state, &json!({"old": "nb", "new": "nb2"})).unwrap();
         assert_eq!(v["name"], "nb2");
-        assert_eq!(state.lock().unwrap().tunnels[0].name, "nb2");
+        assert_eq!(crate::lock_state(&state).tunnels[0].name, "nb2");
     }
 
     #[test]

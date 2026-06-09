@@ -407,7 +407,12 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
     }
 
     let mut reader = BufReader::new(reader_stream);
-    let mut writer = stream;
+    // Writes to this connection come from TWO threads once it subscribes: this
+    // loop (request responses + the subscribe ack) and the subscriber forwarder
+    // thread (events). Share the write half behind a lock so their
+    // newline-delimited JSON frames can NEVER interleave on the fd — interleaved
+    // bytes would corrupt the wire protocol and break the client's line parser.
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(stream));
 
     // Per-connection subscribe-once flag. A connection may send
     // `subscribe_events` repeatedly (the read loop `continue`s after handling
@@ -489,14 +494,13 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
                         if !subscribed {
                             match subscribers::register(&ctx.state) {
                                 Some(rx) => {
-                                    if let Ok(ev_stream) = writer.try_clone() {
-                                        subscribers::forward_events(ev_stream, rx);
-                                        subscribed = true;
-                                    }
-                                    // If try_clone failed, `rx` drops here and
-                                    // the just-registered sender is pruned by
-                                    // the next `emit`; leave `subscribed` false
-                                    // so a retry can re-register.
+                                    // Share the locked write half with the
+                                    // forwarder so events + responses serialize.
+                                    subscribers::forward_events(
+                                        std::sync::Arc::clone(&writer),
+                                        rx,
+                                    );
+                                    subscribed = true;
                                 }
                                 None => {
                                     // Cap reached — refused by the engine.
@@ -507,7 +511,12 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
                             }
                         }
                         let ack = encode_response(id, serde_json::json!({ "subscribed": subscribed }));
-                        if writer.write_all(ack.as_bytes()).is_err() {
+                        if writer
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .write_all(ack.as_bytes())
+                            .is_err()
+                        {
                             break;
                         }
                         continue;
@@ -530,7 +539,12 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
                 encode_error("", ErrCode::Internal, "internal error")
             }
         };
-        if writer.write_all(response.as_bytes()).is_err() {
+        if writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_all(response.as_bytes())
+            .is_err()
+        {
             break;
         }
     }

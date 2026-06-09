@@ -2,13 +2,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current wall-clock time as fractional Unix seconds.
 ///
-/// Panics only if the system clock is set before 1970-01-01, which is not a
-/// realistic scenario.
+/// Degrades to `0.0` if the system clock is set before 1970-01-01 (unrealistic,
+/// but a pre-epoch clock must NOT panic: `now_unix` is called from the
+/// maintenance loop and from worker threads that hold the State lock, where a
+/// panic would poison it).
 pub fn now_unix() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_secs_f64()
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Compute live uptime: `base_sec` plus however long the current alive run

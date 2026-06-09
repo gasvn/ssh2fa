@@ -9,7 +9,6 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
 
 use a2fa_core::engine::State;
 
@@ -18,30 +17,35 @@ use a2fa_core::engine::State;
 /// rather than growing the heap without limit.
 const SUBSCRIBER_CHANNEL_CAP: usize = 1024;
 
-/// Write timeout on the subscriber socket. If a stuck client wedges the
-/// forwarder's `write_all`, it errors out after this long and the forwarder
-/// exits (dropping the receiver → the sender is pruned by `emit`).
-const FORWARD_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Spawn a thread that reads from `rx` and writes each event string to
-/// `stream`.  The thread exits cleanly when the channel closes (sender
-/// dropped) or the stream write fails / times out (client disconnected or
-/// wedged).
+/// Spawn a thread that reads from `rx` and writes each event string to the
+/// shared connection writer.  The thread exits cleanly when the channel closes
+/// (sender dropped) or the stream write fails / times out (client disconnected
+/// or wedged).
 ///
-/// Returns immediately; the spawned thread owns `stream` and `rx`.
-pub fn forward_events(mut stream: UnixStream, rx: mpsc::Receiver<String>) {
-    // A stuck client must not pin this thread forever on a blocked write.
-    let _ = stream.set_write_timeout(Some(FORWARD_WRITE_TIMEOUT));
+/// `writer` is the SAME lock the connection's request loop writes responses
+/// through, so events and responses serialize — a write_all here can never
+/// interleave bytes with one there. The write timeout was already set on the
+/// underlying stream when the connection was accepted.
+///
+/// Returns immediately; the spawned thread shares `writer` and owns `rx`.
+pub fn forward_events(writer: Arc<Mutex<UnixStream>>, rx: mpsc::Receiver<String>) {
     let spawn_res = std::thread::Builder::new()
         .name("subscriber-forward".into())
         .spawn(move || {
             for event_line in rx {
-                if stream.write_all(event_line.as_bytes()).is_err() {
+                let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.write_all(event_line.as_bytes()).is_err() {
                     break;
                 }
             }
-            // Best-effort shutdown — ignore errors.
-            let _ = stream.shutdown(Shutdown::Both);
+            // Forwarder done (channel closed by `emit` pruning the sender, OR a
+            // write failed): shut the connection down so a client whose
+            // subscription was pruned reconnects + re-subscribes (the
+            // per-connection subscribe-once flag blocks re-subscribing here).
+            let _ = writer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .shutdown(Shutdown::Both);
         });
     if let Err(e) = spawn_res {
         // Spawn failed (e.g. transient EAGAIN). The closure never ran, so the

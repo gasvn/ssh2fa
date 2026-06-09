@@ -52,7 +52,7 @@ pub fn host_snapshot(h: &Host) -> Value {
 // ---------------------------------------------------------------------------
 
 pub fn ping(state: &Arc<Mutex<State>>) -> Result<Value> {
-    let _guard = state.lock().unwrap();
+    let _guard = crate::lock_state(state);
     Ok(json!({ "ok": true, "pid": std::process::id() }))
 }
 
@@ -61,7 +61,7 @@ pub fn ping(state: &Arc<Mutex<State>>) -> Result<Value> {
 // ---------------------------------------------------------------------------
 
 pub fn list_hosts(state: &Arc<Mutex<State>>) -> Result<Value> {
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(state);
     let snaps: Vec<Value> = guard.hosts.iter().map(host_snapshot).collect();
     Ok(json!(snaps))
 }
@@ -97,7 +97,7 @@ pub fn host_toggle_with_registry(
 
     // Snapshot the current active state and credentials while holding the lock.
     let (currently_active, password_opt, otpauth_opt) = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         let host = guard
             .hosts
             .iter()
@@ -114,7 +114,7 @@ pub fn host_toggle_with_registry(
     if currently_active {
         // Deactivate: reset circuit breakers in State + spawn stop worker.
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.active = false;
                 h.last_msg = "Deactivating…".into();
@@ -128,7 +128,7 @@ pub fn host_toggle_with_registry(
         let secret = extract_secret(&otpauth).unwrap_or_default();
 
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.active = true;
                 h.last_msg = "Connecting…".into();
@@ -147,7 +147,7 @@ pub fn host_toggle_with_registry(
     }
 
     // Return the current snapshot (start/stop complete asynchronously).
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(state);
     let snap = guard
         .hosts
         .iter()
@@ -205,7 +205,7 @@ pub fn host_toggle_managed(
     // and `spawn_warmup_slot1` read the creds inside their own worker threads,
     // so a stalled "Always Allow" prompt can never wedge the IPC handler.
     let currently_active = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         let host = guard
             .hosts
             .iter()
@@ -219,7 +219,7 @@ pub fn host_toggle_managed(
             if currently_active {
                 // Deactivate: update State flag + spawn stop (uses persistent pool).
                 {
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(state);
                     if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                         h.active = false;
                         h.last_msg = "Deactivating…".into();
@@ -234,7 +234,7 @@ pub fn host_toggle_managed(
                 mgrs.with_pool_mut(&host_name, |p| p.reset_circuit_breakers());
 
                 {
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = crate::lock_state(state);
                     if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                         h.active = true;
                         h.last_msg = "Connecting…".into();
@@ -268,7 +268,7 @@ pub fn host_toggle_managed(
         }
     }
 
-    let guard = state.lock().unwrap();
+    let guard = crate::lock_state(state);
     let snap = guard
         .hosts
         .iter()
@@ -365,7 +365,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
 
     // Snapshot current mount state.
     let is_mounted = {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         guard
             .hosts
             .iter()
@@ -398,7 +398,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     if is_mounted || mount_point.exists() && is_mount_point(&mount_point) {
         // Unmount.
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.last_msg = "Unmounting…".into();
             }
@@ -410,7 +410,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         let unmounted = result
             .map(|o| o.status.success() && !is_mount_point(&mount_point))
             .unwrap_or(false);
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.is_mounted = !unmounted;
             h.last_msg = if unmounted { "Unmounted" } else { "Unmount failed" }.into();
@@ -419,7 +419,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         // Mount.
         let _ = std::fs::create_dir_all(&mount_point);
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 h.last_msg = "Mounting…".into();
             }
@@ -452,7 +452,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             // (observed: 5+ orphaned go-nfsv4 processes).
             reap_failed_sshfs(&mount_point);
         }
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.is_mounted = mounted;
             h.last_msg = if mounted { "Mounted" } else { "Mount failed" }.into();
@@ -495,7 +495,7 @@ pub fn host_rotate(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         .to_owned();
 
     let new_index: usize = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let host = guard
             .hosts
             .iter_mut()
@@ -574,7 +574,7 @@ pub fn host_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
     // Check for duplicates before doing any I/O.
     {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         if guard.hosts.iter().any(|h| h.host == host_name) {
             return Err(Error::Duplicate(format!("host {host_name} already exists")));
         }
@@ -614,7 +614,7 @@ pub fn host_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         last_msg: "Added".into(),
     };
     let snap = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = crate::lock_state(state);
         let s = host_snapshot(&new_host);
         guard.hosts.push(new_host);
         s
@@ -795,7 +795,7 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
     // Verify the host exists in State.
     {
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(state);
         if !guard.hosts.iter().any(|h| h.host == host_name) {
             return Err(Error::NotFound(format!("host {host_name}")));
         }
@@ -939,25 +939,25 @@ mod tests {
         // read host.active (false) → set to true.
         let state = make_state_with_host("k6", false);
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             let h = guard.hosts.iter_mut().find(|h| h.host == "k6").unwrap();
             // Simulate what the handler does synchronously.
             h.active = true;
             h.last_msg = "Connecting…".into();
         }
-        assert!(state.lock().unwrap().hosts[0].active);
+        assert!(crate::lock_state(&state).hosts[0].active);
     }
 
     #[test]
     fn host_toggle_deactivates_flag_directly() {
         let state = make_state_with_host("k6", true);
         {
-            let mut guard = state.lock().unwrap();
+            let mut guard = crate::lock_state(&state);
             let h = guard.hosts.iter_mut().find(|h| h.host == "k6").unwrap();
             h.active = false;
             h.last_msg = "Deactivating…".into();
         }
-        assert!(!state.lock().unwrap().hosts[0].active);
+        assert!(!crate::lock_state(&state).hosts[0].active);
     }
 
     #[test]
@@ -1067,18 +1067,18 @@ mod tests {
     #[test]
     fn host_rotate_advances_pool_index() {
         let state = make_state_with_host("k6", true);
-        state.lock().unwrap().hosts[0].pool_index = 0;
+        crate::lock_state(&state).hosts[0].pool_index = 0;
         host_rotate(&state, &json!({"host": "k6"})).unwrap();
         // Should advance 0 → 1 (mod 2).
-        assert_eq!(state.lock().unwrap().hosts[0].pool_index, 1);
+        assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 1);
     }
 
     #[test]
     fn host_rotate_wraps_around() {
         let state = make_state_with_host("k6", true);
-        state.lock().unwrap().hosts[0].pool_index = 1;
+        crate::lock_state(&state).hosts[0].pool_index = 1;
         host_rotate(&state, &json!({"host": "k6"})).unwrap();
-        assert_eq!(state.lock().unwrap().hosts[0].pool_index, 0);
+        assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 0);
     }
 
     #[test]
@@ -1187,7 +1187,7 @@ mod tests {
         // We need to add the host first so it's "found" but has an unsafe name.
         // (In practice host_add validates names; this tests the mount guard.)
         {
-            state.lock().unwrap().hosts.push(Host {
+            crate::lock_state(&state).hosts.push(Host {
                 host: "../../etc".into(),
                 status: "Idle".into(),
                 active: false,

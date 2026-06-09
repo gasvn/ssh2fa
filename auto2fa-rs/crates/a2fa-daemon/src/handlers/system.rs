@@ -192,7 +192,7 @@ pub fn reset_all(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Va
     // 1. Collect names of currently-active tunnels (brief lock) and flip them
     //    to Idle / not-wanted in the same critical section.
     let stopped: Vec<String> = {
-        let mut guard = ctx.state.lock().unwrap();
+        let mut guard = crate::lock_state(&ctx.state);
         let names: Vec<String> = guard
             .tunnels
             .iter()
@@ -286,7 +286,7 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
 
     // 1. Snapshot the tunnels that were alive at wake time (name, active_jump).
     let alive_tunnels: Vec<(String, Option<String>)> = {
-        let guard = ctx.state.lock().unwrap();
+        let guard = crate::lock_state(&ctx.state);
         guard
             .tunnels
             .iter()
@@ -345,7 +345,7 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
     // 5. Reset each to-restart tunnel to Idle but KEEP wants_alive = true so the
     //    always-on maintenance loop revives it once a ready jump master exists.
     {
-        let mut guard = ctx.state.lock().unwrap();
+        let mut guard = crate::lock_state(&ctx.state);
         for name in &to_restart {
             if let Some(t) = guard.tunnels.iter_mut().find(|t| &t.name == name) {
                 t.status = TunnelStatus::Idle;
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(v["tunnels_stopped"], 1);
         assert_eq!(v["masters_rebuilt"], 0);
 
-        let guard = state.lock().unwrap();
+        let guard = crate::lock_state(&state);
         let t = &guard.tunnels[0];
         assert_eq!(t.status, TunnelStatus::Idle);
         assert!(!t.wants_alive);
