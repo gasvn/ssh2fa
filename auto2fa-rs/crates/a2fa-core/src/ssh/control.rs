@@ -416,33 +416,30 @@ pub fn master_exit(control_path: &Path, host: &str) {
 /// [`run_ssh_bounded`] so a wedged socket cannot block the pre-login cleanup
 /// forever. The socket file is force-removed afterward regardless of outcome.
 pub fn cleanup_stale_socket(path: &Path, host: &str) {
-    // 1. Polite exit via the control socket (only meaningful if the socket is
-    //    live). A clean Success means the master is gone; anything else means it
-    //    may still be alive and must be PID-killed below.
-    let exit_outcome = if path.exists() {
+    // 1. Polite exit via the control socket if it's still there — a graceful
+    //    close of the socket's current owner before we hard-kill any remaining
+    //    masters in step 2.
+    if path.exists() {
         let control_opt = format!("ControlPath={}", path.display());
-        run_ssh_bounded(
+        let _ = run_ssh_bounded(
             &["-o", &control_opt, "-O", "exit", host],
             host,
             MASTER_EXIT_TIMEOUT,
             "ssh -O exit (cleanup)",
-        )
-    } else {
-        // No socket → `ssh -O exit` can't work. Treat as "not cleanly exited"
-        // so an ORPHANED (socket-deleted) master still gets PID-killed below —
-        // this is exactly the 4.5h-orphan case.
-        BoundedOutcome::Failure
-    };
-
-    // 2. PID-based zombie-kill. If the polite exit did NOT cleanly succeed, a
-    //    wedged/orphaned master may still be running (`ssh -O exit` can't reach
-    //    it once the socket is wedged or gone). Find it by its ControlPath
-    //    proctitle and SIGTERM->SIGKILL it. Ports backend.py's zombie-kill that
-    //    the Rust rewrite dropped (the doc here used to say "handled at a higher
-    //    layer" — there was no such layer, so masters leaked).
-    if exit_outcome != BoundedOutcome::Success {
-        kill_orphaned_master(path, host);
+        );
     }
+
+    // 2. PID-based zombie-kill: ALWAYS sweep every ControlMaster on this exact
+    //    ControlPath. A polite `ssh -O exit` only closes the socket's CURRENT
+    //    owner — any lingering orphan on the same path (its socket already
+    //    unlinked + replaced by a newer master, or the socket already gone)
+    //    survives it. Gating the sweep on `exit != Success` let duplicate
+    //    masters pile up across reconnects (observed: 2 live + 2 orphan k8
+    //    masters; and the original 4.5h socket-deleted orphan). Since this runs
+    //    pre-login / teardown for this slot, killing every `[mux]` on the path is
+    //    correct. Ports backend.py's zombie-kill the Rust rewrite dropped. Common
+    //    case (no `[mux]` found) is a single cheap bounded pgrep.
+    kill_orphaned_master(path, host);
 
     // 3. Force-remove the socket file if still present.
     if path.exists() {
