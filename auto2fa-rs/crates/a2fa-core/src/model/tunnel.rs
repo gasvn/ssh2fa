@@ -48,6 +48,13 @@ pub struct Tunnel {
 
     /// Whether the user wants this tunnel alive right now.
     /// Persisted so auto-recovery survives daemon restarts.
+    ///
+    /// `#[serde(default)]`: the IPC `tunnel_snapshot` deliberately OMITS this
+    /// field (clients shouldn't depend on it), but the TUI deserializes
+    /// snapshots into this very struct — without the default, every
+    /// `list_tunnels` decode failed on "missing field wants_alive" and the
+    /// TUI's tunnel pane stayed permanently empty.
+    #[serde(default)]
     pub wants_alive: bool,
 
     // ---- Runtime / snapshot fields ------------------------------------------

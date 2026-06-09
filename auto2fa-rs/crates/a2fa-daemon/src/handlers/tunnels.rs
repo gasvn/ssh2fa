@@ -68,7 +68,16 @@ pub fn tunnel_snapshot(t: &Tunnel) -> Value {
         "status": t.status,
         "last_msg": t.last_msg,
         "last_alive_at": t.last_alive_at,
-        "total_uptime_sec": t.total_uptime_sec,
+        // LIVE uptime: total_uptime_sec only accumulates when a run ENDS, so an
+        // Alive tunnel must add its current run here — otherwise a 6-hour first
+        // run reports 0 the whole time. last_alive_at is stamped on each
+        // idle→alive transition. (Python's _tunnel_snapshot used _live_uptime.)
+        "total_uptime_sec": if t.status == TunnelStatus::Alive && t.last_alive_at > 0.0 {
+            t.total_uptime_sec
+                + (a2fa_core::tunnels::uptime::now_unix() - t.last_alive_at).max(0.0)
+        } else {
+            t.total_uptime_sec
+        },
         "connect_count": t.connect_count,
         "fail_count": t.fail_count,
     })
@@ -105,9 +114,12 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         .ok_or_else(|| Error::BadParams("name required".into()))?
         .to_owned();
 
+    // try_from (not `as u16`): `70000 as u16` silently truncates to 4464 and
+    // would create a tunnel on a different port than requested.
     let local_port = params["local_port"]
         .as_u64()
-        .ok_or_else(|| Error::BadParams("local_port required".into()))? as u16;
+        .and_then(|p| u16::try_from(p).ok())
+        .ok_or_else(|| Error::BadParams("local_port required (1024..65535)".into()))?;
 
     if !is_valid_port(local_port) {
         return Err(Error::BadParams(format!(
@@ -115,11 +127,11 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         )));
     }
 
-    let remote_port = params
-        .get("remote_port")
-        .and_then(|v| v.as_u64())
-        .map(|p| p as u16)
-        .unwrap_or(local_port);
+    let remote_port = match params.get("remote_port").and_then(|v| v.as_u64()) {
+        Some(p) => u16::try_from(p)
+            .map_err(|_| Error::BadParams(format!("remote_port {p} out of range (max 65535)")))?,
+        None => local_port,
+    };
 
     let mut guard = crate::lock_state(state);
 
@@ -931,10 +943,13 @@ pub fn discover_nodes(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value
 // ---------------------------------------------------------------------------
 
 pub fn port_suggest(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    // try_from (not `as u16`): an oversized base (e.g. a typo "99999") used to
+    // truncate to a random-looking port; fall back to the default instead.
     let base = params
         .get("base")
         .and_then(|v| v.as_u64())
-        .unwrap_or(8888) as u16;
+        .and_then(|p| u16::try_from(p).ok())
+        .unwrap_or(8888);
 
     let taken: Vec<u16> = {
         let guard = crate::lock_state(state);

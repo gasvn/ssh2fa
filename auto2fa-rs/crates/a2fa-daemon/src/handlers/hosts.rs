@@ -539,7 +539,12 @@ fn valid_host_name(host: &str) -> bool {
 /// add to State, and optionally spawn a master-start.
 ///
 /// Mirrors `_add_host_persistent` + the `HOST_ADD` handler in daemon.py.
-pub fn host_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn host_add(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    managers: Option<Arc<HostManagers>>,
+    registry: Option<Arc<OtpRegistry>>,
+) -> Result<Value> {
     let host_name = params["host"]
         .as_str()
         .ok_or_else(|| Error::BadParams("host required".into()))?
@@ -620,17 +625,38 @@ pub fn host_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         s
     };
 
-    // If auto_connect, kick off a master-start.
+    // If auto_connect, kick off a master-start THROUGH the managed system:
+    // the daemon-global OtpRegistry (so a shared TOTP secret is serialized
+    // against other in-flight logins — a private registry could replay the
+    // same code twice in one window) and HostManagers (so the heartbeat
+    // health-checks/restarts this master; the legacy spawn_host_start wrote
+    // only to State and left the registry slot Init = never monitored).
     if auto_connect {
-        let reg = OtpRegistry::new();
-        spawn_host_start(
-            host_name.clone(),
-            0,
-            password,
-            secret,
-            reg,
-            Arc::clone(state),
-        );
+        match (managers, registry) {
+            (Some(mgrs), Some(reg)) => {
+                spawn_managed_start(
+                    host_name.clone(),
+                    0,
+                    Arc::clone(&reg),
+                    Arc::clone(state),
+                    Arc::clone(&mgrs),
+                );
+                spawn_warmup_slot1(host_name.clone(), reg, Arc::clone(state), mgrs);
+            }
+            _ => {
+                // Legacy fallback (tests only — production dispatch always
+                // passes both).
+                let reg = OtpRegistry::new();
+                spawn_host_start(
+                    host_name.clone(),
+                    0,
+                    password,
+                    secret,
+                    reg,
+                    Arc::clone(state),
+                );
+            }
+        }
     }
 
     Ok(snap)
@@ -724,7 +750,8 @@ fn test_login(host: &str, password: &str, secret: &str) -> (bool, String) {
         "-o".into(), "ControlMaster=no".into(),
         "-o".into(), "ControlPath=none".into(),
         host.into(),
-        "echo".into(), "__auto2fa_login_ok__".into(),
+        // run_login matches this marker as its command-mode success signal.
+        "echo".into(), a2fa_core::ssh::pty_auth::LOGIN_OK_MARKER.into(),
     ];
 
     let secret_owned = secret.to_owned();
@@ -1111,6 +1138,8 @@ mod tests {
         let err = host_add(
             &state,
             &json!({"host": "a/b", "password": "x", "otpauth_url": "otpauth://totp/x?secret=ABC"}),
+            None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, Error::BadParams(_)));
@@ -1122,6 +1151,8 @@ mod tests {
         let err = host_add(
             &state,
             &json!({"host": "k6", "password": "x", "otpauth_url": "otpauth://totp/no-secret-here"}),
+            None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, Error::BadParams(_)));

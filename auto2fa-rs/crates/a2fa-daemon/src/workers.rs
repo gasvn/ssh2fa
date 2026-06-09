@@ -382,6 +382,30 @@ fn spawn_tunnel_start_inner(
                         .unwrap_or_default()
                         .as_secs_f64();
 
+                    // The user may have hit Stop during the start (ssh spawn +
+                    // ~10 s probe) — while `Starting`, the child isn't in the
+                    // registry yet, so tunnel_stop had nothing to kill. Honor
+                    // the abort HERE instead of resurrecting: the old
+                    // unconditional `wants_alive = true` write overwrote (and
+                    // persisted!) the user's stop.
+                    let aborted = {
+                        let guard = crate::lock_state(&state);
+                        guard
+                            .tunnels
+                            .iter()
+                            .find(|t| t.name == name)
+                            .map(|t| !t.wants_alive)
+                            .unwrap_or(true) // tunnel deleted mid-start → abort
+                    };
+                    if aborted {
+                        info!("[tunnel:{name}] stopped during start — killing fresh forward (abort honored)");
+                                                a2fa_core::tunnels::forward::stop_forward(child);
+                        if let Some(rt) = &runtime {
+                            rt.record(&name, now, "start aborted by user stop");
+                        }
+                        return;
+                    }
+
                     // Store child in runtime registry if available.
                     if let Some(rt) = &runtime {
                         rt.store_child(&name, child);

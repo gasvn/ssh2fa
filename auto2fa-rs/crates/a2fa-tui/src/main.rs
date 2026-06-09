@@ -144,8 +144,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         }
     }
 
-    // Fetch initial log tail.
-    match client::rpc("log_tail", serde_json::json!({ "n": 200 })) {
+    // Fetch initial log tail. (Param key is "lines" — the daemon ignores
+    // unknown keys, so the old "n" silently fell back to the default.)
+    match client::rpc("log_tail", serde_json::json!({ "lines": 200 })) {
         Ok(v) => {
             if let Some(lines) = v.get("lines").and_then(Value::as_array) {
                 let ls: Vec<String> = lines
@@ -741,25 +742,23 @@ fn refresh_hosts(app: &mut AppModel) {
 // ---------------------------------------------------------------------------
 
 fn apply_daemon_event(app: &mut AppModel, event: Value) {
-    // The daemon emits: {"event": "tunnel_update", "data": {...}}
-    //                   {"event": "host_update",   "data": {...}}
-    //                   {"event": "log_line",       "line": "..."}
+    // The daemon emits (proto/event.rs):
+    //   {"event": "tunnel_status_changed", "data": {...}}
+    //   {"event": "host_status_changed",   "data": {...}}
+    //   {"event": "notification",          "data": {...}}
+    // (The old "tunnel_update"/"host_update"/"log_line" names never existed in
+    // either daemon — the TUI matched nothing and never live-updated.)
     let event_type = event.get("event").and_then(Value::as_str).unwrap_or("");
     match event_type {
-        "tunnel_update" => {
+        "tunnel_status_changed" => {
             // Re-fetch the full list for simplicity.
             refresh_tunnels(app);
         }
-        "host_update" => {
+        "host_status_changed" => {
             if let Ok(v) = client::rpc("list_hosts", serde_json::json!({})) {
                 if let Ok(hosts) = serde_json::from_value(v) {
                     app.set_hosts(hosts);
                 }
-            }
-        }
-        "log_line" => {
-            if let Some(line) = event.get("line").and_then(Value::as_str) {
-                app.append_logs(vec![line.to_string()]);
             }
         }
         _ => {}

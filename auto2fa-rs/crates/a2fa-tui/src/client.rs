@@ -54,13 +54,19 @@ pub fn rpc(method: &str, params: Value) -> Result<Value> {
     stream.set_read_timeout(Some(timeout)).context("set_read_timeout")?;
     stream.set_write_timeout(Some(timeout)).context("set_write_timeout")?;
 
-    // Unique-enough request id.
+    // Unique-enough request id. MUST be a JSON STRING: the daemon's wire
+    // struct declares `id: String`, so a numeric id failed deserialization and
+    // every RPC came back `invalid_request` (the TUI was fully broken against
+    // the Rust daemon).
     let id = {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
+        format!(
+            "{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        )
     };
     let req = serde_json::json!({ "id": id, "method": method, "params": params });
     let mut line = req.to_string();

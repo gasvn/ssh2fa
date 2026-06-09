@@ -189,7 +189,9 @@ fn route_with_ctx(
                                         Some(Arc::clone(&ctx.registry))),
         Method::HostMountToggle   => hosts::host_mount_toggle(state, params),
         Method::HostRotate        => hosts::host_rotate(state, params),
-        Method::HostAdd           => hosts::host_add(state, params),
+        Method::HostAdd           => hosts::host_add(state, params,
+                                        Some(Arc::clone(&ctx.managers)),
+                                        Some(Arc::clone(&ctx.registry))),
         Method::HostTestCredentials => hosts::host_test_credentials(state, params),
         Method::HostTotp          => hosts::host_totp(state, params),
 

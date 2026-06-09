@@ -160,6 +160,14 @@ pub enum LoginOutcome {
 /// Overall timeout for the full login sequence (generous: MOTD can be huge).
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Marker emitted by `host_test_credentials`' remote command
+/// (`echo __auto2fa_login_ok__`). In command mode there is NO shell prompt —
+/// after auth the remote prints this marker and ssh exits — so the expect loop
+/// must accept it as a success signal. Without it, CORRECT credentials were
+/// classified `Eof` and reported to the user as "host unreachable" (the Python
+/// reference matched this marker as its success pattern, daemon.py).
+pub const LOGIN_OK_MARKER: &str = "__auto2fa_login_ok__";
+
 /// Chunk size for pty reads.
 const READ_BUF: usize = 4096;
 
@@ -286,12 +294,17 @@ pub fn run_login(
     let mut raw = vec![0u8; READ_BUF];
     let mut password_sent = false;
     let mut otp_sent = false;
+    // Time spent INSIDE otp_provider() (the shared-secret replay wait can sleep
+    // up to ~31 s per TOTP window) must not eat the login budget: Python slept
+    // BEFORE sendline and then ran a fresh 60 s post-OTP expect. Without this,
+    // the 2nd/3rd host sharing one Duo secret systematically timed out.
+    let mut deadline_extension = Duration::ZERO;
 
     'outer: loop {
         // Hard wall-clock deadline, checked at the loop top. Because the read
         // below is non-blocking, every WouldBlock returns here promptly, so a
-        // mid-login stall can NEVER outrun LOGIN_TIMEOUT.
-        if start.elapsed() >= LOGIN_TIMEOUT {
+        // mid-login stall can NEVER outrun the deadline.
+        if start.elapsed() >= LOGIN_TIMEOUT + deadline_extension {
             warn!("ssh login timed out after {}s", LOGIN_TIMEOUT.as_secs());
             // reaper kills-and-reaps the still-blocked client on drop.
             return Ok(LoginOutcome::Timeout);
@@ -351,8 +364,9 @@ pub fn run_login(
 
         // --- Pattern matching against accumulated buffer ----------------------
 
-        // Success: shell prompt detected
-        if pat.shell_prompt.is_match(&buf) {
+        // Success: shell prompt detected, or the test-credentials marker
+        // (command mode prints the marker instead of a prompt).
+        if pat.shell_prompt.is_match(&buf) || buf.contains(LOGIN_OK_MARKER) {
             info!("ssh login successful (shell prompt detected)");
             // On success this interactive ssh client (ControlMaster=auto +
             // ControlPersist=yes) backgrounds the persistent master and then
@@ -420,7 +434,10 @@ pub fn run_login(
 
         // OTP prompt (before or after password)
         if !otp_sent && pat.otp.is_match(&buf) {
+            let otp_t0 = Instant::now();
             let code = otp_provider()?;
+            // Replay-wait time doesn't count against the login budget.
+            deadline_extension += otp_t0.elapsed();
             info!("sending OTP");
             write_line(&mut writer, &code)?;
             otp_sent = true;
@@ -442,8 +459,10 @@ pub fn run_login(
     let outcome = if buf.is_empty() {
         LoginOutcome::Eof { output: "(no output)".into() }
     } else {
-        // One last check for success/failure patterns in the drained buffer
-        if pat.shell_prompt.is_match(&buf) {
+        // One last check for success/failure patterns in the drained buffer.
+        // The marker case matters here: in command mode ssh EXITS right after
+        // printing the marker, so success is usually detected post-loop.
+        if pat.shell_prompt.is_match(&buf) || buf.contains(LOGIN_OK_MARKER) {
             LoginOutcome::Success
         } else if pat.login_incorrect.is_match(&buf) || pat.permission_denied.is_match(&buf) {
             let reason = crate::ssh::failure::failure_reason(&buf);

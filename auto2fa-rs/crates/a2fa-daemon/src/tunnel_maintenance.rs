@@ -339,6 +339,18 @@ fn run_boot_autostart(
     for snap in &candidates {
         let name = &snap.name;
         info!("[tunnel:{name}] boot auto-start: starting");
+        // An auto_start=true tunnel may have persisted wants_alive=false (user
+        // stopped it last session). Boot auto-start means "make it alive", so
+        // set wants_alive FIRST — do_tunnel_start (correctly) refuses to start
+        // anything whose wants_alive is false, which used to silently veto the
+        // auto_start flag at every boot. (Python: want = auto_start or
+        // wants_alive → start.)
+        {
+            let mut guard = crate::lock_state(state);
+            if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == *name) {
+                t.wants_alive = true;
+            }
+        }
         runtime.with_rt_mut(name, |r| r.last_recovery_attempt_ts = now);
         do_tunnel_start(name, snap, state, runtime, post_connect_running);
     }
@@ -721,10 +733,30 @@ fn spawn_tunnel_start_with_runtime(
             let timeout = std::time::Duration::from_secs(10);
             match probe_and_settle(child, local_port, timeout) {
                 Ok((true, child)) => {
+                    let now = now_unix();
+
+                    // Abort check: the user may have hit Stop during the start
+                    // (while `Starting`, the child isn't registered yet so
+                    // tunnel_stop had nothing to kill). Honor the abort instead
+                    // of resurrecting + persisting wants_alive=true over it.
+                    let aborted = {
+                        let guard = crate::lock_state(&state);
+                        guard
+                            .tunnels
+                            .iter()
+                            .find(|t| t.name == name)
+                            .map(|t| !t.wants_alive)
+                            .unwrap_or(true) // deleted mid-start → abort
+                    };
+                    if aborted {
+                        info!("[tunnel:{name}] stopped during start — killing fresh forward (abort honored)");
+                                                a2fa_core::tunnels::forward::stop_forward(child);
+                        runtime.record(&name, now, "start aborted by user stop");
+                        return;
+                    }
+
                     // Store child in registry.
                     runtime.store_child(&name, child);
-
-                    let now = now_unix();
 
                     // Set alive_since in the runtime.
                     runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));

@@ -384,18 +384,44 @@ impl HostManagers {
         info!("teardown_all: tore down {count} host(s)");
     }
 
-    /// Write back a subset of mutable fields from `src` into the stored state
-    /// for `host`.  Only the fields that the ssh worker is authorised to update
-    /// (slot_status, consecutive_login_failures, cooldown, backoff) are copied;
-    /// `active_index` and host name are preserved from the stored state.
+    /// Whole-pool write-back. ONLY for exclusive whole-pool transitions —
+    /// boot adoption, `stop_all` (managed-stop / rebuild phase 1), teardown —
+    /// where the writer legitimately owns BOTH slots and `active_index`.
+    ///
+    /// NEVER call this from a per-slot login worker: a worker's snapshot is up
+    /// to ~60 s stale, and copying the whole `slot_status` array clobbers the
+    /// OTHER slot's concurrent result (observed: a warmup worker rolled a
+    /// just-Ready slot 0 back to `Init`, after which the heartbeat — which maps
+    /// `Init` to "never started, don't check" — stopped health-checking the
+    /// live master forever). Per-slot workers use [`Self::write_back_slot`].
     pub fn write_back(&self, host: &str, src: &PoolState) {
         self.with_pool_mut(host, |dst| {
             dst.slot_status = src.slot_status;
+            dst.slot_ready_since = src.slot_ready_since;
             dst.consecutive_login_failures = src.consecutive_login_failures;
             dst.cooldown_until = src.cooldown_until;
             dst.last_rotate = src.last_rotate;
             dst.probe_backoff_until = src.probe_backoff_until;
             dst.active_index = src.active_index;
+        });
+    }
+
+    /// Per-slot write-back for login workers: copy ONLY the slot this worker
+    /// actually drove (status + ready-since stamp) plus the login circuit
+    /// breaker it legitimately updated. Everything else — the other slot,
+    /// `active_index`, rotation state, flap counters — is owned by the
+    /// heartbeat/rotation logic, which mutates the registry directly under the
+    /// lock; overwriting those from a stale snapshot caused lost updates AND
+    /// silently disabled the master flap backoff (`slot_ready_since` never
+    /// reached the registry, so every drop looked like "never marked Ready").
+    pub fn write_back_slot(&self, host: &str, slot: usize, src: &PoolState) {
+        self.with_pool_mut(host, |dst| {
+            if slot < POOL_SIZE {
+                dst.slot_status[slot] = src.slot_status[slot];
+                dst.slot_ready_since[slot] = src.slot_ready_since[slot];
+            }
+            dst.consecutive_login_failures = src.consecutive_login_failures;
+            dst.cooldown_until = src.cooldown_until;
         });
     }
 }
@@ -551,8 +577,33 @@ pub fn spawn_managed_start(
             // 3. Run start_master — blocking ssh pty, no locks held.
             let ready = start_master(&mut pool, slot, &password, otp_closure);
 
-            // 4. Write PoolState back to the persistent registry.
-            managers.write_back(&host_name, &pool);
+            // 4. Write ONLY this worker's slot back to the persistent registry.
+            managers.write_back_slot(&host_name, slot, &pool);
+
+            // 4b. The user may have toggled the host OFF during the (up to
+            // ~60 s) blocking login. Don't resurrect it: stop the fresh master
+            // and leave the stopped State alone — otherwise the toggle-off is
+            // silently undone and an unmanaged authenticated master leaks.
+            let still_active = {
+                let guard = crate::lock_state(&state);
+                guard
+                    .hosts
+                    .iter()
+                    .find(|h| h.host == host_name)
+                    .map(|h| h.active)
+                    .unwrap_or(false)
+            };
+            if !still_active {
+                if ready {
+                    info!(
+                        "[{host_name}] managed-start: host deactivated during login — \
+                         stopping the fresh master"
+                    );
+                    a2fa_core::ssh::master::stop_slot(&mut pool, slot);
+                    managers.write_back_slot(&host_name, slot, &pool);
+                }
+                return;
+            }
 
             // 5. Update engine State.
             let mut guard = crate::lock_state(&state);
@@ -655,7 +706,29 @@ pub fn spawn_master_rebuild(
             let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
             info!("[{host_name}] master-rebuild: starting slot 0");
             let ready = start_master(&mut pool, 0, &password, otp_closure);
-            managers.write_back(&host_name, &pool);
+            // Per-slot write-back: a concurrent slot-1 worker's result must not
+            // be clobbered by this snapshot.
+            managers.write_back_slot(&host_name, 0, &pool);
+
+            // The user may have toggled the host OFF during the blocking login —
+            // don't resurrect it (and don't leak the fresh master).
+            let still_active = {
+                let guard = crate::lock_state(&state);
+                guard
+                    .hosts
+                    .iter()
+                    .find(|h| h.host == host_name)
+                    .map(|h| h.active)
+                    .unwrap_or(false)
+            };
+            if !still_active {
+                if ready {
+                    info!("[{host_name}] master-rebuild: host deactivated during login — stopping fresh master");
+                    a2fa_core::ssh::master::stop_slot(&mut pool, 0);
+                    managers.write_back_slot(&host_name, 0, &pool);
+                }
+                return;
+            }
 
             // --- Phase 3: update engine State (mirrors spawn_managed_start) ---
             let mut guard = crate::lock_state(&state);
@@ -1013,16 +1086,50 @@ fn tick_host(
                         );
                         let mut pool_mut = managers2.snapshot(&host_owned);
                         let ready = start_master(&mut pool_mut, slot, &password, otp_closure);
-                        managers2.write_back(&host_owned, &pool_mut);
+                        // Per-slot write-back — never clobber the other slot /
+                        // rotation state from this (stale) snapshot.
+                        managers2.write_back_slot(&host_owned, slot, &pool_mut);
 
-                        // Write result back to engine State.
+                        // Toggle-off during the blocking login → don't resurrect.
+                        let still_active2 = {
+                            let guard = crate::lock_state(&state2);
+                            guard
+                                .hosts
+                                .iter()
+                                .find(|h| h.host == host_owned)
+                                .map(|h| h.active)
+                                .unwrap_or(false)
+                        };
+                        if !still_active2 {
+                            if ready {
+                                info!("[{host_owned}] hb-restart: host deactivated during login — stopping fresh master");
+                                a2fa_core::ssh::master::stop_slot(&mut pool_mut, slot);
+                                managers2.write_back_slot(&host_owned, slot, &pool_mut);
+                            }
+                            return;
+                        }
+
+                        // Write result back to engine State. pool_index follows
+                        // the ACTIVE slot only (restarting the spare must not
+                        // repoint the UI), and pool_alive is the real Ready
+                        // count (not a hardcoded 1 that clobbers a 2).
+                        let alive_count = managers2
+                            .with_pool(&host_owned, |p| {
+                                p.slot_status
+                                    .iter()
+                                    .filter(|s| **s == SlotStatus::Ready)
+                                    .count() as u8
+                            })
+                            .unwrap_or(u8::from(ready));
                         {
                             let mut guard = crate::lock_state(&state2);
                             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
                                 if ready {
                                     h.is_master_ready = true;
-                                    h.pool_alive = 1;
-                                    h.pool_index = slot as u8;
+                                    h.pool_alive = alive_count;
+                                    if slot == active_index {
+                                        h.pool_index = slot as u8;
+                                    }
                                     h.status = "Connected".into();
                                     h.last_msg = format!("Slot {slot} reconnected");
                                 } else {
@@ -1110,17 +1217,48 @@ fn tick_host(
                         );
                         let mut pool = managers2.snapshot(&host_owned);
                         let ready = start_master(&mut pool, 1, &pw_owned, otp_closure);
-                        managers2.write_back(&host_owned, &pool);
+                        // Per-slot write-back: this snapshot is ~30-60 s stale —
+                        // copying the whole array rolled a just-Ready slot 0
+                        // back to Init (the heartbeat then never checked it).
+                        managers2.write_back_slot(&host_owned, 1, &pool);
+
+                        // Toggle-off during the blocking login → tear down.
+                        let still_active3 = {
+                            let guard = crate::lock_state(&state2);
+                            guard
+                                .hosts
+                                .iter()
+                                .find(|h| h.host == host_owned)
+                                .map(|h| h.active)
+                                .unwrap_or(false)
+                        };
+                        if !still_active3 {
+                            if ready {
+                                info!("[{host_owned}] warm-slot-1: host deactivated during login — stopping fresh master");
+                                a2fa_core::ssh::master::stop_slot(&mut pool, 1);
+                                managers2.write_back_slot(&host_owned, 1, &pool);
+                            }
+                            return;
+                        }
                         if ready {
                             info!("[{host_owned}] warm-slot-1: slot 1 Ready");
                         } else {
                             warn!("[{host_owned}] warm-slot-1: slot 1 failed");
                         }
-                        // Update engine State slot count if newly ready.
+                        // Update engine State slot count from the REGISTRY's
+                        // Ready count (not a blind increment).
+                        let alive_count = managers2
+                            .with_pool(&host_owned, |p| {
+                                p.slot_status
+                                    .iter()
+                                    .filter(|s| **s == SlotStatus::Ready)
+                                    .count() as u8
+                            })
+                            .unwrap_or(0);
                         let mut guard = crate::lock_state(&state2);
                         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
                             if ready {
-                                h.pool_alive = h.pool_alive.max(1) + 1;
+                                h.pool_alive = alive_count;
                             }
                         }
                     });
@@ -1138,22 +1276,25 @@ fn tick_host(
 
             MaintenanceAction::Rotate => {
                 // try_rotate updates the active symlink and active_index on disk.
-                managers.with_pool_mut(host_name, |p| {
-                    if p.try_rotate() {
-                        let new_idx = p.active_index;
-                        info!("[{host_name}] heartbeat: rotated to spare slot {new_idx}");
+                // HONOR the result: it returns false (and may have just armed the
+                // ping-pong backoff) when the rotation was refused — writing
+                // "Connected"/is_master_ready=true then would advertise a DEAD
+                // active socket as healthy (and tunnel-jump selection keys on
+                // is_master_ready), while the armed backoff also suppresses the
+                // Restart that would fix it.
+                let rotated = managers.with_pool_mut(host_name, |p| p.try_rotate());
+                if rotated {
+                    let new_idx = managers
+                        .with_pool(host_name, |p| p.active_index)
+                        .unwrap_or(0);
+                    info!("[{host_name}] heartbeat: rotated to spare slot {new_idx}");
+                    let mut guard = crate::lock_state(state);
+                    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                        h.pool_index = new_idx as u8;
+                        h.is_master_ready = true;
+                        h.status = "Connected".into();
+                        h.last_msg = format!("Rotated to slot {new_idx}");
                     }
-                });
-                // Update engine State pool_index.
-                let new_idx = managers
-                    .with_pool(host_name, |p| p.active_index)
-                    .unwrap_or(0);
-                let mut guard = crate::lock_state(state);
-                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                    h.pool_index = new_idx as u8;
-                    h.is_master_ready = true;
-                    h.status = "Connected".into();
-                    h.last_msg = format!("Rotated to slot {new_idx}");
                 }
             }
 
@@ -1232,19 +1373,64 @@ pub fn spawn_warmup_slot1(
                 return;
             }
 
+            // Gate on slot 0 being Ready: warming the spare while slot 0 is
+            // still mid-login (or failed) doubles the 2FA burn per toggle —
+            // two concurrent full logins, double breaker damage on a wrong
+            // password — and the two logins race each other in the OTP group.
+            // If slot 0 isn't Ready yet, skip: the heartbeat's WarmSlot1 action
+            // (gated on slot0==Ready && slot1==Init) warms it within ~3 s of
+            // slot 0 coming up. (Python warmed slot 1 only after the pool was
+            // active.)
+            let slot0_ready = managers
+                .with_pool(&host_name, |p| p.slot_status[0] == SlotStatus::Ready)
+                .unwrap_or(false);
+            if !slot0_ready {
+                info!("[{host_name}] warmup_slot1: slot 0 not Ready — deferring to heartbeat warm-up");
+                return;
+            }
+
             // Read Keychain creds IN-THREAD (no-wedge invariant).
             let (password, secret) = load_creds(&host_name);
             let otp_closure =
                 make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
             let mut pool = managers.snapshot(&host_name);
             let ready = start_master(&mut pool, 1, &password, otp_closure);
-            managers.write_back(&host_name, &pool);
+            // Per-slot write-back (never clobber slot 0 / rotation state from
+            // this stale snapshot).
+            managers.write_back_slot(&host_name, 1, &pool);
+
+            // Toggle-off during the blocking login → tear down, don't resurrect.
+            let still_active2 = {
+                let guard = crate::lock_state(&state);
+                guard
+                    .hosts
+                    .iter()
+                    .find(|h| h.host == host_name)
+                    .map(|h| h.active)
+                    .unwrap_or(false)
+            };
+            if !still_active2 {
+                if ready {
+                    info!("[{host_name}] warmup_slot1: host deactivated during login — stopping fresh master");
+                    a2fa_core::ssh::master::stop_slot(&mut pool, 1);
+                    managers.write_back_slot(&host_name, 1, &pool);
+                }
+                return;
+            }
 
             if ready {
                 info!("[{host_name}] warmup_slot1: slot 1 Ready");
+                let alive_count = managers
+                    .with_pool(&host_name, |p| {
+                        p.slot_status
+                            .iter()
+                            .filter(|s| **s == SlotStatus::Ready)
+                            .count() as u8
+                    })
+                    .unwrap_or(0);
                 let mut guard = crate::lock_state(&state);
                 if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                    h.pool_alive = h.pool_alive.max(1) + 1;
+                    h.pool_alive = alive_count;
                 }
             } else {
                 warn!("[{host_name}] warmup_slot1: slot 1 failed");
@@ -1347,6 +1533,43 @@ mod tests {
                 "failure count must survive across write_back+snapshot cycles"
             );
         }
+    }
+
+    /// The write_back lost-update regression: a stale slot-1 worker snapshot
+    /// must NOT roll a concurrently-Ready slot 0 back to Init (the heartbeat
+    /// maps Init to "never started — don't health-check", so the clobber left
+    /// a live master unmonitored forever).
+    #[test]
+    fn write_back_slot_does_not_clobber_other_slot() {
+        let managers = HostManagers::new();
+
+        // Slot-1 worker takes its snapshot EARLY (slot 0 still Init).
+        let mut warmup_pool = managers.snapshot("k6");
+
+        // Meanwhile the slot-0 worker finishes and writes its result.
+        {
+            let mut pool0 = managers.snapshot("k6");
+            pool0.slot_status[0] = SlotStatus::Ready;
+            pool0.mark_slot_ready(0);
+            managers.write_back_slot("k6", 0, &pool0);
+        }
+
+        // Slot-1 worker finishes later and writes back from its stale snapshot.
+        warmup_pool.slot_status[1] = SlotStatus::Ready;
+        warmup_pool.mark_slot_ready(1);
+        managers.write_back_slot("k6", 1, &warmup_pool);
+
+        let pool = managers.snapshot("k6");
+        assert_eq!(
+            pool.slot_status[0],
+            SlotStatus::Ready,
+            "slot 0's Ready must survive a stale slot-1 write-back"
+        );
+        assert_eq!(pool.slot_status[1], SlotStatus::Ready);
+        // The flap-detection uptime stamps must reach the registry, or the
+        // master flap backoff never fires (every drop looks 'never Ready').
+        assert!(pool.slot_ready_since[0].is_some(), "slot 0 ready-since must persist");
+        assert!(pool.slot_ready_since[1].is_some(), "slot 1 ready-since must persist");
     }
 
     /// Cooldown must persist across two separate snapshots (circuit-breaker test).
