@@ -63,6 +63,12 @@ final class DaemonProcess {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
+        // NON-BLOCKING connect + short poll: this runs on the main actor
+        // (ensureRunning / respawn loops), and a blocking connect() against a
+        // wedged daemon with a full accept backlog would hang the UI thread
+        // indefinitely — the exact blocking-syscall-on-critical-thread class.
+        let flags = fcntl(fd, F_GETFL)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let sunPathSize = MemoryLayout.size(ofValue: addr.sun_path)
@@ -78,7 +84,16 @@ final class DaemonProcess {
                 Darwin.connect(fd, $0, len)
             }
         }
-        return result == 0
+        if result == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        // Wait up to 500 ms for the connect to complete.
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, 500) > 0, (pfd.revents & Int16(POLLOUT)) != 0 else { return false }
+        // Check the final connect status.
+        var soErr: Int32 = 0
+        var soLen = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &soLen) == 0 else { return false }
+        return soErr == 0
     }
 
     /// Discover the project directory containing the Rust workspace

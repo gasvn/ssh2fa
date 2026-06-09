@@ -393,6 +393,23 @@ final class AppState: ObservableObject {
 
     // MARK: - User actions (thin wrappers that report errors via connectionError)
 
+    /// Surface a per-action failure as a red toast. NOT via `connectionError`:
+    /// the follow-up `reloadAll()` clears that banner on its next success
+    /// (within ~1 s), so action errors written there vanished before the user
+    /// could read them — a daemon rejection like "port busy" was effectively
+    /// invisible.
+    func showActionError(_ message: String) {
+        notchPresenter.show(
+            systemImage: "exclamationmark.triangle.fill",
+            title: "Action failed",
+            description: message,
+            tint: .red
+        )
+    }
+    func showActionError(_ error: Error) {
+        showActionError(error.localizedDescription)
+    }
+
     func toggleHost(_ host: SSHHost) async {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
@@ -407,7 +424,7 @@ final class AppState: ObservableObject {
             tint: .yellow
         )
         do { try await client.toggleHost(host.host) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
@@ -421,7 +438,7 @@ final class AppState: ObservableObject {
             tint: .yellow
         )
         do { try await client.toggleTunnel(tunnel.name) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
@@ -432,7 +449,7 @@ final class AppState: ObservableObject {
         do { try await client.removeTunnel(tunnel.name) }
         catch {
             deleted = false
-            connectionError = error.localizedDescription
+            showActionError(error)
         }
         await reloadAll()
         // Offer Undo ONLY if the delete actually happened — otherwise the
@@ -505,7 +522,7 @@ final class AppState: ObservableObject {
                 tint: .green
             )
         } catch {
-            connectionError = "Couldn't restore: \(error.localizedDescription)"
+            showActionError("Couldn't restore: \(error.localizedDescription)")
         }
     }
 
@@ -568,7 +585,7 @@ final class AppState: ObservableObject {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
         do { try await client.rotateHost(host.host) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
@@ -576,7 +593,7 @@ final class AppState: ObservableObject {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
         do { try await client.toggleMount(host.host) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
@@ -620,7 +637,7 @@ final class AppState: ObservableObject {
     /// Flip a tunnel's auto-start flag. Persistent across daemon restarts.
     func setTunnelAutostart(_ tunnel: Tunnel, value: Bool) async {
         do { try await client.setTunnelAutostart(tunnel.name, value: value) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
@@ -632,25 +649,25 @@ final class AppState: ObservableObject {
         inFlightTunnels.insert(tunnel.name)
         defer { inFlightTunnels.remove(tunnel.name) }
         do { try await client.setTunnelJumpCandidates(tunnel.name, candidates: candidates) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
     func setPostConnect(for tunnel: Tunnel, cmd: String?) async {
         do { try await client.setTunnelPostConnect(tunnel.name, cmd: cmd) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadAll()
     }
 
     func setTags(for tunnel: Tunnel, tags: [String]) async {
         do { try await client.setTunnelTags(tunnel.name, tags: tags) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadTunnelsOnly()
     }
 
     func setUrlPath(for tunnel: Tunnel, path: String?) async {
         do { try await client.setTunnelUrlPath(tunnel.name, path: path) }
-        catch { connectionError = error.localizedDescription }
+        catch { showActionError(error) }
         await reloadTunnelsOnly()
     }
 
@@ -722,8 +739,16 @@ final class AppState: ObservableObject {
         return (added, skipped, failed)
     }
 
+    /// True while a tunnels_batch RPC is in flight — a second click on the
+    /// batch Start/Stop buttons during a slow batch (daemon timeout 30s) used
+    /// to dispatch a second overlapping batch.
+    @Published var batchInFlight = false
+
     /// Best-effort batch start/stop. Toasts a single summary at the end.
     func batchTunnels(action: String, names: [String]) async {
+        guard !batchInFlight else { return }
+        batchInFlight = true
+        defer { batchInFlight = false }
         do {
             let results = try await client.batchTunnels(action: action, names: names)
             let okCount = results.filter { $0.ok }.count
@@ -733,7 +758,7 @@ final class AppState: ObservableObject {
                 description: names.joined(separator: ", "),
                 tint: okCount == results.count ? .green : .orange
             )
-        } catch { connectionError = error.localizedDescription }
+        } catch { showActionError(error) }
         await reloadTunnelsOnly()
     }
 
@@ -747,7 +772,7 @@ final class AppState: ObservableObject {
                 description: "\(r.tunnelsStopped) tunnels stopped, \(r.mastersRebuilt) masters rebuilding",
                 tint: .orange
             )
-        } catch { connectionError = error.localizedDescription }
+        } catch { showActionError(error) }
         await reloadAll()
     }
 

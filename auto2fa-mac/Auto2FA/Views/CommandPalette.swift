@@ -39,13 +39,16 @@ struct CommandPalette: View {
                 keywords: [t.name, "node", "squeue", "pick"]
             ) { appState.presentNodePicker(for: t) })
             if alive {
+                // Use browserURL (includes the tunnel's url_path, e.g. a
+                // jupyter "?token=…") — the raw localhost URL dropped the
+                // token and landed on a login page.
                 out.append(.init(
                     icon: "safari",
                     title: "Open in browser — \(t.name)",
-                    subtitle: "http://localhost:\(t.localPort)",
+                    subtitle: t.browserURL,
                     keywords: [t.name, "open", "browser", "safari"]
                 ) {
-                    if let url = URL(string: "http://localhost:\(t.localPort)") {
+                    if let url = URL(string: t.browserURL) {
                         NSWorkspace.shared.open(url)
                     }
                 })
@@ -77,7 +80,12 @@ struct CommandPalette: View {
                 subtitle: "ssh \(host.host) via warm ControlMaster",
                 keywords: [host.host, "terminal", "ssh", "shell"]
             ) {
-                let script = "tell application \"Terminal\"\n  activate\n  do script \"ssh \(host.host)\"\nend tell"
+                // Escape for the AppleScript literal (defense-in-depth; the
+                // daemon validates host names at add time).
+                let safeHost = host.host
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                let script = "tell application \"Terminal\"\n  activate\n  do script \"ssh \(safeHost)\"\nend tell"
                 NSAppleScript(source: script)?.executeAndReturnError(nil)
             })
         }
@@ -244,7 +252,11 @@ struct CommandPalette: View {
 }
 
 struct PaletteCommand: Identifiable {
-    let id = UUID()
+    // Stable identity: `commands` is a computed property re-built on every
+    // render, so a fresh UUID() per command made every row's identity churn
+    // per keystroke (full ForEach rebuild + lost row state). Titles are unique
+    // within the palette.
+    var id: String { title }
     let icon: String
     let title: String
     let subtitle: String

@@ -8,7 +8,20 @@ import SwiftUI
 /// Triggered from a "info.circle" button on each tunnel row.
 struct TunnelDetailsPopover: View {
     @EnvironmentObject var appState: AppState
-    let tunnel: Tunnel
+    /// Snapshot captured when the popover opened — fallback only.
+    let initialTunnel: Tunnel
+
+    /// LIVE tunnel: re-resolved from appState on every render so the status
+    /// pill / stats / ports track reality while the sheet is open. The old
+    /// `let tunnel` value-copy froze the whole popover at open time (a tunnel
+    /// going alive→failed still showed the stale state).
+    var tunnel: Tunnel {
+        appState.tunnels.first(where: { $0.name == initialTunnel.name }) ?? initialTunnel
+    }
+
+    init(tunnel: Tunnel) {
+        self.initialTunnel = tunnel
+    }
 
     @State private var events: [BackendClient.TunnelEvent] = []
     @State private var pollTask: Task<Void, Never>?

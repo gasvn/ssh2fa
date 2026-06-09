@@ -90,7 +90,13 @@ struct LogViewerView: View {
                 guard let state = appState else { return }
                 do {
                     let fresh = try await state.client.logTail(lines: 500)
-                    await MainActor.run { self.lines = fresh }
+                    await MainActor.run {
+                        self.lines = fresh
+                        // Clear a stale error once polling recovers — one
+                        // transient failure used to leave a permanent red
+                        // banner above a perfectly live log.
+                        self.error = nil
+                    }
                 } catch {
                     // Daemon may have died — surface but keep trying
                     await MainActor.run {

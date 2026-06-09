@@ -121,6 +121,9 @@ struct TunnelsView: View {
                         }
                     } label: { Label("Start", systemImage: "play.fill") }
                         .controlSize(.small)
+                        // A second click during a slow batch (30s daemon
+                        // timeout) used to dispatch an overlapping batch.
+                        .disabled(appState.batchInFlight)
                     Button {
                         Task {
                             await appState.batchTunnels(action: "stop",
@@ -128,6 +131,7 @@ struct TunnelsView: View {
                         }
                     } label: { Label("Stop", systemImage: "stop.fill") }
                         .controlSize(.small)
+                        .disabled(appState.batchInFlight)
                 }
             }
             if !allTags.isEmpty {

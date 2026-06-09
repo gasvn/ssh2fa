@@ -9,7 +9,12 @@ import AppKit
 ///
 /// First post triggers a permission prompt. Denial is swallowed silently.
 enum MacNotifications {
-    private static var requestedAuth = false
+    /// Cached GRANT result (not just "we asked"): the old `requestedAuth` flag
+    /// returned true forever even when the user DENIED, and was an
+    /// unsynchronized static mutated from concurrent Tasks. @MainActor
+    /// serializes it; caching only a definitive answer lets a transient error
+    /// retry later.
+    @MainActor private static var authResult: Bool?
     private static let categoryTunnelFail = "auto2fa.tunnelFail"
     private static let actionRestart = "auto2fa.restart"
     private static let actionShowActivity = "auto2fa.showActivity"
@@ -33,12 +38,14 @@ enum MacNotifications {
         UNUserNotificationCenter.current().setNotificationCategories([cat])
     }
 
+    @MainActor
     static func ensureAuthorized() async -> Bool {
-        if requestedAuth { return true }
-        requestedAuth = true
+        if let cached = authResult { return cached }
         do {
-            return try await UNUserNotificationCenter.current()
+            let granted = try await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound])
+            authResult = granted
+            return granted
         } catch {
             return false
         }

@@ -265,10 +265,17 @@ struct HostRow: View {
     /// Pop a Terminal.app window running `ssh <host>` over the warm
     /// ControlMaster — instantaneous, no 2FA prompt.
     private func openTerminal(for host: SSHHost) {
+        // Escape for the AppleScript string literal (defense-in-depth — the
+        // daemon restricts host names to [A-Za-z0-9._-] at add time, but a
+        // hand-edited passwords.json could contain a quote that would break
+        // out of the literal).
+        let safeHost = host.host
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
         tell application "Terminal"
             activate
-            do script "ssh \(host.host)"
+            do script "ssh \(safeHost)"
         end tell
         """
         var error: NSDictionary?

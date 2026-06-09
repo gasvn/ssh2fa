@@ -39,9 +39,14 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
         // Refresh the icon tint + count badge once a second. Cheap.
         Task { @MainActor [weak self] in
-            while true {
+            // Exit when the controller deallocates or the task is cancelled —
+            // `while true` with `self?.` spun the 1 Hz loop forever even after
+            // the controller was gone (weak self prevented the retain cycle
+            // but not the loop).
+            while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                self?.refresh()
+                guard let self else { return }
+                self.refresh()
             }
         }
     }

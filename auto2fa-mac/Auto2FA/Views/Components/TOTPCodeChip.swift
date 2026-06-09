@@ -112,11 +112,19 @@ struct TOTPCodeChip: View {
         } else {
             // Muted placeholder — failure (no secret / pending Keychain
             // prompt / error) or pre-first-fetch. Quiet lock glyph; never a
-            // spinner-forever.
-            Image(systemName: "lock")
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(.tertiary)
-                .help(failed ? "2FA code unavailable" : "Loading 2FA code…")
+            // spinner-forever. TAPPABLE: after a failed first fetch (e.g. a
+            // pending Keychain prompt) nothing else ever refetched — the
+            // rollover refetch requires code != nil — so the chip was stuck
+            // at the lock glyph until the row was recreated.
+            Button {
+                if !loading { Task { await fetch() } }
+            } label: {
+                Image(systemName: "lock")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help(failed ? "2FA code unavailable — tap to retry" : "Loading 2FA code…")
         }
     }
 
