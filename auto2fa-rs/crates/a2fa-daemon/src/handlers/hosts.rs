@@ -406,10 +406,12 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         let mp_str = mount_point.to_string_lossy().into_owned();
         // Bounded: a kernel-stuck `umount -f` on a wedged macFUSE mount must not
         // pin the handler thread forever.
-        let result = run_cmd_bounded("umount", &["-f", &mp_str], std::time::Duration::from_secs(10));
-        let unmounted = result
-            .map(|o| o.status.success() && !is_mount_point(&mount_point))
-            .unwrap_or(false);
+        let _ = run_cmd_bounded("umount", &["-f", &mp_str], std::time::Duration::from_secs(10));
+        // Judge ONLY by the actual mount state. Requiring umount's exit status
+        // wedged the latch: if macFUSE had ALREADY auto-unmounted (network
+        // drop), `umount -f` fails ("not currently mounted") → unmounted=false
+        // → is_mounted stuck true and every retry hit the same failing branch.
+        let unmounted = !is_mount_point(&mount_point);
         let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.is_mounted = !unmounted;
@@ -488,29 +490,71 @@ fn is_mount_point(path: &std::path::Path) -> bool {
 /// Mirrors `mgr.update_symlink(new_idx)` in daemon.py.
 /// Updates the active symlink on disk (so ssh clients immediately see the new
 /// slot), then updates the pool_index in State.
-pub fn host_rotate(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn host_rotate(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    managers: Option<Arc<HostManagers>>,
+) -> Result<Value> {
     let host_name = params["host"]
         .as_str()
         .ok_or_else(|| Error::BadParams("host required".into()))?
         .to_owned();
 
-    let new_index: usize = {
-        let mut guard = crate::lock_state(state);
-        let host = guard
+    // Verify the host is active.
+    {
+        let guard = crate::lock_state(state);
+        guard
             .hosts
-            .iter_mut()
+            .iter()
             .find(|h| h.host == host_name && h.active)
             .ok_or_else(|| Error::NotFound("host not active".into()))?;
+    }
 
-        let new_idx = (host.pool_index + 1) % 2;
-        host.pool_index = new_idx;
-        host.last_msg = format!("Manual Rotate -> {new_idx}");
-        new_idx as usize
+    // Rotate against the REGISTRY, not State's pool_index: the registry owns
+    // active_index, and the spare must actually be Ready — the old code
+    // derived the target from State, never checked readiness, never updated
+    // the registry, and ignored update_symlink's result, so a manual rotate
+    // could point the active symlink at a dead/never-started slot (and the
+    // registry would immediately disagree with the symlink on disk).
+    let new_index: usize = match &managers {
+        Some(mgrs) => mgrs.with_pool_mut(&host_name, |p| {
+            use a2fa_core::ssh::master::{SlotStatus, POOL_SIZE};
+            let other = (p.active_index + 1) % POOL_SIZE;
+            if p.slot_status[other] != SlotStatus::Ready {
+                return Err(Error::BadParams(format!(
+                    "spare slot {other} is not ready — nothing to rotate to"
+                )));
+            }
+            if !update_symlink(&p.host, other) {
+                return Err(Error::Internal("failed to update active symlink".into()));
+            }
+            p.active_index = other;
+            Ok(other)
+        })?,
+        None => {
+            // Legacy fallback (tests without a managers context): blind flip.
+            let idx = {
+                let guard = crate::lock_state(state);
+                let host = guard
+                    .hosts
+                    .iter()
+                    .find(|h| h.host == host_name)
+                    .ok_or_else(|| Error::NotFound("host not found".into()))?;
+                ((host.pool_index + 1) % 2) as usize
+            };
+            let _ = update_symlink(&host_name, idx);
+            idx
+        }
     };
 
-    // Update the active symlink on disk (off-lock, but fast — just a filesystem op).
-    // update_symlink does a temp-link + rename so it is atomic.
-    let _ = update_symlink(&host_name, new_index);
+    // Reflect the rotation in State.
+    {
+        let mut guard = crate::lock_state(state);
+        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+            h.pool_index = new_index as u8;
+            h.last_msg = format!("Manual Rotate -> {new_index}");
+        }
+    }
 
     Ok(Value::Null)
 }
@@ -1095,7 +1139,7 @@ mod tests {
     fn host_rotate_advances_pool_index() {
         let state = make_state_with_host("k6", true);
         crate::lock_state(&state).hosts[0].pool_index = 0;
-        host_rotate(&state, &json!({"host": "k6"})).unwrap();
+        host_rotate(&state, &json!({"host": "k6"}), None).unwrap();
         // Should advance 0 → 1 (mod 2).
         assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 1);
     }
@@ -1104,14 +1148,14 @@ mod tests {
     fn host_rotate_wraps_around() {
         let state = make_state_with_host("k6", true);
         crate::lock_state(&state).hosts[0].pool_index = 1;
-        host_rotate(&state, &json!({"host": "k6"})).unwrap();
+        host_rotate(&state, &json!({"host": "k6"}), None).unwrap();
         assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 0);
     }
 
     #[test]
     fn host_rotate_not_active_returns_not_found() {
         let state = make_state_with_host("k6", false);
-        let err = host_rotate(&state, &json!({"host": "k6"})).unwrap_err();
+        let err = host_rotate(&state, &json!({"host": "k6"}), None).unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
     }
 

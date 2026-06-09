@@ -294,6 +294,27 @@ impl TunnelRuntime {
         }
     }
 
+    /// Re-key every runtime entry (live child, counters, events) from `old` to
+    /// `new` on a tunnel rename. Without this, renaming an Alive tunnel left
+    /// its `ssh -L` child registered under the OLD name — an orphan forward
+    /// nothing tracked, which a future tunnel re-using the old name would have
+    /// evict-killed under it at a random time.
+    pub fn rename_entry(&self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(child) = inner.children.remove(old) {
+            inner.children.insert(new.to_owned(), child);
+        }
+        if let Some(rt) = inner.rt.remove(old) {
+            inner.rt.insert(new.to_owned(), rt);
+        }
+        if let Some(ev) = inner.events.remove(old) {
+            inner.events.insert(new.to_owned(), ev);
+        }
+    }
+
     // ---- Event ring buffer ---------------------------------------------
 
     /// Record a status-transition event for `name`.

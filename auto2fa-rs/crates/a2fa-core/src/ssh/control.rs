@@ -212,7 +212,15 @@ pub fn active_symlink_path(host: &str) -> PathBuf {
 pub fn update_symlink(host: &str, index: usize) -> bool {
     let target = active_symlink_path(host);
     let source = control_path(host, index);
-    let tmp_link = target.with_extension("tmp");
+    // APPEND ".tmp" — `with_extension` REPLACES the final dot-component, so for
+    // an FQDN ControlPath ("…harvard.edu" → "…harvard.tmp") two hosts differing
+    // only in their last dot-component would share one tmp link and concurrent
+    // rotations could clobber each other.
+    let tmp_link = {
+        let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        name.push(".tmp");
+        target.with_file_name(name)
+    };
 
     // Ensure source path is absolute
     let abs_source = match source.canonicalize() {
@@ -246,10 +254,15 @@ pub fn symlink_target_index(host: &str) -> Option<usize> {
 }
 
 /// Parse the `-<index>` suffix off a pool socket file name. The base may contain
-/// dashes (`cm-auto2fa-...`) and dots, so we split on the LAST dash.
+/// dashes (`cm-auto2fa-...`) and dots, so we split on the LAST dash. Pool slot
+/// suffixes are a SINGLE digit (< POOL_SIZE), so a hostname whose own last
+/// dash-component is numeric (e.g. "…-gpu-01" → "01") is rejected rather than
+/// misread as a slot index.
 fn parse_trailing_index(name: &str) -> Option<usize> {
     name.rsplit_once('-')
+        .filter(|(_, idx)| idx.len() == 1)
         .and_then(|(_, idx)| idx.parse::<usize>().ok())
+        .filter(|idx| *idx < crate::ssh::master::POOL_SIZE)
 }
 
 /// Remove the active symlink and both pool-member socket files for `host`.
@@ -597,6 +610,11 @@ mod tests {
         assert_eq!(parse_trailing_index("cm-auto2fa-k6-0"), Some(0));
         assert_eq!(parse_trailing_index("no-index-here"), None);
         assert_eq!(parse_trailing_index("plainname"), None);
+        // A hostname's OWN numeric dash-component must not be misread as a
+        // slot index: multi-digit ("…-gpu-01") and out-of-range ("…-5") are
+        // rejected (slots are a single digit < POOL_SIZE).
+        assert_eq!(parse_trailing_index("cm-auto2fa-gpu-01"), None);
+        assert_eq!(parse_trailing_index("cm-auto2fa-node-5"), None);
     }
 
     /// `master_check` with a bogus (non-existent) control socket must return

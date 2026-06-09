@@ -202,7 +202,13 @@ impl Patterns {
             // Matches "Verification code:" / "VerificationCode:" / "Token:"
             otp: Regex::new(r"(?i)(verification.?code|token):").map_err(|e| Error::Internal(e.to_string()))?,
             // A bare "$" or "#" — naive but matches what pexpect uses.
-            shell_prompt: Regex::new(r"[$#]\s*$").map_err(|e| Error::Internal(e.to_string()))?,
+            // `(^|[^$#])` guard: a banner separator line like "#####" also ends
+            // in `#\s*$` and used to be a FALSE login success before any
+            // credential was sent. A real prompt's symbol is preceded by a
+            // path/space/bracket (or starts the line for root's bare "# "),
+            // never by another $/#.
+            shell_prompt: Regex::new(r"(^|[^$#])[$#]\s*$")
+                .map_err(|e| Error::Internal(e.to_string()))?,
             login_incorrect: Regex::new(r"Login incorrect").map_err(|e| Error::Internal(e.to_string()))?,
             permission_denied: Regex::new(r"Permission denied").map_err(|e| Error::Internal(e.to_string()))?,
         })
@@ -412,8 +418,12 @@ pub fn run_login(
             return Ok(LoginOutcome::Success);
         }
 
-        // Failure after OTP was sent
-        if otp_sent {
+        // Failure after ANY credential was sent. These used to be gated on
+        // otp_sent only, so a wrong password (server prints "Permission
+        // denied"/re-prompts "Password:" BEFORE any OTP exchange) matched
+        // nothing, burned the full 60 s, and was reported as "login timed
+        // out" instead of an auth failure.
+        if password_sent || otp_sent {
             if pat.login_incorrect.is_match(&buf) {
                 return Ok(LoginOutcome::AuthFailed {
                     reason: "Login incorrect".into(),
@@ -424,10 +434,17 @@ pub fn run_login(
                     reason: "Permission denied".into(),
                 });
             }
-            // Server looped back to password prompt — credential rejected
+            // Server re-prompted for a password AFTER we already sent one
+            // (buf was cleared after sending) — credential rejected. Post-OTP
+            // this is the classic replay/loop-back; pre-OTP it means the
+            // password itself was wrong.
             if pat.password.is_match(&buf) {
                 return Ok(LoginOutcome::AuthFailed {
-                    reason: "Server looped back to Password prompt".into(),
+                    reason: if otp_sent {
+                        "Server looped back to Password prompt".into()
+                    } else {
+                        "Password rejected (server re-prompted)".into()
+                    },
                 });
             }
         }

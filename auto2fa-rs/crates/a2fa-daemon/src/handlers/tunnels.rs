@@ -725,7 +725,11 @@ pub fn tunnel_set_url_path(state: &Arc<Mutex<State>>, params: &Value) -> Result<
 // tunnel_rename
 // ---------------------------------------------------------------------------
 
-pub fn tunnel_rename(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn tunnel_rename(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
     let old = params["old"]
         .as_str()
         .ok_or_else(|| Error::BadParams("old name required".into()))?;
@@ -761,16 +765,18 @@ pub fn tunnel_rename(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
             .find(|t| t.name == old)
             .ok_or_else(|| Error::NotFound(old.to_owned()))?;
 
-        // If the tunnel is alive, mark it stopped before renaming so the
-        // tick loop doesn't try to restart the old name.
-        if t.status == TunnelStatus::Alive {
-            t.status = TunnelStatus::Idle;
-            t.wants_alive = false;
-        }
-
-        t.name = new;
+        t.name = new.clone();
         tunnel_snapshot(t)
     };
+
+    // Re-key the runtime registry (live child + counters + events) so an
+    // Alive tunnel keeps running seamlessly under its new name. The old code
+    // instead marked it Idle/wants_alive=false but NEVER killed the child —
+    // leaking an untracked ssh forward under the old name. (Python migrated
+    // its running-set entry on rename, tunnels.py.)
+    if let Some(rt) = &runtime {
+        rt.rename_entry(old, &new);
+    }
 
     persist_tunnels(state);
     Ok(snap)
@@ -830,10 +836,17 @@ pub fn tunnels_batch(
     }
 
     // action == "start": cap how many starts we initiate at once. tunnel_start
-    // returns quickly (spawns the ssh worker off-lock), so processing in chunks
-    // of BATCH_START_CONCURRENCY bounds the burst of concurrent ssh children a
-    // single request can trigger.
-    for chunk in names.chunks(BATCH_START_CONCURRENCY) {
+    // returns quickly (spawns the ssh worker off-lock), so the cap needs a real
+    // pause BETWEEN chunks — without it the chunked loop was equivalent to a
+    // flat one and a 50-name batch fired 50 concurrent ssh children at once.
+    // ~1 s of stagger per chunk lets the previous chunk's spawns get through
+    // their initial connect before the next burst. (Runs on a connection
+    // thread; the client's tunnels_batch timeout is 30 s, so even very large
+    // batches stay within budget.)
+    for (i, chunk) in names.chunks(BATCH_START_CONCURRENCY).enumerate() {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
         for name in chunk {
             let pv = json!({"name": name});
             let outcome = tunnel_start(state, &pv, runtime.clone(), post_connect_running.clone());
@@ -1305,7 +1318,7 @@ mod tests {
     #[test]
     fn tunnel_rename_ok() {
         let state = make_state_with_tunnel("nb", 9600);
-        let v = tunnel_rename(&state, &json!({"old": "nb", "new": "nb2"})).unwrap();
+        let v = tunnel_rename(&state, &json!({"old": "nb", "new": "nb2"}), None).unwrap();
         assert_eq!(v["name"], "nb2");
         assert_eq!(crate::lock_state(&state).tunnels[0].name, "nb2");
     }
@@ -1326,7 +1339,7 @@ mod tests {
             });
         }
         let state = Arc::new(Mutex::new(inner));
-        let err = tunnel_rename(&state, &json!({"old": "nb", "new": "nb2"})).unwrap_err();
+        let err = tunnel_rename(&state, &json!({"old": "nb", "new": "nb2"}), None).unwrap_err();
         assert!(matches!(err, Error::Duplicate(_)));
     }
 

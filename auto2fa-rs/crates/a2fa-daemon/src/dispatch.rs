@@ -188,7 +188,7 @@ fn route_with_ctx(
                                         Some(Arc::clone(&ctx.managers)),
                                         Some(Arc::clone(&ctx.registry))),
         Method::HostMountToggle   => hosts::host_mount_toggle(state, params),
-        Method::HostRotate        => hosts::host_rotate(state, params),
+        Method::HostRotate        => hosts::host_rotate(state, params, Some(Arc::clone(&ctx.managers))),
         Method::HostAdd           => hosts::host_add(state, params,
                                         Some(Arc::clone(&ctx.managers)),
                                         Some(Arc::clone(&ctx.registry))),
@@ -212,7 +212,7 @@ fn route_with_ctx(
         Method::TunnelSetPostConnect    => tunnels::tunnel_set_post_connect(state, params),
         Method::TunnelSetTags     => tunnels::tunnel_set_tags(state, params),
         Method::TunnelSetUrlPath  => tunnels::tunnel_set_url_path(state, params),
-        Method::TunnelRename      => tunnels::tunnel_rename(state, params),
+        Method::TunnelRename      => tunnels::tunnel_rename(state, params, Some(Arc::clone(&ctx.runtime))),
         Method::TunnelsBatch      => tunnels::tunnels_batch(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
 
         // --- Discovery ---
