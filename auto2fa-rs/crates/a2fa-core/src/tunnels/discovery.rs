@@ -70,9 +70,10 @@ pub struct Job {
 /// Parse the stdout of `squeue -h -o '%i|%P|%j|%T|%M|%R'`.
 ///
 /// - Skips blank lines and malformed rows (wrong field count or empty node).
-/// - Does NOT filter by state — callers can filter by `job.state == "RUNNING"`
-///   if desired. (The Python reference filtered only RUNNING; we expose all
-///   so that callers have the choice.)
+/// - Filters to STATE == "RUNNING": only a RUNNING job sits on a real compute
+///   node. A PENDING job's `%R` is a REASON string (e.g. "(Resources)" /
+///   "(Priority)"), NOT a node, so including it would offer bogus targets in
+///   the node picker. Matches the Python reference (tunnels.py).
 pub fn parse_squeue(out: &str) -> Vec<Job> {
     let mut jobs = Vec::new();
     for line in out.lines() {
@@ -85,6 +86,13 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
             log::debug!("skipping malformed squeue row: {:?}", line);
             continue;
         }
+        let state = parts[3].trim();
+        // Only RUNNING jobs sit on a real compute node — a PENDING job's %R is a
+        // reason like "(Resources)"/"(Priority)", not a node.
+        if state != "RUNNING" {
+            log::debug!("skipping non-RUNNING squeue row: {:?}", line);
+            continue;
+        }
         let node = parts[5].trim().to_string();
         if node.is_empty() {
             log::debug!("skipping squeue row with empty node: {:?}", line);
@@ -94,7 +102,7 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
             jobid:     parts[0].trim().to_string(),
             partition: parts[1].trim().to_string(),
             name:      parts[2].trim().to_string(),
-            state:     parts[3].trim().to_string(),
+            state:     state.to_string(),
             time:      parts[4].trim().to_string(),
             node,
         });
@@ -186,6 +194,13 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
         "'%i|%P|%j|%T|%M|%R'",
+        // Restrict to the CURRENT USER's jobs. `$USER` is expanded by the
+        // REMOTE shell. WITHOUT this, squeue lists EVERY job on the cluster
+        // (thousands on FAS-RC) → the query exceeds the 15s deadline and times
+        // out → discovery returns nothing → "no compute node found". The Python
+        // reference always passed `-u $USER` (tunnels.py).
+        "-u",
+        "$USER",
     ]);
     // Hard kill-on-deadline so a wedged ssh can never hang the caller.
     let output = ssh_squeue_output(cmd, SQUEUE_TIMEOUT)?;
@@ -239,6 +254,13 @@ pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) ->
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
         "'%i|%P|%j|%T|%M|%R'",
+        // Restrict to the CURRENT USER's jobs. `$USER` is expanded by the
+        // REMOTE shell. WITHOUT this, squeue lists EVERY job on the cluster
+        // (thousands on FAS-RC) → the query exceeds the 15s deadline and times
+        // out → discovery returns nothing → "no compute node found". The Python
+        // reference always passed `-u $USER` (tunnels.py).
+        "-u",
+        "$USER",
     ]);
     // Hard kill-on-deadline so a stale ControlMaster socket can never hang the
     // maintenance loop.
@@ -299,6 +321,21 @@ mod tests {
             "123|gpu|run|RUNNING|01:00:00|holygpu01\nbad row\n456|cpu|x|PENDING|0:00|\n",
         );
         assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].node, "holygpu01");
+        assert_eq!(jobs[0].state, "RUNNING");
+    }
+
+    #[test]
+    fn filters_non_running_jobs() {
+        // A PENDING job's %R is a reason ("(Resources)"), not a node, and a
+        // CONFIGURING job isn't usable yet. Only RUNNING jobs (on a real node)
+        // must survive — otherwise the node picker offers bogus targets.
+        let jobs = parse_squeue(
+            "1|gpu|train|RUNNING|2:00:00|holygpu01\n\
+             2|gpu|wait|PENDING|0:00|(Resources)\n\
+             3|gpu|cfg|CONFIGURING|0:01|holygpu02\n",
+        );
+        assert_eq!(jobs.len(), 1, "only the RUNNING job is kept");
         assert_eq!(jobs[0].node, "holygpu01");
         assert_eq!(jobs[0].state, "RUNNING");
     }
