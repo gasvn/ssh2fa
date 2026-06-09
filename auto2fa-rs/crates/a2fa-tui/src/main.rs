@@ -249,34 +249,61 @@ fn handle_key(
                         sheets.add_host = None;
                         app.input_mode = InputMode::Normal;
                     }
+                    // Field navigation (3 fields: host / password / otpauth).
+                    KeyCode::Tab | KeyCode::Down => {
+                        sh.field = (sh.field + 1) % AddHostSheet::FIELD_COUNT;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        sh.field =
+                            (sh.field + AddHostSheet::FIELD_COUNT - 1) % AddHostSheet::FIELD_COUNT;
+                    }
                     KeyCode::Enter => {
                         let host = sh.host_buf.trim().to_string();
+                        let password = sh.password_buf.clone();
+                        let otpauth = sh.otpauth_buf.trim().to_string();
+                        // Validate locally — the daemon mandates all three
+                        // (the old host-only submit ALWAYS failed bad_params).
                         if host.is_empty() {
                             sh.error = "Host alias cannot be empty.".to_string();
+                            sh.field = 0;
+                        } else if password.is_empty() {
+                            sh.error = "SSH password cannot be empty.".to_string();
+                            sh.field = 1;
+                        } else if otpauth.is_empty() {
+                            sh.error =
+                                "otpauth URL / TOTP secret cannot be empty.".to_string();
+                            sh.field = 2;
                         } else {
                             let res = client::rpc(
                                 "host_add",
-                                serde_json::json!({ "host": host }),
+                                serde_json::json!({
+                                    "host": host,
+                                    "password": password,
+                                    "otpauth_url": otpauth,
+                                    "auto_connect": true,
+                                }),
                             );
                             match res {
                                 Ok(_) => {
                                     app.status_msg = format!("Added host {host}");
                                     refresh_hosts(app);
+                                    sheets.add_host = None;
+                                    app.input_mode = InputMode::Normal;
                                 }
                                 Err(e) => {
-                                    app.status_msg = format!("host_add failed: {e}");
+                                    // Keep the sheet open so the user can fix
+                                    // the bad field instead of retyping all.
+                                    sh.error = format!("host_add failed: {e}");
                                 }
                             }
-                            sheets.add_host = None;
-                            app.input_mode = InputMode::Normal;
                         }
                     }
                     KeyCode::Backspace => {
-                        sh.host_buf.pop();
+                        sh.focused_buf().pop();
                         sh.error.clear();
                     }
                     KeyCode::Char(c) => {
-                        sh.host_buf.push(c);
+                        sh.focused_buf().push(c);
                         sh.error.clear();
                     }
                     _ => {}

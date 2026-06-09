@@ -65,12 +65,19 @@ fn render_input_field(
 // ---------------------------------------------------------------------------
 
 /// State for the add-host modal.
+///
+/// Collects everything `host_add` requires: the daemon mandates a password and
+/// a parseable otpauth:// URL — the old one-field form could never succeed
+/// (every submit came back "bad params: invalid otpauth URL").
 #[derive(Debug, Clone, Default)]
 pub struct AddHostSheet {
     /// The host alias being entered.
     pub host_buf: String,
-    /// Which field is focused (0 = host).
-    #[allow(dead_code)]
+    /// SSH password (rendered masked).
+    pub password_buf: String,
+    /// otpauth:// URL (or bare base32 secret — the daemon accepts both).
+    pub otpauth_buf: String,
+    /// Which field is focused (0 = host, 1 = password, 2 = otpauth).
     pub field: usize,
     /// Optional error to display.
     pub error: String,
@@ -80,11 +87,22 @@ impl AddHostSheet {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Mutable buffer of the focused field.
+    pub fn focused_buf(&mut self) -> &mut String {
+        match self.field {
+            1 => &mut self.password_buf,
+            2 => &mut self.otpauth_buf,
+            _ => &mut self.host_buf,
+        }
+    }
+
+    pub const FIELD_COUNT: usize = 3;
 }
 
 /// Render the add-host modal.
 pub fn render_add_host(f: &mut Frame, sheet: &AddHostSheet) {
-    let area = centered_rect(60, 10, f.area());
+    let area = centered_rect(64, 16, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -104,23 +122,35 @@ pub fn render_add_host(f: &mut Frame, sheet: &AddHostSheet) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // host field
+            Constraint::Length(3), // password field
+            Constraint::Length(3), // otpauth field
             Constraint::Length(1), // error line
             Constraint::Length(1), // hint
         ])
         .split(inner);
 
-    render_input_field(f, chunks[0], "Host alias", &sheet.host_buf, true);
+    render_input_field(f, chunks[0], "Host alias", &sheet.host_buf, sheet.field == 0);
+    // Mask the password — never paint it on screen.
+    let masked = "•".repeat(sheet.password_buf.chars().count());
+    render_input_field(f, chunks[1], "SSH password", &masked, sheet.field == 1);
+    render_input_field(
+        f,
+        chunks[2],
+        "otpauth URL / TOTP secret",
+        &sheet.otpauth_buf,
+        sheet.field == 2,
+    );
 
     if !sheet.error.is_empty() {
         let err = Paragraph::new(sheet.error.as_str())
             .style(Style::default().fg(Color::Red));
-        f.render_widget(err, chunks[1]);
+        f.render_widget(err, chunks[3]);
     }
 
-    let hint = Paragraph::new("Enter: confirm   Esc: cancel")
+    let hint = Paragraph::new("Tab/↑↓: switch field   Enter: confirm   Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    f.render_widget(hint, chunks[2]);
+    f.render_widget(hint, chunks[4]);
 }
 
 // ---------------------------------------------------------------------------
@@ -694,5 +724,23 @@ mod tests {
         assert!(sections.contains(&"Global"));
         assert!(sections.contains(&"Tunnels"));
         assert!(sections.contains(&"Hosts"));
+    }
+
+    #[test]
+    fn add_host_sheet_focused_buf_routes_by_field() {
+        let mut sh = AddHostSheet::new();
+        sh.field = 0;
+        sh.focused_buf().push_str("k9");
+        sh.field = 1;
+        sh.focused_buf().push_str("pw");
+        sh.field = 2;
+        sh.focused_buf().push_str("otpauth://x");
+        assert_eq!(sh.host_buf, "k9");
+        assert_eq!(sh.password_buf, "pw");
+        assert_eq!(sh.otpauth_buf, "otpauth://x");
+        // Out-of-range field falls back to host (defensive).
+        sh.field = 99;
+        sh.focused_buf().push('!');
+        assert_eq!(sh.host_buf, "k9!");
     }
 }
