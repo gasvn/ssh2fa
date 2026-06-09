@@ -163,6 +163,14 @@ pub enum MaintenanceAction {
     WarmSlot1,
     /// Active slot is dead but the other slot is Ready — rotate.
     Rotate,
+    /// Registry says Dead/Failed but the LIVE check PASSED: the registry is
+    /// stale (boot-adoption gap, a transient check failure that later
+    /// recovered, a worker result landing mid-tick). The master is alive and
+    /// authenticated — adopt it back to Ready instead of restarting. A restart
+    /// here KILLS the live master (cleanup_stale_socket PID-sweeps every [mux]
+    /// on the ControlPath) and burns a full 2FA login for nothing. Observed
+    /// live: 1246 "needs restart (status=Dead, check=Some(true))" log lines.
+    AdoptAlive,
 }
 
 /// Decide what maintenance action is needed for a single slot.
@@ -196,6 +204,16 @@ pub fn next_action(
         && pool.slot_status[1] == SlotStatus::Init
     {
         return MaintenanceAction::WarmSlot1;
+    }
+
+    // A Dead/Failed registry status with a PASSING live check means the
+    // registry is stale, not the master — adopt, never restart (see
+    // MaintenanceAction::AdoptAlive). Checked BEFORE rotation: if the active
+    // slot's master is actually alive, adopting it beats rotating away.
+    if matches!(pool.slot_status[slot], SlotStatus::Dead | SlotStatus::Failed)
+        && check_alive == Some(true)
+    {
+        return MaintenanceAction::AdoptAlive;
     }
 
     // Rotation: active slot is dead and the other is ready.
@@ -1298,6 +1316,40 @@ fn tick_host(
                 }
             }
 
+            MaintenanceAction::AdoptAlive => {
+                info!(
+                    "[{host_name}] heartbeat: slot {slot} marked {:?} but master is ALIVE — adopting (no restart, no 2FA)",
+                    pool.slot_status[slot]
+                );
+                managers.with_pool_mut(host_name, |p| {
+                    p.slot_status[slot] = SlotStatus::Ready;
+                    // Stamp the flap-detection clock so a later genuine drop
+                    // is accounted correctly.
+                    p.mark_slot_ready(slot);
+                });
+                // Reflect in engine State: count Ready slots; mark Connected
+                // if this is the active slot.
+                let (alive_count, is_active_slot) = managers
+                    .with_pool(host_name, |p| {
+                        let alive = p
+                            .slot_status
+                            .iter()
+                            .filter(|s| **s == SlotStatus::Ready)
+                            .count() as u8;
+                        (alive, p.active_index == slot)
+                    })
+                    .unwrap_or((1, false));
+                let mut guard = crate::lock_state(state);
+                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                    h.pool_alive = alive_count;
+                    if is_active_slot {
+                        h.is_master_ready = true;
+                        h.status = "Connected".into();
+                        h.last_msg = format!("Adopted live slot {slot}");
+                    }
+                }
+            }
+
             MaintenanceAction::Healthy | MaintenanceAction::Skip => {
                 // Nothing to do.
             }
@@ -1706,6 +1758,30 @@ mod tests {
         pool.slot_status[0] = SlotStatus::Ready;
         let action = next_action(&pool, 0, true, Some(false), Instant::now());
         assert_eq!(action, MaintenanceAction::Restart);
+    }
+
+    #[test]
+    fn next_action_dead_slot_with_passing_check_adopts_instead_of_restart() {
+        // Registry says Dead but the live check PASSES → the registry is
+        // stale, the master is alive and authenticated. Restarting would kill
+        // it and burn a 2FA login (observed 1246x live) — must adopt.
+        for status in [SlotStatus::Dead, SlotStatus::Failed] {
+            let mut pool = fresh_pool("k6");
+            pool.slot_status[0] = status;
+            let action = next_action(&pool, 0, true, Some(true), Instant::now());
+            assert_eq!(
+                action,
+                MaintenanceAction::AdoptAlive,
+                "{status:?}+alive-check must adopt, not restart"
+            );
+        }
+        // No check info (None) keeps the restart behavior.
+        let mut pool = fresh_pool("k6");
+        pool.slot_status[0] = SlotStatus::Dead;
+        assert_eq!(
+            next_action(&pool, 0, true, None, Instant::now()),
+            MaintenanceAction::Restart
+        );
     }
 
     #[test]
