@@ -16,15 +16,25 @@ const DEFAULT_PERIOD: u64 = 30;
 /// literally — the downstream base32 decode then fails with a clear error
 /// instead of this helper inventing data.
 fn percent_decode(s: &str) -> String {
+    fn hex_val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'%' if i + 2 < bytes.len() => {
-                let hex = &s[i + 1..i + 3];
-                if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    out.push(b);
+                // Decode from BYTES — a `&s[i+1..i+3]` str slice here PANICKED
+                // ("not a char boundary") when '%' was followed by a multibyte
+                // char (e.g. a pasted curly quote: "%aé").
+                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                    out.push(hi * 16 + lo);
                     i += 3;
                     continue;
                 }
@@ -99,6 +109,31 @@ impl OtpParams {
     }
 }
 
+/// Shared range checks — applied to BOTH the otpauth-URL branch and the
+/// canonical-token branch of [`parse_otp_input`]. The token branch used to
+/// skip them: `SECRET#SHA1:6:0` passed `extract_secret` (host_add's only
+/// validation), got stored in the Keychain, and every later `totp_now`
+/// PANICKED on `unix_now % 0` — silently killing each login worker forever.
+fn validate_digits(digits: usize) -> Result<usize> {
+    if (6..=8).contains(&digits) {
+        Ok(digits)
+    } else {
+        Err(Error::BadParams(format!(
+            "unsupported otpauth digits {digits} (expected 6-8)"
+        )))
+    }
+}
+
+fn validate_period(period: u64) -> Result<u64> {
+    if (5..=300).contains(&period) {
+        Ok(period)
+    } else {
+        Err(Error::BadParams(format!(
+            "unsupported otpauth period {period}s (expected 5-300)"
+        )))
+    }
+}
+
 fn parse_algorithm(s: &str) -> Result<Algorithm> {
     match s.to_ascii_uppercase().as_str() {
         "SHA1" => Ok(Algorithm::SHA1),
@@ -132,24 +167,14 @@ fn parse_otp_input(s: &str) -> Result<OtpParams> {
                     algorithm = parse_algorithm(&percent_decode(val))?;
                 }
                 "digits" if !val.is_empty() => {
-                    digits = val.parse::<usize>().map_err(|_| {
+                    digits = validate_digits(val.parse::<usize>().map_err(|_| {
                         Error::BadParams(format!("invalid otpauth digits '{val}'"))
-                    })?;
-                    if !(6..=8).contains(&digits) {
-                        return Err(Error::BadParams(format!(
-                            "unsupported otpauth digits {digits} (expected 6-8)"
-                        )));
-                    }
+                    })?)?;
                 }
                 "period" if !val.is_empty() => {
-                    period = val.parse::<u64>().map_err(|_| {
+                    period = validate_period(val.parse::<u64>().map_err(|_| {
                         Error::BadParams(format!("invalid otpauth period '{val}'"))
-                    })?;
-                    if !(5..=300).contains(&period) {
-                        return Err(Error::BadParams(format!(
-                            "unsupported otpauth period {period}s (expected 5-300)"
-                        )));
-                    }
+                    })?)?;
                 }
                 _ => {}
             }
@@ -167,16 +192,22 @@ fn parse_otp_input(s: &str) -> Result<OtpParams> {
         }
     } else if let Some((sec, params)) = s.split_once('#') {
         // Canonical token with non-default params: SECRET#ALGO:digits:period.
+        // The SAME range validation as the URL branch — skipping it here let
+        // a div-by-zero period reach the Keychain (see validate_period).
         let mut it = params.split(':');
         let algo = it.next().unwrap_or("");
         let digits_s = it.next().unwrap_or("");
         let period_s = it.next().unwrap_or("");
-        let digits = digits_s
-            .parse::<usize>()
-            .map_err(|_| Error::BadParams(format!("invalid token digits '{digits_s}'")))?;
-        let period = period_s
-            .parse::<u64>()
-            .map_err(|_| Error::BadParams(format!("invalid token period '{period_s}'")))?;
+        let digits = validate_digits(
+            digits_s
+                .parse::<usize>()
+                .map_err(|_| Error::BadParams(format!("invalid token digits '{digits_s}'")))?,
+        )?;
+        let period = validate_period(
+            period_s
+                .parse::<u64>()
+                .map_err(|_| Error::BadParams(format!("invalid token period '{period_s}'")))?,
+        )?;
         Ok(OtpParams {
             secret: canonicalize_secret(sec)?,
             algorithm: parse_algorithm(algo)?,
@@ -277,6 +308,14 @@ pub fn totp_at(secret: &str, unix_secs: u64) -> Result<String> {
     Ok(totp.generate(unix_secs))
 }
 
+/// The TOTP step (seconds) encoded in `secret` (URL / token / bare — bare
+/// defaults to 30). The daemon's OTP replay guard needs this to compute the
+/// next-window wait: hardcoding 30 let a 60s-period secret re-submit the
+/// SAME code inside one window (server-side replay rejection).
+pub fn token_period(secret: &str) -> Result<u64> {
+    Ok(parse_otp_input(secret)?.period)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +397,42 @@ mod tests {
         assert!(extract_secret("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&algorithm=MD5").is_err());
         assert!(extract_secret("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=12").is_err());
         assert!(extract_secret("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=1").is_err());
+    }
+
+    /// REGRESSION (reproduced div-by-zero): the canonical-TOKEN branch must
+    /// apply the same range validation as the URL branch — "#SHA1:6:0" used
+    /// to pass extract_secret (host_add's only validation), get stored, then
+    /// PANIC every login worker on `unix_now % 0`.
+    #[test]
+    fn token_branch_validates_ranges() {
+        assert!(extract_secret("JBSWY3DPEHPK3PXP#SHA1:6:0").is_err(), "period 0");
+        assert!(extract_secret("JBSWY3DPEHPK3PXP#SHA1:0:30").is_err(), "digits 0");
+        assert!(extract_secret("JBSWY3DPEHPK3PXP#SHA1:99:30").is_err(), "digits 99");
+        assert!(extract_secret("JBSWY3DPEHPK3PXP#MD5:6:30").is_err(), "bad algo");
+        assert!(totp_now("JBSWY3DPEHPK3PXP#SHA1:6:0").is_err(), "must error, never panic");
+        // Valid token still passes.
+        assert!(extract_secret("JBSWY3DPEHPK3PXP#SHA256:8:60").is_ok());
+    }
+
+    /// REGRESSION (reproduced char-boundary panic): '%' followed by a
+    /// multibyte char (pasted curly quote etc.) must not panic the decoder.
+    #[test]
+    fn percent_decode_multibyte_no_panic() {
+        assert_eq!(percent_decode("%aé"), "%aé");
+        assert_eq!(percent_decode("é%c3%a9"), "éé");
+        // Through the public API: errors cleanly, never panics.
+        let _ = extract_secret("otpauth://totp/x?secret=%aé");
+    }
+
+    /// token_period must reflect the encoded step (replay-guard input).
+    #[test]
+    fn token_period_reflects_secret() {
+        assert_eq!(token_period("JBSWY3DPEHPK3PXP").unwrap(), 30);
+        assert_eq!(token_period("JBSWY3DPEHPK3PXP#SHA1:6:60").unwrap(), 60);
+        assert_eq!(
+            token_period("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=45").unwrap(),
+            45
+        );
     }
 
     /// An empty secret must error — never degrade to an empty-key HMAC that

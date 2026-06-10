@@ -226,11 +226,14 @@ pub fn reset_all(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Va
     }
 
     // 3. Force-rebuild every active host's master (background threads).
+    //    reset_breakers=true: this is the user's EXPLICIT "reset everything"
+    //    — clearing cooldown/flap backoffs is the point.
     let masters_rebuilt = managers::rebuild_masters(
         &active_host_names(&ctx.state),
         &ctx.state,
         &ctx.managers,
         &ctx.registry,
+        true,
     );
 
     log::info!(
@@ -347,7 +350,12 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
     );
 
     // 3. Rebuild the masters that failed (background threads).
-    managers::rebuild_masters(&masters_failed, &ctx.state, &ctx.managers, &ctx.registry);
+    //    reset_breakers=false — CRITICAL: wake_recover fires automatically on
+    //    every network-up (two Mac monitors, ≥12s apart). Resetting the
+    //    breakers here meant an oscillating network re-armed a fresh full
+    //    login every up-phase forever (FAS-RC rate-limit incident class).
+    //    Hosts in cooldown stay in cooldown; the heartbeat recovers them.
+    managers::rebuild_masters(&masters_failed, &ctx.state, &ctx.managers, &ctx.registry, false);
 
     // 4. Decide which tunnels to restart: jump master failed OR ssh -L child
     //    is dead/missing.

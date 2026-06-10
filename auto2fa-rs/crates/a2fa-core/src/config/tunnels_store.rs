@@ -51,6 +51,91 @@ struct TunnelsFile {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Boot-time guard: if `path` exists, is non-empty, and does NOT parse as a
+/// tunnels file, copy it aside to `<path>.corrupt-<unix-secs>` before anyone
+/// loads (and therefore before any later persist overwrites it).
+///
+/// WHY: a hand-edited/corrupt tunnels.json loads as EMPTY, and the first
+/// persist (any tunnel transition) then rewrote the file from the empty
+/// in-memory list — silently destroying the user's only copy. passwords.json
+/// refuses such writes; tunnels.json instead preserves the evidence and
+/// carries on (tunnels are recreatable, but not silently-losable).
+///
+/// Returns `true` if a backup was made.
+pub fn backup_if_unparseable(path: &Path) -> bool {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return false, // missing/unreadable — nothing to preserve
+    };
+    if text.trim().is_empty() {
+        return false;
+    }
+    if serde_json::from_str::<TunnelsFile>(&text).is_ok() {
+        return false;
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = {
+        let mut p = path.to_path_buf();
+        let name = p
+            .file_name()
+            .map(|n| {
+                let mut s = n.to_os_string();
+                s.push(format!(".corrupt-{secs}"));
+                s
+            })
+            .unwrap_or_else(|| std::ffi::OsString::from(format!("tunnels.json.corrupt-{secs}")));
+        p.set_file_name(name);
+        p
+    };
+    match std::fs::copy(path, &backup) {
+        Ok(_) => {
+            log::error!(
+                "tunnels.json is unparseable — preserved a copy at {:?} before the daemon \
+                 overwrites it. Fix and restore it manually if needed.",
+                backup
+            );
+            true
+        }
+        Err(e) => {
+            log::error!("tunnels.json is unparseable AND backing it up failed: {e}");
+            false
+        }
+    }
+}
+
+/// Boot-time sweep of leftover atomic-write temp files
+/// (`tunnels.json.<pid>.<seq>.tmp`) — a SIGKILL'd daemon (the standard
+/// zero-relogin deploy) leaks one per interrupted save, and nothing else
+/// ever removes them. Safe at boot: the accept loop isn't running, so no
+/// concurrent writer exists.
+pub fn sweep_stale_tmp(path: &Path) -> usize {
+    let (dir, prefix) = match (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+        (Some(d), Some(f)) => (d, format!("{f}.")),
+        _ => return 0,
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if s.starts_with(&prefix) && s.ends_with(".tmp") {
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        log::info!("swept {removed} stale tunnels.json temp file(s)");
+    }
+    removed
+}
+
 /// Load tunnels from `path`.
 ///
 /// - Missing file → empty Vec (not an error).
@@ -235,6 +320,53 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REGRESSION (silent data loss): an unparseable tunnels.json must be
+    /// preserved aside at boot — the first persist would otherwise rewrite it
+    /// from the empty in-memory list, destroying the user's only copy.
+    #[test]
+    fn backup_if_unparseable_preserves_corrupt_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(&p, "{ this is not json").unwrap();
+
+        assert!(backup_if_unparseable(&p), "corrupt file must be backed up");
+        let backups: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            "{ this is not json"
+        );
+
+        // Valid / empty / missing files are left alone.
+        std::fs::write(&p, r#"{"tunnels":{}}"#).unwrap();
+        assert!(!backup_if_unparseable(&p));
+        std::fs::write(&p, "").unwrap();
+        assert!(!backup_if_unparseable(&p));
+        assert!(!backup_if_unparseable(&d.path().join("missing.json")));
+    }
+
+    /// SIGKILL deploys leak <file>.<pid>.<seq>.tmp files; the boot sweep must
+    /// remove them and ONLY them.
+    #[test]
+    fn sweep_stale_tmp_removes_only_tmp_files() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(&p, r#"{"tunnels":{}}"#).unwrap();
+        std::fs::write(d.path().join("tunnels.json.123.0.tmp"), "x").unwrap();
+        std::fs::write(d.path().join("tunnels.json.456.7.tmp"), "x").unwrap();
+        std::fs::write(d.path().join("tunnels.json.corrupt-9"), "x").unwrap(); // NOT a tmp
+        std::fs::write(d.path().join("other.tmp"), "x").unwrap(); // different prefix
+
+        assert_eq!(sweep_stale_tmp(&p), 2);
+        assert!(p.exists());
+        assert!(d.path().join("tunnels.json.corrupt-9").exists());
+        assert!(d.path().join("other.tmp").exists());
+    }
 
     /// The on-disk map is a HashMap — without an explicit sort the loaded
     /// order shuffled per process (UI rows reordered on every restart).

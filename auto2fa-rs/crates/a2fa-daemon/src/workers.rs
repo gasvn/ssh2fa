@@ -53,8 +53,8 @@ pub struct OtpGroupState {
     pub last_submitted: Option<(String, f64)>,
 }
 
-/// TOTP window length (seconds).  Same as the Python constant `_TOTP_WINDOW_SEC`.
-const TOTP_WINDOW_SEC: f64 = 30.0;
+// (The old fixed `TOTP_WINDOW_SEC = 30.0` constant is gone: the replay guard
+// now derives the window from the secret's own period via totp::token_period.)
 
 /// Deterministic, non-cryptographic hash of `secret` → 16-char hex key.
 ///
@@ -121,6 +121,11 @@ pub fn make_otp_closure(
     host: String,
     registry: Arc<OtpRegistry>,
 ) -> impl Fn() -> a2fa_core::error::Result<String> {
+    // The secret's ACTUAL step — hardcoding 30 let a 60s-period secret pass
+    // the staleness check >35s into its window and re-submit the SAME code
+    // (server-side replay rejection). Parsed once; bad secrets fall back to
+    // 30 here and fail loudly inside totp_now below.
+    let period = a2fa_core::totp::token_period(&secret).unwrap_or(30).max(1);
     move || {
         let group_arc = registry.get_group(&secret);
         loop {
@@ -134,7 +139,7 @@ pub fn make_otp_closure(
             let should_wait = match &grp.last_submitted {
                 Some((last_code, last_ts)) => {
                     let age = now_f64() - last_ts;
-                    last_code == &code && age < (TOTP_WINDOW_SEC + 5.0)
+                    last_code == &code && age < (period as f64 + 5.0)
                 }
                 None => false,
             };
@@ -149,8 +154,8 @@ pub fn make_otp_closure(
             // Same code as last submission — release the lock before sleeping
             // so other hosts with this secret can proceed.
             let unix_now = now_f64() as u64;
-            let secs_into_window = unix_now % 30;
-            let wait_secs = 30 - secs_into_window + 1;
+            let secs_into_window = unix_now % period;
+            let wait_secs = period - secs_into_window + 1;
             info!(
                 "[{host}] OTP would replay last submission; \
                  waiting {wait_secs}s for next TOTP window"

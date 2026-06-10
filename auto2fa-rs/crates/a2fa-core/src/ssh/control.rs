@@ -164,14 +164,20 @@ fn run_ssh_g(host: &str) -> Option<String> {
 ///
 /// Mirrors `get_ssh_control_path` in backend.py.
 pub fn resolve_control_base(host: &str) -> PathBuf {
-    if let Some(p) = control_base_cache().lock().unwrap().get(host) {
+    // Poison-tolerant: this cache is read on login workers AND the heartbeat
+    // path — a panicked writer must not poison every future resolution.
+    if let Some(p) = control_base_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(host)
+    {
         return p.clone();
     }
     let value = run_ssh_g(host);
     let base = control_base_from_ssh_g(host, value.as_deref().and_then(parse_ssh_g_controlpath).as_deref());
     control_base_cache()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(host.to_string(), base.clone());
     base
 }

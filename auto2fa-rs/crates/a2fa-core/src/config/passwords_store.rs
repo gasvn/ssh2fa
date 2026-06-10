@@ -155,10 +155,15 @@ pub fn save_meta(path: &Path, hosts: &HashMap<String, HostMeta>) -> Result<()> {
             }
             Ok(_) => {}
             // An empty file / empty object carries no data — safe to claim.
-            // ("{}" is what a fresh Python install wrote; refusing it would
-            // brick metadata persistence forever, since the migration skips
-            // cred-less files and never converts them to v2.)
-            Err(_) if trimmed.is_empty() || trimmed == "{}" => {}
+            // ("{}" — possibly with whitespace — is what a fresh Python
+            // install wrote; refusing it would brick metadata persistence
+            // forever, since the migration skips cred-less files and never
+            // converts them to v2.) Parse-based, not exact-match.
+            Err(_) if trimmed.is_empty()
+                || matches!(
+                    serde_json::from_str::<serde_json::Value>(trimmed),
+                    Ok(serde_json::Value::Object(ref o)) if o.is_empty()
+                ) => {}
             Err(_) => {
                 return Err(Error::Internal(
                     "passwords.json is not a v2 file — likely un-migrated legacy v1 \
@@ -374,6 +379,14 @@ mod tests {
         hosts.insert("k8".to_owned(), HostMeta { auto_connect: false });
         save_meta(&p, &hosts).unwrap();
         assert_eq!(load_meta(&p).len(), 1);
+
+        // Whitespace-variant empty objects (fresh Python installs) are also
+        // claimable — the old exact-match "{}" check bricked "{ }" forever.
+        for variant in ["{}", "{ }", "{\n}", "  { }  "] {
+            let p2 = d.path().join(format!("pw-{}.json", variant.len()));
+            std::fs::write(&p2, variant).unwrap();
+            save_meta(&p2, &hosts).unwrap_or_else(|e| panic!("variant {variant:?}: {e}"));
+        }
     }
 
     /// REGRESSION (lost-update): two concurrent update_meta calls must both

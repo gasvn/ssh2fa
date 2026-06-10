@@ -90,14 +90,16 @@ pub fn invalidate_creds_cache(host: &str) {
 ///
 /// IMPORTANT: This MUST only ever be called from inside a spawned worker
 /// thread, NEVER on the daemon's synchronous startup/accept path or the
-/// heartbeat thread.  macOS's Security framework serializes Keychain access
-/// process-wide, so an unanswered "Always Allow" prompt blocks the calling
-/// thread indefinitely — keeping the read on a per-host worker means a stalled
-/// prompt only stalls that one host's login, never the daemon.
+/// heartbeat thread. The uncached Keychain read is additionally BOUNDED
+/// (sub-worker + 10s recv_timeout): macOS's Security framework serializes
+/// Keychain access process-wide, so an unanswered "Always Allow" prompt
+/// blocks the reading thread indefinitely — and the caller holds the slot's
+/// in-flight StartGuard, so an unbounded read here wedged the slot (and,
+/// process-wide, every host's login) forever.
 ///
-/// Missing / unreadable creds degrade to empty strings (login then simply
-/// fails for that host) rather than propagating an error, and are NOT cached
-/// so a later attempt retries the read.
+/// Missing / unreadable / timed-out creds degrade to empty strings (login
+/// then simply fails for that host) rather than propagating an error, and
+/// are NOT cached so a later attempt retries the read.
 fn load_creds(host: &str) -> (String, String) {
     // Fast path: serve from cache so retries never re-prompt the Keychain.
     {
@@ -107,22 +109,59 @@ fn load_creds(host: &str) -> (String, String) {
         }
     }
 
-    use a2fa_core::creds::keychain::KeychainStore;
-    use a2fa_core::creds::{get_otpauth, get_password};
-    use a2fa_core::totp::extract_secret;
+    // BOUNDED Keychain read: run it on a short-lived sub-worker and join with
+    // a hard timeout. The caller (a login/rebuild worker) HOLDS the in-flight
+    // StartGuard for its slot — an unbounded SecItem read blocking on a
+    // pending SecurityAgent prompt wedged the slot "in flight" FOREVER (the
+    // heartbeat logged "restart already in flight, skipping" indefinitely),
+    // and macOS serializes Keychain access process-wide so one prompt stalled
+    // every host. Timeout -> empty creds -> the login fails loudly, the guard
+    // releases, and the heartbeat retries later (re-reading the Keychain,
+    // since incomplete creds are never cached). An abandoned sub-worker that
+    // completes late writes only into the cache - harmless.
+    let creds = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let host_owned = host.to_string();
+        let spawn_res = std::thread::Builder::new()
+            .name(format!("keychain-read:{host}"))
+            .spawn(move || {
+                use a2fa_core::creds::keychain::KeychainStore;
+                use a2fa_core::creds::{get_otpauth, get_password};
+                use a2fa_core::totp::extract_secret;
 
-    let ks = KeychainStore;
-    let password = get_password(&ks, host).ok().flatten().unwrap_or_default();
-    let otpauth = get_otpauth(&ks, host).ok().flatten().unwrap_or_default();
-    let secret = extract_secret(&otpauth).unwrap_or_default();
-    let creds = (password, secret);
+                let ks = KeychainStore;
+                let password = get_password(&ks, &host_owned).ok().flatten().unwrap_or_default();
+                let otpauth = get_otpauth(&ks, &host_owned).ok().flatten().unwrap_or_default();
+                let secret = extract_secret(&otpauth).unwrap_or_default();
+                let creds = (password, secret);
+                // Cache from HERE so even a timed-out-but-late-completing read
+                // benefits the next attempt (complete creds only).
+                if creds_complete(&creds) {
+                    let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+                    cache.insert(host_owned.clone(), creds.clone());
+                }
+                let _ = tx.send(creds);
+            });
+        match spawn_res {
+            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(creds) => creds,
+                Err(_) => {
+                    warn!(
+                        "[{host}] keychain read timed out (locked keychain / pending \
+                         prompt?) - this login attempt will fail and retry later"
+                    );
+                    (String::new(), String::new())
+                }
+            },
+            Err(e) => {
+                warn!("[{host}] failed to spawn keychain-read worker: {e}");
+                (String::new(), String::new())
+            }
+        }
+    };
 
-    // Cache only complete creds — a partial read (e.g. a dismissed prompt)
-    // must retry next time rather than poison the cache with empties.
-    if creds_complete(&creds) {
-        let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-        cache.insert(host.to_string(), creds.clone());
-    }
+    // (Complete creds were cached inside the sub-worker; incomplete ones are
+    // never cached so a later attempt retries the Keychain.)
     creds
 }
 
@@ -228,11 +267,16 @@ pub fn next_action(
         }
     }
 
-    // Restart if the slot is in a non-Ready non-Init state (Dead/Failed),
-    // or if the live check returned false.
+    // Restart if the slot is in a non-Ready state (Dead/Failed), or if the
+    // live check returned false. Slot 0 in Init on an ACTIVE host also
+    // restarts: a rapid toggle OFF→ON race can abandon the activation (the ON
+    // arrived while the old stop worker still held the slot-0 token, so the
+    // start was skipped) — without this arm no heartbeat path ever started
+    // it and the host sat "Connecting" forever. Slot 1 Init stays with the
+    // warm-up logic (which requires slot 0 Ready).
     let needs_restart = match pool.slot_status[slot] {
         SlotStatus::Dead | SlotStatus::Failed => true,
-        SlotStatus::Init => false, // not started yet — handled by warm-up logic
+        SlotStatus::Init => slot == 0,
         SlotStatus::Ready => check_alive == Some(false),
     };
 
@@ -669,11 +713,20 @@ pub fn spawn_managed_start(
 ///
 /// Credentials are read from the Keychain INSIDE the spawned thread (see
 /// [`load_creds`]), never on the caller.
+///
+/// `reset_breakers`: clear cooldown/flap/probe backoffs before rebuilding.
+/// TRUE only for EXPLICIT user actions (reset_all) — the wake_recover path
+/// must pass FALSE: NetworkMonitor fires it on every network-up (≥12s
+/// apart), and an automatic breaker reset there meant that under an
+/// oscillating network the breakers never engaged — fresh full logins every
+/// up-phase, burning ~2 codes/min/host indefinitely (the FAS-RC rate-limit
+/// incident class).
 pub fn spawn_master_rebuild(
     host_name: String,
     registry: Arc<OtpRegistry>,
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
+    reset_breakers: bool,
 ) {
     // In-flight guard on slot 0 (the slot this rebuild starts). The stop_all
     // phase doesn't need guarding, but holding the guard for the whole worker
@@ -702,7 +755,9 @@ pub fn spawn_master_rebuild(
 
             // --- Phase 1: stop every slot (off-lock) ---
             let mut pool = managers.snapshot(&host_name);
-            pool.reset_circuit_breakers();
+            if reset_breakers {
+                pool.reset_circuit_breakers();
+            }
             info!("[{host_name}] master-rebuild: stopping all slots");
             stop_all(&mut pool);
             managers.write_back(&host_name, &pool);
@@ -785,11 +840,14 @@ pub fn spawn_master_rebuild(
 ///
 /// Returns the number of rebuilds actually kicked off (i.e. hosts that were
 /// both requested AND currently active).
+/// `reset_breakers` — see [`spawn_master_rebuild`]: TRUE only for explicit
+/// user actions (reset_all); automatic paths (wake_recover) pass FALSE.
 pub fn rebuild_masters(
     hosts: &[String],
     state: &Arc<Mutex<State>>,
     managers: &Arc<HostManagers>,
     registry: &Arc<OtpRegistry>,
+    reset_breakers: bool,
 ) -> usize {
     // Filter the requested hosts down to those currently active (brief lock).
     let to_rebuild: Vec<String> = {
@@ -816,6 +874,7 @@ pub fn rebuild_masters(
             Arc::clone(registry),
             Arc::clone(state),
             Arc::clone(managers),
+            reset_breakers,
         );
         count += 1;
     }
@@ -858,14 +917,28 @@ pub fn spawn_managed_stop(
             // 3. Write zeroed state back.
             managers.write_back(&host_name, &pool);
 
-            // 4. Update engine State.
+            // 4. Update engine State — but ONLY if the host is still
+            //    deactivated. stop_all takes up to ~20s; a user who re-toggles
+            //    ON in that window (handler sets active=true + spawns a fresh
+            //    login) must not have it silently undone by this late write —
+            //    the old unconditional `active=false` made the in-flight ON
+            //    login's still_active check fail, killing the master it had
+            //    just authenticated (one 2FA burned, State vs disk disagreeing
+            //    until reboot).
             let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                h.is_master_ready = false;
-                h.pool_alive = 0;
-                h.active = false;
-                h.status = "Idle".into();
-                h.last_msg = "Stopped".into();
+                if h.active {
+                    info!(
+                        "[{host_name}] managed-stop: host re-activated during stop — \
+                         leaving State to the new activation"
+                    );
+                } else {
+                    h.is_master_ready = false;
+                    h.pool_alive = 0;
+                    h.active = false;
+                    h.status = "Idle".into();
+                    h.last_msg = "Stopped".into();
+                }
             }
         })
         .expect("failed to spawn managed-stop thread");
@@ -1002,6 +1075,11 @@ fn restart_outcome_host_fields(
 fn heal_host_state(state: &Arc<Mutex<State>>, host: &str, slot: usize, alive_count: u8) {
     let mut guard = crate::lock_state(state);
     if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host) {
+        // A host the user just toggled OFF ("Deactivating…", active=false)
+        // must not be repainted Connected by a racing tick.
+        if !h.active {
+            return;
+        }
         h.pool_alive = alive_count;
         if !h.is_master_ready || h.status != "Connected" {
             h.is_master_ready = true;
@@ -1998,11 +2076,45 @@ mod tests {
 
     /// Init slot (never started) should give Healthy, not Restart.
     #[test]
-    fn init_slot_gives_healthy_not_restart() {
+    fn init_slot_zero_on_active_host_restarts() {
+        // REGRESSION (rapid toggle OFF->ON): an ACTIVE host whose slot 0 is
+        // still Init was previously Healthy -- i.e. NO heartbeat arm ever
+        // started it, and a toggle-race-abandoned activation sat
+        // "Connecting" forever. Slot 0 Init must restart.
         let pool = fresh_pool("k6");
         // slot_status[0] == Init by default
         let action = next_action(&pool, 0, true, None, Instant::now());
-        assert_eq!(action, MaintenanceAction::Healthy);
+        assert_eq!(action, MaintenanceAction::Restart);
+
+        // Slot 1 Init with slot 0 NOT Ready stays untouched (warm-up logic
+        // owns slot 1, and it requires slot 0 Ready first).
+        let action1 = next_action(&pool, 1, true, None, Instant::now());
+        assert_eq!(action1, MaintenanceAction::Healthy);
+    }
+
+    /// REGRESSION (rapid toggle OFF->ON): the late stop-worker State write
+    /// must NOT clobber a host the user has re-activated meanwhile.
+    #[test]
+    fn managed_stop_spares_reactivated_host() {
+        let mut st = State::with_tunnels(vec![]);
+        let mut h = host("k6", true); // re-toggled ON during the stop
+        h.status = "Connecting...".into();
+        h.last_msg = "Connecting...".into();
+        st.hosts.push(h);
+        let state = Arc::new(Mutex::new(st));
+        let managers = HostManagers::new();
+
+        spawn_managed_stop("k6".into(), Arc::clone(&state), Arc::clone(&managers));
+
+        // The stop worker runs stop_all on an Init pool (fast no-op) then
+        // writes State. Give it a moment to finish.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        let guard = crate::lock_state(&state);
+        let h = &guard.hosts[0];
+        assert!(h.active, "active flag must survive the late stop write");
+        assert_eq!(h.status, "Connecting...", "status must be left to the new activation");
+        assert_ne!(h.last_msg, "Stopped", "stop worker must not claim it stopped the host");
     }
 
     // -----------------------------------------------------------------------
@@ -2054,7 +2166,7 @@ mod tests {
         let state = state_with_hosts(vec![host("k6", true)]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
-        let n = rebuild_masters(&[], &state, &managers, &registry);
+        let n = rebuild_masters(&[], &state, &managers, &registry, false);
         assert_eq!(n, 0);
     }
 
@@ -2154,7 +2266,7 @@ mod tests {
         let state = state_with_hosts(vec![host("cannon", false)]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
-        let n = rebuild_masters(&["cannon".to_string()], &state, &managers, &registry);
+        let n = rebuild_masters(&["cannon".to_string()], &state, &managers, &registry, false);
         assert_eq!(n, 0, "inactive host must not be rebuilt");
     }
 }

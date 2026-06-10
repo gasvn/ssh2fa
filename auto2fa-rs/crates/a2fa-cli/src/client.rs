@@ -128,9 +128,17 @@ pub fn rpc(method: &str, params: Value) -> Result<Value> {
                 }
                 continue;
             }
+            // A handler PANIC makes the daemon reply with an EMPTY id error
+            // frame (it couldn't recover the request id) — that is terminal
+            // for our request: accept it so the user sees "internal error"
+            // immediately instead of a 30s "did not respond" timeout.
+            let frame_id = frame.get("id").and_then(Value::as_str);
+            if frame.get("error").is_some() && matches!(frame_id, None | Some("")) {
+                break frame;
+            }
             // Response frame for a different id (shouldn't happen on a fresh
             // connection, but never mis-attribute) → keep reading.
-            if frame.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            if frame_id != Some(id.as_str()) {
                 skipped += 1;
                 if skipped > MAX_SKIPPED_FRAMES {
                     bail!("daemon answered with mismatched response ids");
@@ -195,6 +203,44 @@ mod tests {
         assert!(
             msg.contains("daemon") || msg.contains("socket"),
             "unexpected error: {msg}"
+        );
+    }
+
+    /// A handler-panic error frame carries an EMPTY id — it must be terminal
+    /// (the user sees "internal error" immediately), not skipped into a 30s
+    /// "did not respond" timeout.
+    #[test]
+    fn rpc_accepts_empty_id_error_frame_as_terminal() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("mock2.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut req_line = String::new();
+            {
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                r.read_line(&mut req_line).unwrap();
+            }
+            // Panic-path response: empty id + error.
+            conn.write_all(
+                b"{\"id\":\"\",\"error\":{\"code\":\"internal\",\"message\":\"handler panicked\"}}\n",
+            )
+            .unwrap();
+        });
+
+        std::env::set_var("AUTO2FA_SOCK", &sock);
+        let started = std::time::Instant::now();
+        let r = rpc("anything", serde_json::json!({}));
+        std::env::remove_var("AUTO2FA_SOCK");
+        server.join().unwrap();
+
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("handler panicked"), "got: {msg}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "must fail fast, not wait out the 30s timeout"
         );
     }
 

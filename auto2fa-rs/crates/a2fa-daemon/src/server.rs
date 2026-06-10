@@ -202,6 +202,12 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Pre-load guards (single-threaded — the accept loop isn't running yet):
+    // preserve an unparseable tunnels.json before the first persist would
+    // silently destroy it, and sweep temp files leaked by SIGKILL deploys.
+    a2fa_core::config::backup_if_unparseable(&tunnels_path);
+    a2fa_core::config::sweep_stale_tmp(&tunnels_path);
+
     let state = Arc::new(Mutex::new(State::new(tunnels_path, &passwords_p)));
 
     {
