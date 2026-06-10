@@ -88,27 +88,58 @@ pub fn rpc(method: &str, params: Value) -> Result<Value> {
     // read half without us having to keep the write end open.
     let _ = writer.shutdown(Shutdown::Write);
 
-    // Read one newline-terminated response line.
+    // Read newline-terminated frames until OUR response arrives. A subscribed
+    // connection (`raw subscribe_events`) can have broadcast `{"event": …}`
+    // frames interleaved ahead of the ack — treating the first line as the
+    // response made the CLI print an event as if it were the result. Skip
+    // event frames and frames whose id doesn't match ours (bounded, so a
+    // chatty daemon can't loop us forever).
     let mut reader = BufReader::new(stream);
-    let mut buf = String::new();
-    reader.read_line(&mut buf).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
-            anyhow!(
-                "daemon did not respond within 30 s — it may be wedged; \
-                 try again or restart the app"
-            )
-        } else {
-            anyhow!("lost connection to daemon: {}", e)
+    let resp: Value = {
+        const MAX_SKIPPED_FRAMES: usize = 256;
+        let mut skipped = 0usize;
+        loop {
+            let mut buf = String::new();
+            reader.read_line(&mut buf).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                {
+                    anyhow!(
+                        "daemon did not respond within 30 s — it may be wedged; \
+                         try again or restart the app"
+                    )
+                } else {
+                    anyhow!("lost connection to daemon: {}", e)
+                }
+            })?;
+
+            if buf.trim().is_empty() {
+                bail!("daemon closed connection without responding");
+            }
+
+            let frame: Value = serde_json::from_str(buf.trim_end())
+                .with_context(|| format!("daemon sent malformed response: {buf}"))?;
+
+            // Event frame → not our response; keep reading.
+            if frame.get("event").is_some() {
+                skipped += 1;
+                if skipped > MAX_SKIPPED_FRAMES {
+                    bail!("daemon flooded {MAX_SKIPPED_FRAMES} event frames without answering");
+                }
+                continue;
+            }
+            // Response frame for a different id (shouldn't happen on a fresh
+            // connection, but never mis-attribute) → keep reading.
+            if frame.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                skipped += 1;
+                if skipped > MAX_SKIPPED_FRAMES {
+                    bail!("daemon answered with mismatched response ids");
+                }
+                continue;
+            }
+            break frame;
         }
-    })?;
-
-    if buf.trim().is_empty() {
-        bail!("daemon closed connection without responding");
-    }
-
-    // Parse response.
-    let resp: Value = serde_json::from_str(buf.trim_end())
-        .with_context(|| format!("daemon sent malformed response: {buf}"))?;
+    };
 
     if let Some(err) = resp.get("error") {
         let msg = err
@@ -128,9 +159,17 @@ pub fn rpc(method: &str, params: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// All tests below mutate the process-global AUTO2FA_SOCK env var; cargo
+    /// runs tests on parallel threads, so without this they interleave and
+    /// fail intermittently (one test's remove_var landing between another's
+    /// set_var and its assert).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn socket_path_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
         assert!(p.to_string_lossy().contains(".auto2fa/auto2fa.sock"));
@@ -138,6 +177,7 @@ mod tests {
 
     #[test]
     fn socket_path_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("AUTO2FA_SOCK", "/tmp/test.sock");
         let p = socket_path();
         assert_eq!(p, PathBuf::from("/tmp/test.sock"));
@@ -146,6 +186,7 @@ mod tests {
 
     #[test]
     fn rpc_missing_socket_returns_err() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("AUTO2FA_SOCK", "/tmp/a2fa_cli_test_nonexistent.sock");
         let r = rpc("ping", serde_json::json!({}));
         std::env::remove_var("AUTO2FA_SOCK");
@@ -155,5 +196,46 @@ mod tests {
             msg.contains("daemon") || msg.contains("socket"),
             "unexpected error: {msg}"
         );
+    }
+
+    /// REGRESSION: an interleaved `{"event":…}` frame arriving ahead of the
+    /// response (subscribed connection) must be SKIPPED, not parsed as the
+    /// response. The mock daemon writes an event frame, a mismatched-id
+    /// response, then the real response.
+    #[test]
+    fn rpc_skips_event_frames_and_mismatched_ids() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("mock.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            // Read the request line to learn the client's id.
+            let mut req_line = String::new();
+            {
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                r.read_line(&mut req_line).unwrap();
+            }
+            let req: Value = serde_json::from_str(req_line.trim_end()).unwrap();
+            let id = req["id"].as_str().unwrap().to_owned();
+            // 1. An event frame (broadcast racing the ack).
+            conn.write_all(b"{\"event\":\"tunnel_status_changed\",\"data\":{}}\n")
+                .unwrap();
+            // 2. A response with a WRONG id.
+            conn.write_all(b"{\"id\":\"deadbeef\",\"result\":{\"wrong\":true}}\n")
+                .unwrap();
+            // 3. The real response.
+            let resp = format!("{{\"id\":\"{id}\",\"result\":{{\"right\":true}}}}\n");
+            conn.write_all(resp.as_bytes()).unwrap();
+        });
+
+        std::env::set_var("AUTO2FA_SOCK", &sock);
+        let r = rpc("subscribe_events", serde_json::json!({}));
+        std::env::remove_var("AUTO2FA_SOCK");
+        server.join().unwrap();
+
+        let v = r.expect("rpc must succeed with the real response");
+        assert_eq!(v["right"], true, "must return the matching-id result, got: {v}");
     }
 }

@@ -8,3 +8,6 @@ a2fa-core = { path = "../a2fa-core" }
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
