@@ -34,3 +34,58 @@ pub struct Host {
     /// Human-readable last status message from the host manager.
     pub last_msg: String,
 }
+
+/// Canonical host-name safety check (mirrors `_valid_host_name` in daemon.py).
+///
+/// A host name flows UNQUOTED into ssh argv (as the final `<host>` argument)
+/// and into filesystem paths (`/tmp/auto2fa_ssh_master_<host>_N.log`,
+/// `~/Mounts/<host>`). So it must NOT:
+/// - start with `-` (ssh would parse it as an option — argument injection),
+/// - start with `.` (hidden / `..` traversal),
+/// - contain `..` (path traversal),
+/// - contain anything outside `[A-Za-z0-9._-]` (path separators, shell
+///   metacharacters, whitespace, NUL).
+///
+/// This is the SINGLE definition; both `host_add` validation and the
+/// State-load filter use it, so a host name can never reach an argv/path sink
+/// without having passed here.
+pub fn is_safe_host_name(host: &str) -> bool {
+    if host.is_empty() || host.contains("..") {
+        return false;
+    }
+    let mut chars = host.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !first.is_ascii_alphanumeric() && first != '_' {
+        return false;
+    }
+    host.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_host_name;
+
+    #[test]
+    fn safe_host_names() {
+        assert!(is_safe_host_name("k6"));
+        assert!(is_safe_host_name("holygpu08.rc.fas.harvard.edu"));
+        assert!(is_safe_host_name("node-1.cluster"));
+        assert!(is_safe_host_name("_x"));
+    }
+
+    #[test]
+    fn unsafe_host_names_rejected() {
+        assert!(!is_safe_host_name(""));
+        assert!(!is_safe_host_name("-oProxyCommand=evil")); // ssh option injection
+        assert!(!is_safe_host_name("a/b")); // path separator
+        assert!(!is_safe_host_name("../etc")); // traversal
+        assert!(!is_safe_host_name(".hidden"));
+        assert!(!is_safe_host_name("a b")); // whitespace
+        assert!(!is_safe_host_name("a;b")); // shell metachar
+        assert!(!is_safe_host_name("a\nb")); // newline
+    }
+}

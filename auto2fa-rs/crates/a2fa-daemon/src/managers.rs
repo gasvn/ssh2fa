@@ -65,9 +65,22 @@ use crate::workers::{make_otp_closure, OtpRegistry};
 /// prompt on each retry. Across a session that is the observed "countless
 /// Keychain prompts" storm. Caching caps Keychain reads at **one per host per
 /// daemon lifetime**, no matter how often logins retry.
-fn creds_cache() -> &'static Mutex<HashMap<String, (String, String)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Process credentials cache + a per-host EPOCH counter. The epoch is bumped
+/// on every invalidation; a Keychain reader captures the epoch BEFORE its read
+/// and refuses to insert if it changed meanwhile — so a slow reader abandoned
+/// by the timeout can't resurrect STALE creds after a re-key (the
+/// remove→re-add flow, which is exactly when the Keychain is locked and the
+/// read times out). Without this, the stale insert is served forever → silent
+/// perpetual login failure until daemon restart.
+#[derive(Default)]
+struct CredsCache {
+    creds: HashMap<String, (String, String)>,
+    epoch: HashMap<String, u64>,
+}
+
+fn creds_cache() -> &'static Mutex<CredsCache> {
+    static CACHE: OnceLock<Mutex<CredsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(CredsCache::default()))
 }
 
 /// `true` when both fields are present — only complete creds are worth caching
@@ -76,12 +89,19 @@ fn creds_complete(creds: &(String, String)) -> bool {
     !creds.0.is_empty() && !creds.1.is_empty()
 }
 
-/// Drop a host's cached credentials. MUST be called whenever the stored creds
-/// change (host added / re-keyed / removed) so the next login re-reads the
-/// Keychain instead of serving stale secrets. Poison-tolerant.
+/// The host's current cache epoch (0 if never invalidated).
+fn creds_epoch(host: &str) -> u64 {
+    let cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.epoch.get(host).copied().unwrap_or(0)
+}
+
+/// Drop a host's cached credentials AND bump its epoch. MUST be called whenever
+/// the stored creds change (host added / re-keyed / removed) so the next login
+/// re-reads the Keychain instead of serving stale secrets. Poison-tolerant.
 pub fn invalidate_creds_cache(host: &str) {
     let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-    cache.remove(host);
+    cache.creds.remove(host);
+    *cache.epoch.entry(host.to_string()).or_insert(0) += 1;
 }
 
 /// Read a host's `(password, secret)`, served from the process cache when
@@ -104,10 +124,13 @@ fn load_creds(host: &str) -> (String, String) {
     // Fast path: serve from cache so retries never re-prompt the Keychain.
     {
         let cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(creds) = cache.get(host) {
+        if let Some(creds) = cache.creds.get(host) {
             return creds.clone();
         }
     }
+    // Capture the epoch BEFORE the read so a concurrent invalidation (re-key)
+    // that lands during the read is detected at insert time.
+    let start_epoch = creds_epoch(host);
 
     // BOUNDED Keychain read: run it on a short-lived sub-worker and join with
     // a hard timeout. The caller (a login/rebuild worker) HOLDS the in-flight
@@ -135,10 +158,16 @@ fn load_creds(host: &str) -> (String, String) {
                 let secret = extract_secret(&otpauth).unwrap_or_default();
                 let creds = (password, secret);
                 // Cache from HERE so even a timed-out-but-late-completing read
-                // benefits the next attempt (complete creds only).
+                // benefits the next attempt (complete creds only) — BUT only
+                // if no invalidation raced the read (epoch unchanged). A
+                // re-key (remove→re-add) bumps the epoch; inserting our
+                // now-stale read would serve the OLD password forever.
                 if creds_complete(&creds) {
                     let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-                    cache.insert(host_owned.clone(), creds.clone());
+                    let current = cache.epoch.get(&host_owned).copied().unwrap_or(0);
+                    if current == start_epoch {
+                        cache.creds.insert(host_owned.clone(), creds.clone());
+                    }
                 }
                 let _ = tx.send(creds);
             });
@@ -1703,7 +1732,7 @@ mod tests {
         let host = "cache-hit-test-host-zzz1";
         {
             let mut c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-            c.insert(host.to_string(), ("cached-pw".into(), "cached-secret".into()));
+            c.creds.insert(host.to_string(), ("cached-pw".into(), "cached-secret".into()));
         }
         let got = load_creds(host);
         assert_eq!(got, ("cached-pw".to_string(), "cached-secret".to_string()));
@@ -1715,11 +1744,37 @@ mod tests {
         let host = "cache-invalidate-test-host-zzz2";
         {
             let mut c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-            c.insert(host.to_string(), ("p".into(), "s".into()));
+            c.creds.insert(host.to_string(), ("p".into(), "s".into()));
         }
         invalidate_creds_cache(host);
         let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
-        assert!(!c.contains_key(host), "entry must be gone after invalidate");
+        assert!(!c.creds.contains_key(host), "entry must be gone after invalidate");
+    }
+
+    /// REGRESSION: an insert carrying a STALE epoch (a slow reader that
+    /// started before a re-key) must be rejected — otherwise the old password
+    /// is served forever. Simulate by bumping the epoch (invalidate) AFTER
+    /// capturing the start epoch, then attempting the guarded insert.
+    #[test]
+    fn epoch_guard_rejects_stale_insert() {
+        let host = "epoch-guard-host-zzz9";
+        invalidate_creds_cache(host); // clean slate
+        let start = creds_epoch(host);
+        // A re-key lands while our "read" is in flight.
+        invalidate_creds_cache(host);
+        // Guarded insert (mirrors the load_creds sub-worker) must NO-OP.
+        {
+            let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+            let current = cache.epoch.get(host).copied().unwrap_or(0);
+            if current == start {
+                cache.creds.insert(host.to_string(), ("stale".into(), "stale".into()));
+            }
+        }
+        let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !c.creds.contains_key(host),
+            "a stale-epoch insert must be rejected (no resurrecting old creds)"
+        );
     }
 
     #[test]
@@ -1732,7 +1787,7 @@ mod tests {
         assert_eq!(got, (String::new(), String::new()));
         let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
         assert!(
-            !c.contains_key(host),
+            !c.creds.contains_key(host),
             "incomplete/empty creds must not be cached (must retry later)"
         );
     }

@@ -514,6 +514,12 @@ pub fn tunnel_set_node(
         .unwrap_or("")
         .to_owned();
 
+    // `start` (default true): whether to (re)start the tunnel after recording
+    // the node. Import passes `false` so restoring a backup persists each
+    // tunnel's node WITHOUT firing N immediate SSH starts at possibly-dead
+    // SLURM nodes (auto_start tunnels still come up on the next daemon boot).
+    let do_start = params.get("start").and_then(|v| v.as_bool()).unwrap_or(true);
+
     let (old_node, old_status) = {
         let mut guard = crate::lock_state(state);
         let t = guard
@@ -544,6 +550,11 @@ pub fn tunnel_set_node(
     // "squeue miss #3" → killed).
     if let Some(rt) = &runtime {
         rt.with_rt_mut(&name, |r| r.consecutive_squeue_misses = 0);
+    }
+
+    if !do_start {
+        // Node recorded + persisted above; caller asked us NOT to start.
+        return Ok(Value::Null);
     }
 
     let params_with_name = json!({"name": name});
@@ -1258,6 +1269,26 @@ mod tests {
         let guard = crate::lock_state(&state);
         assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu01"));
         assert_eq!(guard.tunnels[0].last_user.as_deref(), Some("jdoe"));
+    }
+
+    /// start:false records the node but must NOT start the tunnel (import of a
+    /// backup must not fire N immediate SSH starts). The idle tunnel stays
+    /// idle and the node is persisted.
+    #[test]
+    fn tunnel_set_node_start_false_does_not_start() {
+        let state = make_state_with_tunnel("nb", 9503);
+        let v = tunnel_set_node(
+            &state,
+            &json!({"name": "nb", "node": "holygpu07", "user": "jdoe", "start": false}),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(v, Value::Null);
+        let guard = crate::lock_state(&state);
+        assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu07"));
+        // Idle stays Idle — no start was attempted (no ssh spawn in tests).
+        assert_eq!(guard.tunnels[0].status, TunnelStatus::Idle);
     }
 
     /// REGRESSION (txgent, observed live): the miss counter accumulated

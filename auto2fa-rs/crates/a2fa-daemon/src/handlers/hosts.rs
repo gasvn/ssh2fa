@@ -591,20 +591,11 @@ pub fn host_rotate(
 // host_add
 // ---------------------------------------------------------------------------
 
-/// Validate host-name regex (mirrors `_valid_host_name` in daemon.py).
+/// Validate a host name — delegates to the canonical
+/// [`a2fa_core::model::is_safe_host_name`] so the add-time guard and the
+/// State-load filter share ONE definition (no drift).
 fn valid_host_name(host: &str) -> bool {
-    if host.contains("..") {
-        return false;
-    }
-    let mut chars = host.chars();
-    let first = match chars.next() {
-        Some(c) => c,
-        None => return false,
-    };
-    if !first.is_alphanumeric() && first != '_' {
-        return false;
-    }
-    chars.all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
+    a2fa_core::model::is_safe_host_name(host)
 }
 
 /// Add a host: validate name, extract secret, write Keychain + passwords.json,
@@ -816,6 +807,16 @@ pub fn host_test_credentials(
 
     if host.is_empty() {
         return Ok(json!({ "ok": false, "reason": "host required" }));
+    }
+    // The host name flows into ssh argv (final arg) AND the temp log path
+    // `auto2fa-testlogin-<host>-<pid>.log`. Reject unsafe names (leading dash =
+    // ssh option injection; '/' or '..' = path traversal) — the Add-host
+    // wizard sends a user-typed value here BEFORE the host_add guard runs.
+    if !valid_host_name(&host) {
+        return Ok(json!({
+            "ok": false,
+            "reason": "invalid host name (use letters/digits/._- , not starting with '-' or '.')"
+        }));
     }
 
     // Run the one-shot login attempt on this thread.

@@ -43,7 +43,7 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 pub const MAX_SUBSCRIBERS: usize = 64;
 
 use crate::config;
-use crate::model::{Host, Tunnel};
+use crate::model::{is_safe_host_name, Host, Tunnel};
 
 // ---------------------------------------------------------------------------
 // State
@@ -92,9 +92,24 @@ impl State {
         let tunnels = config::load_tunnels(&tunnels_path);
         let meta = config::load_meta(passwords_path);
 
-        // Build default Host snapshots from passwords.json metadata.
+        // Build default Host snapshots from passwords.json metadata. FILTER
+        // out unsafe names: a host name flows unquoted into ssh argv and fs
+        // paths, and while host_add validates on the way in, a hand-edited or
+        // migrated passwords.json could carry e.g. `-oProxyCommand=…`. Drop it
+        // here so it never reaches a master spawn / mount / log path.
         let hosts: Vec<Host> = meta
             .iter()
+            .filter(|(name, _)| {
+                if is_safe_host_name(name) {
+                    true
+                } else {
+                    log::warn!(
+                        "passwords.json: ignoring host with unsafe name {name:?} \
+                         (must be [A-Za-z0-9._-], not start with '-'/'.', no '..')"
+                    );
+                    false
+                }
+            })
             .map(|(name, m)| Host {
                 host: name.clone(),
                 status: "Idle".to_owned(),
