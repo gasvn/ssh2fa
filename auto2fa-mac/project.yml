@@ -8,8 +8,11 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.3.0"
-    CURRENT_PROJECT_VERSION: "1"
+    # NOTE: the bundle version actually shown/used comes from
+    # Auto2FA/Resources/Info.plist (GENERATE_INFOPLIST_FILE: NO). Keep these in
+    # sync with that file when cutting a release.
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "100"
     SWIFT_VERSION: "5.10"
     PRODUCT_NAME: "Auto2FA"
     PRODUCT_BUNDLE_IDENTIFIER: "com.auto2fa.app"
@@ -44,4 +47,11 @@ targets:
     dependencies:
       - package: DynamicNotchKit
     info:
-      path: Auto2FA/Resources/Info.plist  # noop because INFOPLIST_FILE wins, kept for clarity
+      # XcodeGen REGENERATES this Info.plist on every `xcodegen generate`, so
+      # the bundle version must be declared HERE (editing the .plist directly
+      # is reset on the next regenerate). This is the single source of truth
+      # for the displayed/checked version — keep RELEASE.md in step.
+      path: Auto2FA/Resources/Info.plist
+      properties:
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "100"

@@ -102,14 +102,25 @@ struct SettingsView: View {
 }
 
 private struct AboutPane: View {
+    @StateObject private var updater = UpdateChecker()
+
+    private var versionString: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "Version \(v) (build \(b))"
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.system(size: 64))
                 .foregroundStyle(.tint)
                 .padding(.top, 24)
             Text("Auto2FA")
                 .font(.title.weight(.semibold))
+            Text(versionString)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("SSH ControlMaster pool + 2FA login + SLURM-aware port forwarding")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -117,8 +128,124 @@ private struct AboutPane: View {
             Link("github.com/gasvn/auto2fa",
                  destination: URL(string: "https://github.com/gasvn/auto2fa")!)
                 .font(.callout)
+
+            // ---- Update check ----
+            VStack(spacing: 6) {
+                Button {
+                    Task { await updater.check() }
+                } label: {
+                    if case .checking = updater.result {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
+                    } else {
+                        Text("Check for Updates")
+                    }
+                }
+                .disabled({ if case .checking = updater.result { return true } else { return false } }())
+
+                switch updater.result {
+                case .idle, .checking:
+                    EmptyView()
+                case .upToDate:
+                    Label("You're on the latest version.", systemImage: "checkmark.circle")
+                        .font(.caption).foregroundStyle(.green)
+                case .updateAvailable(let latest, let url):
+                    VStack(spacing: 4) {
+                        Label("Version \(latest) is available.", systemImage: "arrow.down.circle")
+                            .font(.caption).foregroundStyle(.blue)
+                        Link("Open the releases page", destination: url).font(.caption)
+                    }
+                case .failed(let msg):
+                    Label("Update check failed: \(msg)", systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(.top, 4)
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Dependency-free update check against the project's GitHub Releases.
+///
+/// Deliberately lightweight (no Sparkle, no embedded keys, no self-hosted
+/// appcast): it queries the public Releases API, compares the latest release
+/// tag to this bundle's version, and — if newer — points the user at the
+/// release page. The app never downloads or self-installs; the user stays in
+/// control of what runs (it holds SSH creds + TOTP secrets). Full Sparkle
+/// auto-update is a documented future option (see docs/RELEASE.md).
+@MainActor
+final class UpdateChecker: ObservableObject {
+    enum Result: Equatable {
+        case idle
+        case checking
+        case upToDate(current: String)
+        case updateAvailable(latest: String, url: URL)
+        case failed(String)
+    }
+
+    @Published var result: Result = .idle
+
+    private static let releasesAPI =
+        URL(string: "https://api.github.com/repos/gasvn/auto2fa/releases/latest")!
+    static let releasesPage =
+        URL(string: "https://github.com/gasvn/auto2fa/releases")!
+
+    static var currentVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+    }
+
+    func check() async {
+        result = .checking
+        var req = URLRequest(url: Self.releasesAPI)
+        req.timeoutInterval = 10
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            // 404 = no published releases yet → "up to date" (nothing to offer)
+            // rather than an error in the user's face.
+            if code == 404 {
+                result = .upToDate(current: Self.currentVersion)
+                return
+            }
+            guard code == 200 else {
+                result = .failed("GitHub returned HTTP \(code)")
+                return
+            }
+            guard
+                let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let tag = obj["tag_name"] as? String
+            else {
+                result = .failed("Unexpected response from GitHub")
+                return
+            }
+            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            let pageURL = (obj["html_url"] as? String).flatMap(URL.init) ?? Self.releasesPage
+            if Self.isNewer(latest, than: Self.currentVersion) {
+                result = .updateAvailable(latest: latest, url: pageURL)
+            } else {
+                result = .upToDate(current: Self.currentVersion)
+            }
+        } catch {
+            result = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Compare dotted numeric versions ("1.2.10" > "1.2.9"). Non-numeric parts
+    /// compare as 0, so a tag the parser doesn't understand is "not newer"
+    /// (never nag on garbage).
+    static func isNewer(_ a: String, than b: String) -> Bool {
+        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
+        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+        let n = max(pa.count, pb.count)
+        for i in 0..<n {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x > y }
+        }
+        return false
     }
 }

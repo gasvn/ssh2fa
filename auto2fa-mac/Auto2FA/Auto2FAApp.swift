@@ -33,6 +33,13 @@ struct Auto2FAApp: App {
                     let spawnAllowed = UserDefaults.standard
                         .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
                     if spawnAllowed {
+                        // First-run / post-update: install the bundled daemon to
+                        // ~/.auto2fa + register the LaunchAgent (no-op in a dev
+                        // build or when already installed). This is what makes
+                        // a downloaded .app self-contained — launchd then keeps
+                        // the daemon alive across reboots; ensureRunning below
+                        // just connects (or direct-spawns as a fallback).
+                        DaemonProcess.shared.installBundledDaemonIfNeeded()
                         let result = await DaemonProcess.shared.ensureRunning()
                         switch result {
                         case .alreadyRunning:
