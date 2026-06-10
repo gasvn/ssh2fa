@@ -199,8 +199,20 @@ impl Patterns {
         Ok(Self {
             // Matches "Password:" / "password:"
             password: Regex::new(r"(?i)password:").map_err(|e| Error::Internal(e.to_string()))?,
-            // Matches "Verification code:" / "VerificationCode:" / "Token:"
-            otp: Regex::new(r"(?i)(verification.?code|token):").map_err(|e| Error::Internal(e.to_string()))?,
+            // 2FA / OTP prompt. Beyond FAS-RC Duo's "Verification code:" this
+            // covers the common keyboard-interactive variants so the tool isn't
+            // Duo-only: passcode, Duo's "Passcode or option (1-1):" menu form,
+            // one-time password/code, OTP, token, {2FA,MFA,authentication}
+            // code. Each keyword is anchored to a trailing ':' (optionally via
+            // an " or option (…)" clause) so a banner/MOTD line that merely
+            // mentions a passcode can't false-match and make us send the code
+            // into prose. OTP is matched BEFORE the password prompt in the
+            // loop, and "Password:" contains none of these keywords, so the
+            // two never collide.
+            otp: Regex::new(
+                r"(?i)(verification.?code|passcode|one.?time.?(?:password|passcode|code)|otp|token|2fa.?code|mfa.?code|authentication.?code|security.?code)(?:\s+or\s+option[^:]*)?:",
+            )
+            .map_err(|e| Error::Internal(e.to_string()))?,
             // A bare "$" or "#" — naive but matches what pexpect uses.
             // `(^|[^$#])` guard: a banner separator line like "#####" also ends
             // in `#\s*$` and used to be a FALSE login success before any
@@ -621,6 +633,43 @@ mod tests {
         assert!(buf.ends_with("Password:"), "tail prompt must be retained: {buf:?}");
         let pat = Patterns::new().unwrap();
         assert!(pat.password.is_match(&buf), "password regex must still match after capping");
+    }
+
+    /// The OTP matcher must accept the common 2FA prompt variants (not just
+    /// Duo's "Verification code:") while never matching a non-prompt line —
+    /// and never stealing the password prompt.
+    #[test]
+    fn otp_prompt_variants() {
+        let pat = Patterns::new().unwrap();
+        for ok in [
+            "Verification code: ",
+            "VerificationCode:",
+            "verification code:",
+            "Token:",
+            "Passcode: ",
+            "Passcode or option (1-1): ",        // Duo menu form
+            "OTP: ",
+            "One-time password: ",
+            "One-time code:",
+            "2FA code: ",
+            "MFA code:",
+            "Authentication code: ",
+            "Security code:",
+        ] {
+            assert!(pat.otp.is_match(ok), "OTP prompt must match: {ok:?}");
+        }
+        for no in [
+            "Password: ",                                  // password, not OTP
+            "Enter a passcode or select one of the following options:", // instructional line, not the prompt
+            "Your duo passcode keeps you secure.",         // banner prose (no ':' after keyword)
+            "Last login: Tue from 1.2.3.4",
+            "Welcome to the cluster!",
+        ] {
+            assert!(!pat.otp.is_match(no), "must NOT match non-prompt: {no:?}");
+        }
+        // The password prompt must NOT be eaten by the OTP matcher.
+        assert!(!pat.otp.is_match("Password:"));
+        assert!(pat.password.is_match("Password:"));
     }
 
     #[test]
