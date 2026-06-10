@@ -24,6 +24,27 @@ struct AddHostSheet: View {
     @State private var testResult: (ok: Bool, message: String)? = nil
     @State private var error: String?
     @State private var showOTPHelp = false
+    /// nil = not checked / empty; false = typed alias isn't a Host in ssh config.
+    @State private var hostInConfig: Bool? = nil
+
+    /// True iff `alias` appears as a token on a `Host` line in ~/.ssh/config
+    /// (respecting SSH_CONFIG_PATH). Returns true for an empty alias (nothing to
+    /// warn about yet) and when there's no config file (can't disprove it).
+    static func aliasInSSHConfig(_ alias: String) -> Bool {
+        let a = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if a.isEmpty { return true }
+        let dir = (ProcessInfo.processInfo.environment["SSH_CONFIG_PATH"]
+            .map { ($0 as NSString).expandingTildeInPath } ?? NSHomeDirectory() + "/.ssh")
+        let cfg = (dir.hasSuffix("/") ? String(dir.dropLast()) : dir) + "/config"
+        guard let text = try? String(contentsOfFile: cfg, encoding: .utf8) else { return true }
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.lowercased().hasPrefix("host ") else { continue }
+            let tokens = t.dropFirst(5).split(whereSeparator: { $0 == " " || $0 == "\t" })
+            if tokens.contains(where: { $0 == Substring(a) }) { return true }
+        }
+        return false
+    }
     @FocusState private var focused: Field?
 
     enum Field { case hostname, password, otpauth }
@@ -71,12 +92,21 @@ struct AddHostSheet: View {
             // Fields wrapped in a glass card panel
             VStack(alignment: .leading, spacing: Spacing.m) {
                 field("Hostname or SSH alias",
-                      TextField("login01.example.edu", text: $hostname)
-                        .focused($focused, equals: .hostname)
-                        // NOTE: no username field — the host is an ssh-config alias;
-                        // the login user comes from ssh config, and a field here was
-                        // never sent anywhere (pure decoration that misled users).
-                        .onSubmit { focused = .password })
+                      VStack(alignment: .leading, spacing: Spacing.xs) {
+                        TextField("login01.example.edu", text: $hostname)
+                            .focused($focused, equals: .hostname)
+                            // NOTE: no username field — the host is an ssh-config alias;
+                            // the login user comes from ssh config, and a field here was
+                            // never sent anywhere (pure decoration that misled users).
+                            .onSubmit { focused = .password }
+                            .onChange(of: hostname) { _, _ in hostInConfig = Self.aliasInSSHConfig(hostname) }
+                        if hostInConfig == false {
+                            Label("Not found as a Host in ~/.ssh/config — make sure it's a real ssh alias or a reachable hostname.",
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.caption2).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                      })
                 field("Password",
                       HStack {
                         Group {

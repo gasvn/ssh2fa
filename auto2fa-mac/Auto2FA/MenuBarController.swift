@@ -230,7 +230,18 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         prefs.target = self
         menu.addItem(prefs)
 
+        let troubleshoot = NSMenuItem(title: "Troubleshoot…",
+                                      action: #selector(openSettings(_:)), keyEquivalent: "")
+        troubleshoot.target = self
+        troubleshoot.toolTip = "Open Settings → Troubleshoot to run health checks."
+        menu.addItem(troubleshoot)
+
         menu.addItem(.separator())
+
+        let uninstall = NSMenuItem(title: "Uninstall Auto2FA…",
+                                   action: #selector(uninstall(_:)), keyEquivalent: "")
+        uninstall.target = self
+        menu.addItem(uninstall)
 
         let quit = NSMenuItem(title: "Quit Auto2FA", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
@@ -334,6 +345,32 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     @objc private func quit(_ sender: NSMenuItem) {
+        NSApp.terminate(nil)
+    }
+
+    @objc private func uninstall(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Uninstall Auto2FA?"
+        alert.informativeText = "This stops and removes the background daemon, deletes its LaunchAgent, and removes every credential Auto2FA saved in your Keychain. Afterward, drag Auto2FA.app to the Trash yourself."
+        alert.alertStyle = .warning
+        let purge = NSButton(checkboxWithTitle: "Also delete my saved hosts & tunnels (passwords.json, tunnels.json)",
+                             target: nil, action: nil)
+        purge.state = .off
+        alert.accessoryView = purge
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        DaemonProcess.shared.performUninstall(purgeConfig: purge.state == .on)
+
+        // Reveal the app so the user can drag it to the Trash, then quit.
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        let done = NSAlert()
+        done.messageText = "Auto2FA uninstalled"
+        done.informativeText = "The daemon, LaunchAgent and Keychain credentials are removed. Drag Auto2FA.app (now revealed in Finder) to the Trash to finish."
+        done.addButton(withTitle: "Quit")
+        done.runModal()
         NSApp.terminate(nil)
     }
 }

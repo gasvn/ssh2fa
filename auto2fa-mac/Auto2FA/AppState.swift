@@ -27,7 +27,9 @@ enum ActiveSheet: Identifiable, Equatable {
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var hosts: [SSHHost] = []
+    @Published var hosts: [SSHHost] = [] {
+        didSet { celebrateFirstConnectIfNeeded() }
+    }
     @Published var tunnels: [Tunnel] = []
     @Published var connectionError: String?
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
@@ -174,6 +176,22 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// The first time ANY host reaches Connected, show a one-off celebratory
+    /// notch with the "now just `ssh`" next step. Gated by a UserDefaults flag
+    /// so it never repeats.
+    private func celebrateFirstConnectIfNeeded() {
+        let key = "auto2fa.firstConnectShown"
+        guard !UserDefaults.standard.bool(forKey: key),
+              let h = hosts.first(where: { $0.displayState == .connected })
+        else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        notchPresenter.show(
+            systemImage: "checkmark.seal.fill",
+            title: "Connected!",
+            description: "\(h.host) is live — try `ssh \(h.host)` in Terminal. No code to type.",
+            tint: .green)
     }
 
     func reloadAll() async {

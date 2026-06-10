@@ -300,6 +300,62 @@ final class DaemonProcess {
         }
     }
 
+    /// Fully tear down the install: unload + remove the LaunchAgent (the daemon
+    /// exits, closing its SSH masters), delete every Keychain credential under
+    /// the "auto2fa" service, remove ~/.auto2fa, and — if `purgeConfig` —
+    /// remove passwords.json + tunnels.json. The .app itself is left for the
+    /// user to drag to the Trash (a running app can't delete its own bundle).
+    func performUninstall(purgeConfig: Bool) {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let label = "com.auto2fa.daemon"
+        let uid = getuid()
+
+        // 1. Unload + remove the LaunchAgent.
+        DaemonProcess.runLaunchctl(["bootout", "gui/\(uid)/\(label)"])
+        let plist = home + "/Library/LaunchAgents/\(label).plist"
+        try? fm.removeItem(atPath: plist)
+
+        // SIGTERM any daemon still running so its masters close cleanly.
+        DaemonProcess.runProcess("/usr/bin/pkill", ["-TERM", "-x", "a2fa-daemon"])
+
+        // 2. Delete every Keychain credential (service "auto2fa"). Each call
+        //    removes one; loop until none remain.
+        var deleted = 0
+        while DaemonProcess.runProcess("/usr/bin/security",
+                                       ["delete-generic-password", "-s", "auto2fa"]) == 0 {
+            deleted += 1
+            if deleted > 1000 { break } // safety
+        }
+        NSLog("[Auto2FA] uninstall: removed %d Keychain credential(s)", deleted)
+
+        // 3. ~/.auto2fa (socket, marker, legacy daemon copy).
+        try? fm.removeItem(atPath: home + "/.auto2fa")
+
+        // 4. Optional config.
+        if purgeConfig {
+            let sshDir = (ProcessInfo.processInfo.environment["SSH_CONFIG_PATH"]
+                .map { ($0 as NSString).expandingTildeInPath } ?? home + "/.ssh")
+            let dir = sshDir.hasSuffix("/") ? String(sshDir.dropLast()) : sshDir
+            for f in ["passwords.json", "tunnels.json"] {
+                try? fm.removeItem(atPath: dir + "/" + f)
+            }
+        }
+        NSLog("[Auto2FA] uninstall complete (purgeConfig=%@)", purgeConfig ? "yes" : "no")
+    }
+
+    /// Run an arbitrary tool, returning its exit code (best-effort).
+    @discardableResult
+    private static func runProcess(_ path: String, _ args: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus }
+        catch { return -1 }
+    }
+
     /// Run `/bin/launchctl` with `args`, best-effort (errors logged, ignored).
     @discardableResult
     private static func runLaunchctl(_ args: [String]) -> Int32 {

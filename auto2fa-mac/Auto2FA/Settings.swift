@@ -101,10 +101,288 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
 
+            TroubleshootPane()
+                .tabItem { Label("Troubleshoot", systemImage: "stethoscope") }
+
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 520, height: 440)
+        .frame(width: 520, height: 460)
+    }
+}
+
+// MARK: - Troubleshoot / health
+
+/// Self-diagnostic so a user (or a bug report) can see WHY something isn't
+/// working without reading Console logs. Pure read-only checks + a couple of
+/// safe actions (restart daemon, open log, copy a diagnostics report).
+private struct TroubleshootPane: View {
+    @StateObject private var model = DiagnosticsModel()
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Health checks").font(.headline)
+                Spacer()
+                if model.running { ProgressView().controlSize(.small) }
+                Button { model.run() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Re-run checks")
+                    .disabled(model.running)
+            }
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.checks) { c in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: c.status.symbol)
+                                .foregroundStyle(c.status.color)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(c.name).font(.callout.weight(.medium))
+                                Text(c.detail).font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let fix = c.fixHint {
+                                    Text(fix).font(.caption2).foregroundStyle(.tertiary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            HStack {
+                Button("Restart daemon") { model.restartDaemon() }
+                Button("Open daemon log") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [URL(fileURLWithPath: "/tmp/auto2fa_daemon.log")])
+                }
+                Spacer()
+                Button(copied ? "Copied ✓" : "Copy diagnostics") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(model.report(), forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+            }
+        }
+        .padding(20)
+        .onAppear { model.run() }
+    }
+}
+
+struct DiagCheck: Identifiable {
+    enum Status { case ok, warn, fail, info
+        var symbol: String {
+            switch self {
+            case .ok: return "checkmark.circle.fill"
+            case .warn: return "exclamationmark.triangle.fill"
+            case .fail: return "xmark.octagon.fill"
+            case .info: return "info.circle"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .ok: return .green
+            case .warn: return .orange
+            case .fail: return .red
+            case .info: return .secondary
+            }
+        }
+        var tag: String {
+            switch self { case .ok: return "OK"; case .warn: return "WARN"; case .fail: return "FAIL"; case .info: return "INFO" }
+        }
+    }
+    let id = UUID()
+    let name: String
+    let status: Status
+    let detail: String
+    var fixHint: String? = nil
+}
+
+@MainActor
+final class DiagnosticsModel: ObservableObject {
+    @Published var checks: [DiagCheck] = []
+    @Published var running = false
+
+    func run() {
+        running = true
+        Task.detached(priority: .userInitiated) {
+            let results = DiagnosticsModel.collect()
+            await MainActor.run { self.checks = results; self.running = false }
+        }
+    }
+
+    func restartDaemon() {
+        let label = "com.auto2fa.daemon"
+        let domain = "gui/\(getuid())"
+        _ = Self.sh("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(label)"])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.run() }
+    }
+
+    /// A plain-text report for bug reports / the clipboard.
+    func report() -> String {
+        var s = "Auto2FA diagnostics\n"
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        s += "app \(v) (\(b)) · \(Bundle.main.bundlePath)\n"
+        s += "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)\n\n"
+        for c in checks {
+            s += "[\(c.status.tag)] \(c.name): \(c.detail)\n"
+            if let f = c.fixHint { s += "       → \(f)\n" }
+        }
+        return s
+    }
+
+    // ---- the checks (run off the main thread) ----
+
+    nonisolated static func collect() -> [DiagCheck] {
+        var out: [DiagCheck] = []
+        let home = NSHomeDirectory()
+        let label = "com.auto2fa.daemon"
+        let domain = "gui/\(getuid())"
+
+        // 1. Daemon running (via launchd).
+        let print = sh("/bin/launchctl", ["print", "\(domain)/\(label)"]).out
+        if print.contains("state = running") {
+            let pid = firstMatch(print, #"pid = (\d+)"#) ?? "?"
+            out.append(DiagCheck(name: "Daemon", status: .ok,
+                                 detail: "Running (pid \(pid))."))
+        } else if print.isEmpty || print.contains("Could not find service") {
+            out.append(DiagCheck(name: "Daemon", status: .fail,
+                                 detail: "Not loaded by launchd.",
+                                 fixHint: "Try “Restart daemon”, or relaunch the app to reinstall the LaunchAgent."))
+        } else {
+            out.append(DiagCheck(name: "Daemon", status: .warn,
+                                 detail: "Registered but not running.",
+                                 fixHint: "Try “Restart daemon”."))
+        }
+
+        // 2. Socket responds.
+        if socketResponds(home + "/.auto2fa/auto2fa.sock") {
+            out.append(DiagCheck(name: "Daemon socket", status: .ok,
+                                 detail: "Responding at ~/.auto2fa/auto2fa.sock."))
+        } else {
+            out.append(DiagCheck(name: "Daemon socket", status: .fail,
+                                 detail: "No response on ~/.auto2fa/auto2fa.sock.",
+                                 fixHint: "The daemon may be starting (signature validation can take a minute on first launch) — wait, then re-check."))
+        }
+
+        // 3. LaunchAgent plist.
+        let plist = home + "/Library/LaunchAgents/\(label).plist"
+        if FileManager.default.fileExists(atPath: plist) {
+            let prog = firstMatch(sh("/usr/bin/plutil", ["-extract", "ProgramArguments.0", "raw", plist]).out, #"(.+)"#) ?? "?"
+            out.append(DiagCheck(name: "LaunchAgent", status: .ok,
+                                 detail: "Installed → \(prog)"))
+        } else {
+            out.append(DiagCheck(name: "LaunchAgent", status: .warn,
+                                 detail: "Not installed.",
+                                 fixHint: "Relaunch the app — it installs the LaunchAgent on first run (packaged builds only)."))
+        }
+
+        // 4. App location.
+        let inApps = Bundle.main.bundlePath.hasPrefix("/Applications/")
+        out.append(DiagCheck(name: "App location",
+                             status: inApps ? .ok : .warn,
+                             detail: Bundle.main.bundlePath,
+                             fixHint: inApps ? nil : "Move Auto2FA.app to /Applications so the background helper has a stable path."))
+
+        // 5. Quarantine (downloaded + un-notarized).
+        let quarantined = sh("/usr/bin/xattr", ["-p", "com.apple.quarantine", Bundle.main.bundlePath]).code == 0
+        if quarantined {
+            out.append(DiagCheck(name: "Gatekeeper", status: .warn,
+                                 detail: "App is quarantined (downloaded, not notarized).",
+                                 fixHint: "If things won’t start: System Settings → Privacy & Security → “Open Anyway”, or run `xattr -dr com.apple.quarantine \(Bundle.main.bundlePath)`."))
+        } else {
+            out.append(DiagCheck(name: "Gatekeeper", status: .ok, detail: "Not quarantined."))
+        }
+
+        // 6. SSH config.
+        let sshDir = (ProcessInfo.processInfo.environment["SSH_CONFIG_PATH"].map { ($0 as NSString).expandingTildeInPath } ?? home + "/.ssh").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cfg = "/" + sshDir + "/config"
+        if let text = try? String(contentsOfFile: cfg, encoding: .utf8) {
+            let hosts = text.split(separator: "\n").filter { $0.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("host ") }.count
+            out.append(DiagCheck(name: "SSH config",
+                                 status: hosts > 0 ? .ok : .warn,
+                                 detail: hosts > 0 ? "\(cfg): \(hosts) Host alias(es)." : "\(cfg) has no Host entries.",
+                                 fixHint: hosts > 0 ? nil : "Add a `Host <alias>` block for each machine you connect to."))
+        } else {
+            out.append(DiagCheck(name: "SSH config", status: .warn,
+                                 detail: "No \(cfg).",
+                                 fixHint: "Create ~/.ssh/config with a `Host <alias>` block per machine — Auto2FA refers to hosts by their ssh alias."))
+        }
+
+        // 7. sshfs / macFUSE (only needed for the optional mount feature).
+        let sshfs = ["/usr/local/bin/sshfs", "/opt/homebrew/bin/sshfs"].first { FileManager.default.isExecutableFile(atPath: $0) }
+            ?? (sh("/usr/bin/which", ["sshfs"]).code == 0 ? "sshfs (in PATH)" : nil)
+        if let s = sshfs {
+            out.append(DiagCheck(name: "sshfs (mount feature)", status: .ok, detail: "Found: \(s)."))
+        } else {
+            out.append(DiagCheck(name: "sshfs (mount feature)", status: .info,
+                                 detail: "Not installed.",
+                                 fixHint: "Only needed for the optional “mount host filesystem” feature. Install macFUSE + sshfs if you want it."))
+        }
+
+        return out
+    }
+
+    // ---- helpers (nonisolated; safe off-main) ----
+
+    nonisolated static func sh(_ path: String, _ args: [String]) -> (out: String, code: Int32) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
+        } catch {
+            return ("", -1)
+        }
+    }
+
+    nonisolated static func firstMatch(_ s: String, _ pattern: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let r = NSRange(s.startIndex..., in: s)
+        guard let m = re.firstMatch(in: s, range: r), m.numberOfRanges > 1,
+              let g = Range(m.range(at: 1), in: s) else { return nil }
+        return String(s[g]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Non-blocking-enough connect to the unix socket (success == daemon alive).
+    nonisolated static func socketResponds(_ path: String) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        if fd < 0 { return false }
+        defer { close(fd) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        let cap = MemoryLayout.size(ofValue: addr.sun_path)
+        if bytes.count >= cap { return false }
+        // Copy the path into sun_path (rebinding the C tuple to CChar) without
+        // taking the address of a single tuple element (which trips Swift's
+        // exclusive-access check).
+        withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
+            tuplePtr.withMemoryRebound(to: CChar.self, capacity: cap) { dst in
+                for (i, b) in bytes.enumerated() { dst[i] = CChar(bitPattern: b) }
+                dst[bytes.count] = 0
+            }
+        }
+        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let r = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, len)
+            }
+        }
+        return r == 0
     }
 }
 
