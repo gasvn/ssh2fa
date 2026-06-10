@@ -202,14 +202,27 @@ actor BackendClient {
         case "tunnel_set_node", "tunnel_toggle",
              "tunnel_start", "tunnel_rename",
              "tunnels_batch", "tunnel_set_jump_candidates",
-             "wake_recover", "reset_all",
-             // sshfs mount/unmount runs inline in the daemon with deadlines up
-             // to 45s+10s — a 10s client timeout reported "timed out" for
-             // mounts that then succeeded.
-             "host_mount_toggle":
+             "wake_recover", "reset_all":
             return 30
-        case "host_test_credentials", "host_add":
+        case "host_mount_toggle":
+            // sshfs mount path worst case: `which` 5s + sshfs 45s +
+            // reap_failed_sshfs ~15s, all inline in the daemon. A 30s client
+            // timeout reported "timed out" for mounts that then SUCCEEDED
+            // ~30s later (row flips with no explanation, retry hits
+            // "already in progress").
+            return 75
+        case "host_test_credentials":
+            // A fresh pty login is bounded daemon-side at 60s PLUS the OTP
+            // replay-guard's next-window wait (~+30s). 45s fired while real
+            // tests were still legitimately running.
+            return 100
+        case "host_add":
             return 45
+        case "discover_nodes":
+            // squeue over the master socket has a 15s daemon-side deadline;
+            // the old 10s default failed the node picker while the job list
+            // was about to arrive.
+            return 20
         case "host_totp":
             // Short timeout: the chip should fall back to its muted state fast
             // rather than hang if a Keychain "Always Allow" prompt is pending.
@@ -437,25 +450,35 @@ actor BackendClient {
     /// every SSH master (their TCP is dead after suspend) and restart any
     /// tunnel that was alive at sleep time, after a ~20s grace window so the
     /// fresh masters have time to log back in.
-    func wakeRecover() async throws {
+    /// Returns `true` iff the daemon actually RAN a recovery pass —
+    /// `false` when coalesced (client-side guards or the daemon's own
+    /// in-flight/debounce guard). Callers use this to avoid toasting
+    /// activity that didn't happen (one wake fires BOTH Mac monitors).
+    @discardableResult
+    func wakeRecover() async throws -> Bool {
         // Coalesce: if a wake_recover is already in flight, or one completed
         // within the last few seconds, skip — the two Mac monitors fire on a
         // single wake. Actor isolation makes this check/set atomic.
         if wakeRecoverInFlight {
             NSLog("[Auto2FA] wakeRecover already in flight — coalescing")
-            return
+            return false
         }
         if let last = lastWakeRecoverAt,
            Date().timeIntervalSince(last) < wakeRecoverMinInterval {
             NSLog("[Auto2FA] wakeRecover ran <\(Int(wakeRecoverMinInterval))s ago — coalescing")
-            return
+            return false
         }
         wakeRecoverInFlight = true
         defer {
             wakeRecoverInFlight = false
             lastWakeRecoverAt = Date()
         }
-        _ = try await sendRaw(method: "wake_recover", params: [:])
+        let data = try await sendRaw(method: "wake_recover", params: [:])
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let coalesced = obj["coalesced"] as? Bool {
+            return !coalesced
+        }
+        return true
     }
 
     func setTunnelAutostart(_ name: String, value: Bool) async throws {

@@ -199,9 +199,14 @@ struct TOTPCodeChip: View {
             }
         } catch {
             // No secret, daemon error, or a pending/denied Keychain prompt
-            // (which times out at 6s). Show the muted state; a later fetch
-            // after the user allows the prompt will succeed.
+            // (which times out at 6s). Show the muted state; the user taps
+            // to retry. ALSO clear the (now-expired, unusable) code: the
+            // rollover trigger fires while `code != nil && expiry <= now`,
+            // so keeping the stale code meant a failing refetch re-fired
+            // every 0.5s tick forever (~2 busy RPCs/s per revealed chip
+            // against a hung Keychain prompt).
             withAnimation(.easeInOut(duration: 0.2)) {
+                self.code = nil
                 self.failed = true
             }
         }

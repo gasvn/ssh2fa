@@ -15,7 +15,6 @@ struct AddHostSheet: View {
 
     @State private var step = 0
     @State private var hostname = ""
-    @State private var user = NSUserName()
     @State private var password = ""
     @State private var otpauthURL = ""
     @State private var autoConnect = true
@@ -26,7 +25,7 @@ struct AddHostSheet: View {
     @State private var error: String?
     @FocusState private var focused: Field?
 
-    enum Field { case hostname, user, password, otpauth }
+    enum Field { case hostname, password, otpauth }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,10 +72,9 @@ struct AddHostSheet: View {
                 field("Hostname or SSH alias",
                       TextField("login01.example.edu", text: $hostname)
                         .focused($focused, equals: .hostname)
-                        .onSubmit { focused = .user })
-                field("SSH username",
-                      TextField(NSUserName(), text: $user)
-                        .focused($focused, equals: .user)
+                        // NOTE: no username field — the host is an ssh-config alias;
+                        // the login user comes from ssh config, and a field here was
+                        // never sent anywhere (pure decoration that misled users).
                         .onSubmit { focused = .password })
                 field("Password",
                       HStack {
@@ -126,6 +124,12 @@ struct AddHostSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        // Any credential edit invalidates a previous successful test —
+        // without this, Back + edit + Next kept "Add Host" enabled on the
+        // STALE "Login succeeded" and saved untested credentials.
+        .onChange(of: hostname) { _, _ in invalidateTest() }
+        .onChange(of: password) { _, _ in invalidateTest() }
+        .onChange(of: otpauthURL) { _, _ in invalidateTest() }
     }
 
     private var stepConfirm: some View {
@@ -135,7 +139,7 @@ struct AddHostSheet: View {
                 Label {
                     HStack(spacing: 0) {
                         Text("Host: ").foregroundStyle(.secondary)
-                        Text("\(user)@\(hostname)").fontDesign(.monospaced)
+                        Text(hostname).fontDesign(.monospaced)
                     }
                 } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
@@ -236,6 +240,13 @@ struct AddHostSheet: View {
             content
                 .textFieldStyle(.roundedBorder)
         }
+    }
+
+    /// Any edit to host/password/otpauth invalidates a previous successful
+    /// test — without this, Back + edit + Next kept "Add Host" enabled on the
+    /// STALE result and saved untested credentials (auto-retry login storm).
+    private func invalidateTest() {
+        testResult = nil
     }
 
     private func advance() {

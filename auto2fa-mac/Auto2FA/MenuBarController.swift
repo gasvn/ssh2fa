@@ -284,6 +284,18 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     @objc private func deleteTunnel(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String,
               let t = appState?.tunnels.first(where: { $0.name == name }) else { return }
+        // Confirm first: the menu item says "Delete…" (ellipsis = dialog),
+        // the undo snackbar only renders inside the main window (usually
+        // closed when using the menu bar), and the old direct call made
+        // menu-bar deletion instant AND effectively un-undoable.
+        let alert = NSAlert()
+        alert.messageText = "Delete tunnel \u{201C}\(name)\u{201D}?"
+        alert.informativeText = "This stops the tunnel and removes its configuration."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task { await appState?.deleteTunnel(t) }
     }
 

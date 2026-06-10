@@ -73,7 +73,9 @@ struct Auto2FAApp: App {
                     if let imported, !imported.isEmpty {
                         Task { _ = await appState.importTunnels(imported) }
                     } else if let err, err != "cancelled" {
-                        appState.connectionError = err
+                        // Action toast — connectionError gets wiped by the
+                        // next successful poll before it can be read.
+                        appState.showActionError(err)
                     }
                 }
             }
@@ -128,14 +130,20 @@ struct Auto2FAApp: App {
             let recover = UserDefaults.standard
                 .object(forKey: SettingsKey.autoRecoverOnWake) as? Bool ?? true
             guard recover else { return }
-            appState.notchPresenter.show(
-                systemImage: "network",
-                title: "Network changed",
-                description: "Probing tunnels…",
-                tint: .yellow
-            )
-            Task {
-                try? await appState.client.wakeRecover()
+            Task { @MainActor in
+                // Toast only when the daemon actually RAN a recovery pass —
+                // a single wake fires both monitors, and the second call is
+                // coalesced (daemon- or client-side). Claiming "Probing
+                // tunnels…" for a no-op was misleading.
+                let ran = (try? await appState.client.wakeRecover()) ?? false
+                if ran {
+                    appState.notchPresenter.show(
+                        systemImage: "network",
+                        title: "Network changed",
+                        description: "Probing tunnels…",
+                        tint: .yellow
+                    )
+                }
                 await appState.reloadAll()
             }
         }

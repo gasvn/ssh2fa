@@ -149,7 +149,11 @@ struct NodePickerSheet: View {
     private func pick() {
         guard !submitting else { return }
         guard let id = selection, let job = jobs.first(where: { $0.id == id }) else { return }
-        let user = appState.tunnels.first(where: { $0.name == tunnelName })?.lastUser ?? NSUserName()
+        // Empty user = "daemon keeps the existing last_user / falls back to
+        // $USER". NSUserName() here poisoned last_user with the MAC login
+        // name — if it differs from the cluster account, the squeue
+        // staleness check queries the wrong user and kills a working tunnel.
+        let user = appState.tunnels.first(where: { $0.name == tunnelName })?.lastUser ?? ""
         submitting = true
         error = nil
         Task {

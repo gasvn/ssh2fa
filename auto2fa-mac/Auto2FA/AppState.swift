@@ -70,7 +70,12 @@ final class AppState: ObservableObject {
             NSLog("[Auto2FA] bootstrap: connect failed: \(error.localizedDescription)")
             connectionError = "Daemon unreachable: \(error.localizedDescription). " +
                               "Is auto2fa-daemon running?"
-            return
+            // DON'T return — start the watcher/poll machinery anyway. The
+            // old early-return was a dead end: launching the app during a
+            // daemon-down window (deploys SIGKILL it; launchd respawns ~10s
+            // later) left a permanent "Daemon unreachable" banner that only
+            // an app relaunch cleared. The connection watcher + poll
+            // fallback reconnect and clear the banner on their own.
         }
         await reloadAll()
         NSLog("[Auto2FA] bootstrap: loaded \(hosts.count) hosts, \(tunnels.count) tunnels")
@@ -511,7 +516,7 @@ final class AppState: ObservableObject {
             if t.displayState == .alive,
                let node = t.lastNode, !node.isEmpty {
                 try? await client.setTunnelNode(t.name, node: node,
-                                                user: t.lastUser ?? NSUserName())
+                                                user: t.lastUser ?? "")
             }
             await reloadTunnelsOnly()
             FriendlyText.haptic()
@@ -552,7 +557,7 @@ final class AppState: ObservableObject {
             }
             if let node = t.lastNode, !node.isEmpty {
                 try? await client.setTunnelNode(newName, node: node,
-                                                user: t.lastUser ?? NSUserName())
+                                                user: t.lastUser ?? "")
             }
             await reloadTunnelsOnly()
             FriendlyText.haptic()
@@ -564,7 +569,9 @@ final class AppState: ObservableObject {
             )
             return newName
         } catch {
-            connectionError = "Clone failed: \(error.localizedDescription)"
+            // showActionError, not connectionError: the next successful 5s
+            // poll wiped the banner before the user could read it.
+            showActionError("Clone failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -617,11 +624,13 @@ final class AppState: ObservableObject {
     /// Create a tunnel. Returns nil on success, or a user-displayable error
     /// message on failure (so the sheet can show it inline rather than
     /// duplicating it as a global banner).
-    func createTunnel(name: String, localPort: Int, autoStart: Bool = false) async -> String? {
+    func createTunnel(name: String, localPort: Int, remotePort: Int? = nil,
+                      autoStart: Bool = false) async -> String? {
         inFlightTunnels.insert(name)
         defer { inFlightTunnels.remove(name) }
         do {
-            _ = try await client.addTunnel(name: name, localPort: localPort)
+            _ = try await client.addTunnel(name: name, localPort: localPort,
+                                           remotePort: remotePort)
             if autoStart {
                 try? await client.setTunnelAutostart(name, value: true)
             }
@@ -722,7 +731,7 @@ final class AppState: ObservableObject {
                 }
                 if let node = t.last_node, !node.isEmpty {
                     try? await client.setTunnelNode(t.name, node: node,
-                                                    user: t.last_user ?? NSUserName())
+                                                    user: t.last_user ?? "")
                 }
                 added += 1
             } catch {

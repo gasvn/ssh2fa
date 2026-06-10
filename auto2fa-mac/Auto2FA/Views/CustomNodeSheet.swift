@@ -7,7 +7,7 @@ struct CustomNodeSheet: View {
     let tunnelName: String
 
     @State private var node = ""
-    @State private var user = NSUserName()
+    @State private var user = ""  // empty → daemon keeps existing / remote $USER
     @State private var error: String?
     @State private var submitting = false
     @FocusState private var focused: Field?
@@ -30,7 +30,7 @@ struct CustomNodeSheet: View {
                 }
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text("User").font(.caption).foregroundStyle(.secondary)
-                    TextField(NSUserName(), text: $user)
+                    TextField("cluster username (optional)", text: $user)
                         .textFieldStyle(.roundedBorder)
                         .focused($focused, equals: .user)
                         .onSubmit { submit() }
@@ -85,7 +85,7 @@ struct CustomNodeSheet: View {
             if let errMsg = await appState.pickNode(
                 for: tunnelName,
                 node: trimmedNode,
-                user: trimmedUser.isEmpty ? NSUserName() : trimmedUser
+                user: trimmedUser  // empty → daemon keeps existing last_user
             ) {
                 error = errMsg
                 submitting = false

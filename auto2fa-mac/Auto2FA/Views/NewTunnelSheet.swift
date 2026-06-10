@@ -9,6 +9,11 @@ struct NewTunnelSheet: View {
     @State private var template: TunnelTemplate = .custom
     @State private var name = ""
     @State private var portText = ""
+    /// Remote port parsed from a pasted ssh command (`-L local:host:REMOTE`).
+    /// nil → daemon defaults remote = local. Was parsed, DISPLAYED, then
+    /// silently discarded — pasting `-L 8888:node:6006` created 8888→8888
+    /// and the service never answered.
+    @State private var parsedRemotePort: Int? = nil
     @State private var autoStart = false
     @State private var error: String?
     @State private var submitting = false
@@ -204,6 +209,7 @@ struct NewTunnelSheet: View {
         }
         error = nil
         if let lp = parsed.localPort { portText = String(lp) }
+        parsedRemotePort = parsed.remotePort
         if let suggested = parsed.suggestedName, name.isEmpty { name = suggested }
         // Surface what we extracted so the user can sanity-check before
         // hitting Create. Node/user aren't tracked on the tunnel record
@@ -240,6 +246,7 @@ struct NewTunnelSheet: View {
         Task {
             if let errMsg = await appState.createTunnel(name: trimmedName,
                                                        localPort: port,
+                                                       remotePort: parsedRemotePort,
                                                        autoStart: autoStart) {
                 error = errMsg
                 submitting = false
