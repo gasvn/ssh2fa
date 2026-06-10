@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use a2fa_core::config::{load_meta, passwords_path, save_meta, HostMeta};
+use a2fa_core::config::{passwords_path, update_meta, HostMeta};
 use a2fa_core::creds::keychain::KeychainStore;
 use a2fa_core::creds::{get_otpauth, get_password, store_credentials};
 use a2fa_core::engine::State;
@@ -95,20 +95,28 @@ pub fn host_toggle_with_registry(
         .ok_or_else(|| Error::BadParams("host required".into()))?
         .to_owned();
 
-    // Snapshot the current active state and credentials while holding the lock.
-    let (currently_active, password_opt, otpauth_opt) = {
+    // Snapshot the current active state under a BRIEF lock…
+    let currently_active = {
         let guard = crate::lock_state(state);
-        let host = guard
+        guard
             .hosts
             .iter()
             .find(|h| h.host == host_name)
-            .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?;
-        let currently_active = host.active;
-        // Fetch credentials from Keychain (fast on macOS; no network I/O).
+            .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?
+            .active
+    };
+    // …then fetch credentials from the Keychain with NO lock held. macOS
+    // serializes Keychain access process-wide and a locked Keychain blocks on
+    // a SecurityAgent prompt — doing this inside the lock_state block would
+    // wedge EVERY State user (heartbeat, all handlers) behind one prompt.
+    let (password_opt, otpauth_opt) = if currently_active {
+        (None, None) // deactivation needs no creds — skip the Keychain entirely
+    } else {
         let ks = KeychainStore;
-        let pw = get_password(&ks, &host_name).ok().flatten();
-        let oa = get_otpauth(&ks, &host_name).ok().flatten();
-        (currently_active, pw, oa)
+        (
+            get_password(&ks, &host_name).ok().flatten(),
+            get_otpauth(&ks, &host_name).ok().flatten(),
+        )
     };
 
     if currently_active {
@@ -177,14 +185,17 @@ pub fn host_toggle_with_registry(
 /// daemon restart. Without this, `host_toggle` only flipped the in-memory
 /// `active` flag, so a stopped host came back (boot auto-start re-read
 /// autoConnect=true) on the next launch — the "stop doesn't work" bug.
-/// Best-effort + off the State lock (load_meta/save_meta touch only the file).
+/// Best-effort + off the State lock. Goes through `update_meta` so the
+/// load→modify→save is serialized against concurrent handler threads
+/// (host_add) — separate load_meta/save_meta calls raced and lost updates.
 fn persist_host_autoconnect(host: &str, on: bool) {
     let path = passwords_path();
-    let mut meta = load_meta(&path);
-    meta.entry(host.to_string())
-        .and_modify(|m| m.auto_connect = on)
-        .or_insert(HostMeta { auto_connect: on });
-    if let Err(e) = save_meta(&path, &meta) {
+    let res = update_meta(&path, |meta| {
+        meta.entry(host.to_string())
+            .and_modify(|m| m.auto_connect = on)
+            .or_insert(HostMeta { auto_connect: on });
+    });
+    if let Err(e) = res {
         log::warn!("host_toggle: failed to persist autoConnect={on} for {host}: {e}");
     }
 }
@@ -380,15 +391,32 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         return Err(Error::BadParams("invalid host name for mount".into()));
     }
 
-    // Check sshfs is installed (bounded — `which` is instant, but never block).
-    let sshfs_ok = run_cmd_bounded("which", &["sshfs"], std::time::Duration::from_secs(5))
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !sshfs_ok {
-        return Err(Error::Internal(
-            "sshfs not installed — install macFUSE + sshfs to use this feature".into(),
-        ));
-    }
+    // Locate sshfs (bounded — `which` is instant, but never block). Under
+    // launchd the daemon's PATH is the plist's minimal system set, which does
+    // NOT include /usr/local/bin or /opt/homebrew/bin — `which sshfs` fails
+    // there even with sshfs installed (mount was dead in production). Fall
+    // back to the two well-known install prefixes by absolute path.
+    let sshfs_bin: String = {
+        let which_ok = run_cmd_bounded("which", &["sshfs"], std::time::Duration::from_secs(5))
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if which_ok {
+            "sshfs".into()
+        } else {
+            match ["/usr/local/bin/sshfs", "/opt/homebrew/bin/sshfs"]
+                .iter()
+                .find(|p| std::path::Path::new(p).is_file())
+            {
+                Some(p) => (*p).to_string(),
+                None => {
+                    return Err(Error::Internal(
+                        "sshfs not installed — install macFUSE + sshfs to use this feature"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    };
 
     let mount_point = {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
@@ -439,7 +467,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
              volname={host_name},StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
         );
         let result = run_cmd_bounded(
-            "sshfs",
+            &sshfs_bin,
             &[&src, &mp_str2, "-o", &opts],
             std::time::Duration::from_secs(45),
         );
@@ -629,24 +657,52 @@ pub fn host_add(
         }
     }
 
-    // Write credentials to Keychain + passwords.json meta file.
-    // These are I/O ops but they're fast (local disk / Keychain daemon).
-    let ks = KeychainStore;
-    store_credentials(&ks, &host_name, &password, &otpauth_url)?;
+    // Write credentials to the Keychain on a BOUNDED WORKER thread — never on
+    // this connection-handler thread. macOS serializes Keychain access
+    // process-wide; with the login Keychain locked (post-reboot / password
+    // change), SecItemAdd blocks on a SecurityAgent prompt and an inline call
+    // would wedge this handler forever AND stall every other Keychain user
+    // (login workers, host_totp) behind it. Same pattern as host_totp below:
+    // worker + recv_timeout. An abandoned worker that completes late is
+    // harmless — the creds it stores are exactly what a retry would store.
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let host_owned = host_name.clone();
+        let password_owned = password.clone();
+        let otpauth_owned = otpauth_url.clone();
+        let spawn_res = std::thread::Builder::new()
+            .name(format!("host_add-keychain:{host_name}"))
+            .spawn(move || {
+                let ks = KeychainStore;
+                let result = store_credentials(&ks, &host_owned, &password_owned, &otpauth_owned);
+                let _ = tx.send(result);
+            });
+        if let Err(e) = spawn_res {
+            log::warn!("host_add: failed to spawn keychain worker for {host_name}: {e}");
+            return Err(Error::Internal(format!(
+                "could not start credential store for {host_name} — try again"
+            )));
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(inner) => inner?,
+            Err(_) => {
+                return Err(Error::Internal(
+                    "Keychain write timed out (is the login Keychain locked?) — try again"
+                        .into(),
+                ));
+            }
+        }
+    }
     // The stored creds just changed — drop any cached copy so the next login
     // re-reads the new secret instead of serving a stale one.
     crate::managers::invalidate_creds_cache(&host_name);
 
-    // Update passwords.json metadata.
+    // Update passwords.json metadata (serialized read-modify-write — a
+    // concurrent host toggle on another handler thread must not be lost).
     let meta_path = passwords_path();
-    let mut meta = load_meta(&meta_path);
-    meta.insert(
-        host_name.clone(),
-        HostMeta {
-            auto_connect,
-        },
-    );
-    if let Err(e) = save_meta(&meta_path, &meta) {
+    if let Err(e) = update_meta(&meta_path, |meta| {
+        meta.insert(host_name.clone(), HostMeta { auto_connect });
+    }) {
         // Non-fatal: credentials are in Keychain; meta is cosmetic.
         log::warn!("host_add: failed to persist passwords.json: {e}");
     }
@@ -724,7 +780,11 @@ pub fn host_add(
 /// daemon it should be moved to a blocking thread; for the daemon's Tokio
 /// runtime the caller wraps this in `spawn_blocking`.  As an IPC RPC it
 /// is still acceptable to block briefly (the client has a generous timeout).
-pub fn host_test_credentials(_state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+pub fn host_test_credentials(
+    _state: &Arc<Mutex<State>>,
+    params: &Value,
+    registry: Option<Arc<OtpRegistry>>,
+) -> Result<Value> {
     let host = params
         .get("host")
         .and_then(|v| v.as_str())
@@ -760,19 +820,42 @@ pub fn host_test_credentials(_state: &Arc<Mutex<State>>, params: &Value) -> Resu
 
     // Run the one-shot login attempt on this thread.
     // (In production the daemon server wraps handlers in a worker pool.)
-    let (ok, reason) = test_login(&host, &password, &secret);
+    //
+    // OTP source: when the daemon-global registry is available (production
+    // dispatch always passes it), generate codes THROUGH the replay guard. A
+    // bare `totp_now` here could submit the exact code an in-flight managed
+    // login (same shared Duo secret) just used — the server rejects the
+    // replay and the REAL login fails, bumping its circuit breaker.
+    let (ok, reason) = match registry {
+        Some(reg) => {
+            let otp_fn = crate::workers::make_otp_closure(secret.clone(), host.clone(), reg);
+            test_login(&host, &password, otp_fn)
+        }
+        None => {
+            // Legacy fallback (tests only).
+            let secret_owned = secret.clone();
+            test_login(&host, &password, move || {
+                a2fa_core::totp::totp_now(&secret_owned)
+            })
+        }
+    };
     Ok(json!({ "ok": ok, "reason": reason }))
 }
 
 /// Attempt a one-shot, isolated SSH login.
 ///
 /// Uses `a2fa_core::ssh::pty_auth::run_login` with a temporary ControlPath so
-/// there is no interaction with the live master pool.
+/// there is no interaction with the live master pool. The OTP closure is
+/// supplied by the caller (routed through the daemon-global replay guard in
+/// production).
 ///
 /// Returns `(true, "")` on success or `(false, reason)` on failure.
-fn test_login(host: &str, password: &str, secret: &str) -> (bool, String) {
+fn test_login(
+    host: &str,
+    password: &str,
+    otp_fn: impl Fn() -> a2fa_core::error::Result<String>,
+) -> (bool, String) {
     use a2fa_core::ssh::pty_auth::{run_login, LoginOutcome};
-    use a2fa_core::totp::totp_now;
 
     // Build a temp log path.
     let tmp_dir = std::env::temp_dir();
@@ -797,9 +880,6 @@ fn test_login(host: &str, password: &str, secret: &str) -> (bool, String) {
         // run_login matches this marker as its command-mode success signal.
         "echo".into(), a2fa_core::ssh::pty_auth::LOGIN_OK_MARKER.into(),
     ];
-
-    let secret_owned = secret.to_owned();
-    let otp_fn = move || totp_now(&secret_owned);
 
     let result = run_login(&argv, password, otp_fn);
 
@@ -1211,10 +1291,27 @@ mod tests {
             &state,
             &json!({"host": "k6", "password": "x",
                     "otpauth_url": "otpauth://totp/Example:user?issuer=Example"}),
+            None,
         )
         .unwrap();
         assert_eq!(v["ok"], false);
         assert!(v["reason"].as_str().unwrap().contains("invalid otpauth"));
+    }
+
+    /// The registry-routed variant must also validate the URL before any I/O
+    /// (and accept the registry without touching it on the error path).
+    #[test]
+    fn host_test_credentials_with_registry_validates_first() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let v = host_test_credentials(
+            &state,
+            &json!({"host": "", "password": "x",
+                    "otpauth_url": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"}),
+            Some(OtpRegistry::new()),
+        )
+        .unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["reason"], "host required");
     }
 
     #[test]
@@ -1224,6 +1321,7 @@ mod tests {
             &state,
             &json!({"host": "", "password": "x",
                     "otpauth_url": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"}),
+            None,
         )
         .unwrap();
         assert_eq!(v["ok"], false);

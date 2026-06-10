@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -98,26 +99,101 @@ pub fn load_meta(path: &Path) -> HashMap<String, HostMeta> {
     file.hosts
 }
 
+/// Process-global lock serializing every load→modify→save of passwords.json.
+/// Two handler threads doing concurrent read-modify-write (host toggle +
+/// host_add) could otherwise interleave and silently drop one side's update.
+fn meta_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Serialized read-modify-write of the metadata map: lock → load → mutate →
+/// save. ALL incremental metadata updates (toggle persistence, host_add) must
+/// go through this — calling `load_meta` + `save_meta` separately reintroduces
+/// the lost-update race.
+pub fn update_meta<F: FnOnce(&mut HashMap<String, HostMeta>)>(path: &Path, f: F) -> Result<()> {
+    let _g = meta_write_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut hosts = load_meta(path);
+    f(&mut hosts);
+    save_meta(path, &hosts)
+}
+
 /// Atomically write the per-host metadata map to `path`.
 ///
 /// Writes to `<path>.tmp`, fsyncs the file, then renames over `path`
 /// (mirrors `_atomic_write_json` in credentials.py). Refuses to write if the
-/// on-disk schema is newer than SCHEMA_VERSION.
+/// on-disk schema is newer than SCHEMA_VERSION, and refuses to OVERWRITE a
+/// file that is not parseable v2 — that's an un-migrated legacy v1 file (or
+/// corrupt data). `load_meta` returns an EMPTY map for such a file, so a
+/// blind load→modify→save (e.g. a host toggle right after the boot migration
+/// timed out on a locked Keychain) would rewrite passwords.json as v2 with
+/// ONE host: every legacy entry silently dropped AND migration permanently
+/// skipped (the next boot sees schema 2). The boot migration commits through
+/// [`commit_migration_meta`], which is the only writer allowed to replace a
+/// v1 file.
 pub fn save_meta(path: &Path, hosts: &HashMap<String, HostMeta>) -> Result<()> {
-    // If the file already exists with a newer schema, refuse to downgrade.
     if path.exists() {
         let existing = std::fs::read_to_string(path).map_err(Error::Io)?;
-        if let Ok(existing_file) = serde_json::from_str::<PasswordsFile>(&existing) {
-            if existing_file.schema > SCHEMA_VERSION {
+        let trimmed = existing.trim();
+        match serde_json::from_str::<PasswordsFile>(&existing) {
+            Ok(existing_file) if existing_file.schema > SCHEMA_VERSION => {
                 return Err(Error::Internal(format!(
                     "passwords.json schema v{} is newer than this build (v{}); \
                      refusing to write to avoid data loss",
                     existing_file.schema, SCHEMA_VERSION
                 )));
             }
+            // An older schema number still parses (unknown fields are ignored)
+            // but load_meta returned {} for it — overwriting would lose data
+            // exactly like the unparseable-v1 case below.
+            Ok(existing_file) if existing_file.schema < SCHEMA_VERSION => {
+                return Err(Error::Internal(format!(
+                    "passwords.json schema v{} is older than this build (v{}); \
+                     refusing to overwrite — the boot migration converts it",
+                    existing_file.schema, SCHEMA_VERSION
+                )));
+            }
+            Ok(_) => {}
+            // An empty file / empty object carries no data — safe to claim.
+            // ("{}" is what a fresh Python install wrote; refusing it would
+            // brick metadata persistence forever, since the migration skips
+            // cred-less files and never converts them to v2.)
+            Err(_) if trimmed.is_empty() || trimmed == "{}" => {}
+            Err(_) => {
+                return Err(Error::Internal(
+                    "passwords.json is not a v2 file — likely un-migrated legacy v1 \
+                     (or corrupt); refusing to overwrite it. The boot migration will \
+                     convert it; recover from <passwords.json>.pre-keychain-backup if \
+                     needed."
+                        .into(),
+                ));
+            }
         }
     }
+    write_meta_atomic(path, hosts)
+}
 
+/// Migration-only commit: replaces the file even when the current contents
+/// are legacy v1 (that's the whole point of the migration). Still refuses a
+/// schema DOWNGRADE.
+pub fn commit_migration_meta(path: &Path, hosts: &HashMap<String, HostMeta>) -> Result<()> {
+    if path.exists() {
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            if let Ok(existing_file) = serde_json::from_str::<PasswordsFile>(&existing) {
+                if existing_file.schema > SCHEMA_VERSION {
+                    return Err(Error::Internal(format!(
+                        "passwords.json schema v{} is newer than this build (v{}); \
+                         refusing to write to avoid data loss",
+                        existing_file.schema, SCHEMA_VERSION
+                    )));
+                }
+            }
+        }
+    }
+    write_meta_atomic(path, hosts)
+}
+
+fn write_meta_atomic(path: &Path, hosts: &HashMap<String, HostMeta>) -> Result<()> {
     let file = PasswordsFile {
         schema: SCHEMA_VERSION,
         hosts: hosts.clone(),
@@ -189,8 +265,8 @@ mod tests {
 
         let loaded = load_meta(&p);
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded["k6"].auto_connect, true);
-        assert_eq!(loaded["k8"].auto_connect, false);
+        assert!(loaded["k6"].auto_connect);
+        assert!(!loaded["k8"].auto_connect);
     }
 
     #[test]
@@ -236,5 +312,92 @@ mod tests {
         // We can't assert the exact prefix without knowing $HOME / SSH_CONFIG_PATH.
         let p = passwords_path();
         assert_eq!(p.file_name().unwrap(), "passwords.json");
+    }
+
+    /// REGRESSION (legacy-clobber): save_meta over an un-migrated v1 file must
+    /// REFUSE. load_meta returns {} for v1, so a blind load→modify→save (host
+    /// toggle after a timed-out boot migration) would rewrite the file as v2
+    /// with one host — every legacy credential entry dropped AND migration
+    /// permanently skipped.
+    #[test]
+    fn save_meta_refuses_to_overwrite_v1_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("passwords.json");
+        // Legacy v1 shape: top-level host entries with plaintext creds, no "schema".
+        std::fs::write(
+            &p,
+            r#"{"k6":{"password":"hunter2","otpauthUrl":"otpauth://totp/x?secret=AAAA","autoConnect":true}}"#,
+        )
+        .unwrap();
+
+        let mut hosts = HashMap::new();
+        hosts.insert("k8".to_owned(), HostMeta { auto_connect: true });
+        assert!(save_meta(&p, &hosts).is_err(), "must refuse to clobber v1");
+        // And update_meta (which routes through save_meta) propagates the refusal…
+        assert!(update_meta(&p, |m| {
+            m.insert("k8".to_owned(), HostMeta { auto_connect: true });
+        })
+        .is_err());
+        // …while the v1 contents survive untouched.
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("hunter2"), "v1 file must be untouched");
+    }
+
+    /// The migration commit is the ONE writer allowed to replace a v1 file.
+    #[test]
+    fn commit_migration_meta_replaces_v1_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("passwords.json");
+        std::fs::write(
+            &p,
+            r#"{"k6":{"password":"hunter2","otpauthUrl":"otpauth://totp/x?secret=AAAA"}}"#,
+        )
+        .unwrap();
+
+        let mut hosts = HashMap::new();
+        hosts.insert("k6".to_owned(), HostMeta { auto_connect: true });
+        commit_migration_meta(&p, &hosts).unwrap();
+
+        let loaded = load_meta(&p);
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded["k6"].auto_connect);
+    }
+
+    /// An empty (0-byte) file carries no data — save_meta may claim it (a
+    /// permanent refusal would brick metadata persistence forever).
+    #[test]
+    fn save_meta_claims_empty_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("passwords.json");
+        std::fs::write(&p, "").unwrap();
+        let mut hosts = HashMap::new();
+        hosts.insert("k8".to_owned(), HostMeta { auto_connect: false });
+        save_meta(&p, &hosts).unwrap();
+        assert_eq!(load_meta(&p).len(), 1);
+    }
+
+    /// REGRESSION (lost-update): two concurrent update_meta calls must both
+    /// land — the old separate load_meta/save_meta pattern let one side's
+    /// insert vanish.
+    #[test]
+    fn update_meta_serializes_concurrent_writers() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("passwords.json");
+        save_meta(&p, &HashMap::new()).unwrap();
+
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let p = p.clone();
+                s.spawn(move || {
+                    update_meta(&p, |m| {
+                        m.insert(format!("host{i}"), HostMeta { auto_connect: i % 2 == 0 });
+                    })
+                    .unwrap();
+                });
+            }
+        });
+
+        let loaded = load_meta(&p);
+        assert_eq!(loaded.len(), 8, "every concurrent insert must survive");
     }
 }

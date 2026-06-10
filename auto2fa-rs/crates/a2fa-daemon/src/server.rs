@@ -181,7 +181,9 @@ pub fn run() -> Result<()> {
             });
         match spawn_res {
             Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(15)) {
-                Ok(Ok(Some(hosts))) => match a2fa_core::config::save_meta(&passwords_p, &hosts) {
+                // commit_migration_meta, NOT save_meta: this is the one writer
+                // allowed to replace the legacy v1 file (save_meta refuses).
+                Ok(Ok(Some(hosts))) => match a2fa_core::config::commit_migration_meta(&passwords_p, &hosts) {
                     Ok(_) => log::info!("migrated passwords.json v1 -> v2 (creds moved to Keychain)"),
                     Err(e) => log::error!("migration: persisting v2 passwords.json failed: {e}"),
                 },

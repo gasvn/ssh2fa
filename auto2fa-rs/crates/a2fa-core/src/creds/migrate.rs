@@ -16,10 +16,10 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::config::passwords_store::{save_meta, HostMeta};
+use crate::config::passwords_store::{commit_migration_meta, HostMeta};
 use crate::error::{Error, Result};
 
-use super::{delete_credentials, store_credentials, SecretStore};
+use super::{delete_credentials, get_otpauth, get_password, store_credentials, SecretStore};
 
 /// The schema version written into migrated passwords.json files.
 pub const SCHEMA_V2: u64 = 2;
@@ -83,11 +83,31 @@ pub fn migrate_v1_to_v2<S: SecretStore>(store: &S, legacy: &Value) -> Result<Val
         return Ok(legacy.clone());
     }
 
-    // All-or-nothing write: collect what we've written so we can roll back.
+    // All-or-nothing write: collect what WE created so we can roll back —
+    // and only that. Two data-loss bugs lived here:
+    //  1. `store_credentials` unconditionally OVERWROTE entries that already
+    //     existed in the Keychain with stale v1-file values (entries can
+    //     pre-exist via a user re-add while the file sat un-migrated, or an
+    //     earlier abandoned migration worker completing late).
+    //  2. On partial failure the rollback then DELETED those pre-existing
+    //     entries outright.
+    // Skipping hosts whose creds already exist fixes both: the existing
+    // (newer) entry wins, and the rollback list contains only our own writes.
     let mut written: Vec<String> = Vec::new();
+    let mut kept_existing = 0usize;
     for (host, pw, otp, _) in &to_write {
+        let pre_existing = matches!(get_password(store, host), Ok(Some(ref s)) if !s.is_empty())
+            || matches!(get_otpauth(store, host), Ok(Some(ref s)) if !s.is_empty());
+        if pre_existing {
+            log::info!(
+                "[migrate] {host}: Keychain entry already exists — keeping it \
+                 (not overwriting with v1-file values)"
+            );
+            kept_existing += 1;
+            continue;
+        }
         if let Err(e) = store_credentials(store, host, pw, otp) {
-            // Roll back.
+            // Roll back ONLY the entries this run created.
             for done in &written {
                 let _ = delete_credentials(store, done);
             }
@@ -111,8 +131,9 @@ pub fn migrate_v1_to_v2<S: SecretStore>(store: &S, legacy: &Value) -> Result<Val
     v2.insert("hosts".into(), Value::Object(hosts));
 
     log::info!(
-        "[migrate] migration complete — {} hosts now in Keychain",
-        written.len()
+        "[migrate] migration complete — {} hosts written to Keychain, {} kept pre-existing",
+        written.len(),
+        kept_existing
     );
 
     Ok(Value::Object(v2))
@@ -179,7 +200,7 @@ pub fn migrate_passwords_file_if_needed<S: SecretStore>(
 ) -> Result<bool> {
     match prepare_migration(store, path)? {
         Some(hosts) => {
-            save_meta(path, &hosts)?;
+            commit_migration_meta(path, &hosts)?;
             Ok(true)
         }
         None => Ok(false),
@@ -403,6 +424,104 @@ mod tests {
 
         let result = migrate_v1_to_v2(&store, &legacy);
         assert!(result.is_err(), "should have failed on injected error");
+    }
+
+    /// REGRESSION: migration must NOT overwrite Keychain entries that already
+    /// exist (they are newer than the v1 file — e.g. a user re-add while the
+    /// file sat un-migrated, or an abandoned earlier migration worker).
+    #[test]
+    fn migrate_keeps_pre_existing_keychain_entries() {
+        let store = FakeStore {
+            map: RefCell::new(HashMap::new()),
+        };
+        // The user re-added k6 with a NEW password while the file was v1.
+        store.set("k6.password", "newer-pw").unwrap();
+        store
+            .set("k6.otpauth", "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP")
+            .unwrap();
+
+        let legacy = serde_json::json!({
+            "k6": {
+                "password": "stale-v1-pw",
+                "otpauthUrl": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
+                "autoConnect": true
+            },
+            "k8": {
+                "password": "pw2",
+                "otpauthUrl": "otpauth://totp/y?secret=JBSWY3DPEHPK3PXP",
+                "autoConnect": false
+            }
+        });
+
+        let v2 = migrate_v1_to_v2(&store, &legacy).unwrap();
+
+        // k6 keeps the NEWER password; k8 (absent before) is written.
+        assert_eq!(
+            store.get("k6.password").unwrap().as_deref(),
+            Some("newer-pw"),
+            "pre-existing Keychain entry must not be overwritten with v1 values"
+        );
+        assert_eq!(store.get("k8.password").unwrap().as_deref(), Some("pw2"));
+        // Both hosts still land in the v2 metadata.
+        let hosts = v2["hosts"].as_object().unwrap();
+        assert!(hosts.contains_key("k6") && hosts.contains_key("k8"));
+    }
+
+    /// REGRESSION: a partial-failure rollback must delete ONLY the entries
+    /// this run created — never pre-existing ones.
+    #[test]
+    fn migrate_rollback_spares_pre_existing_entries() {
+        use crate::error::Error as E;
+
+        struct FailOnHost {
+            map: RefCell<HashMap<String, String>>,
+            fail_key: &'static str,
+        }
+        impl SecretStore for FailOnHost {
+            fn get(&self, a: &str) -> crate::error::Result<Option<String>> {
+                Ok(self.map.borrow().get(a).cloned())
+            }
+            fn set(&self, a: &str, v: &str) -> crate::error::Result<()> {
+                if a == self.fail_key {
+                    return Err(E::Internal("injected failure".into()));
+                }
+                self.map.borrow_mut().insert(a.into(), v.into());
+                Ok(())
+            }
+            fn delete(&self, a: &str) -> crate::error::Result<()> {
+                self.map.borrow_mut().remove(a);
+                Ok(())
+            }
+        }
+
+        let store = FailOnHost {
+            map: RefCell::new(HashMap::new()),
+            fail_key: "k9.password",
+        };
+        // k6 pre-exists (user-added) — migration must skip it.
+        store.set("k6.password", "user-pw").unwrap();
+        store
+            .set("k6.otpauth", "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP")
+            .unwrap();
+
+        // serde_json's default map is sorted: iteration order k6, k8, k9.
+        let legacy = serde_json::json!({
+            "k6": { "password": "stale", "otpauthUrl": "otpauth://totp/x?secret=A", "autoConnect": false },
+            "k8": { "password": "pw8", "otpauthUrl": "otpauth://totp/y?secret=B", "autoConnect": false },
+            "k9": { "password": "pw9", "otpauthUrl": "otpauth://totp/z?secret=C", "autoConnect": false }
+        });
+
+        let result = migrate_v1_to_v2(&store, &legacy);
+        assert!(result.is_err(), "k9 write failure must propagate");
+
+        // Rollback removed k8 (our write)…
+        assert!(store.get("k8.password").unwrap().is_none());
+        // …but k6 (pre-existing) MUST survive with the user's value.
+        assert_eq!(
+            store.get("k6.password").unwrap().as_deref(),
+            Some("user-pw"),
+            "rollback must never delete entries it didn't create"
+        );
     }
 
     // -----------------------------------------------------------------------

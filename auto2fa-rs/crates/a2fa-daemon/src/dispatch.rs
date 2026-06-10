@@ -192,7 +192,8 @@ fn route_with_ctx(
         Method::HostAdd           => hosts::host_add(state, params,
                                         Some(Arc::clone(&ctx.managers)),
                                         Some(Arc::clone(&ctx.registry))),
-        Method::HostTestCredentials => hosts::host_test_credentials(state, params),
+        Method::HostTestCredentials => hosts::host_test_credentials(state, params,
+                                        Some(Arc::clone(&ctx.registry))),
         Method::HostTotp          => hosts::host_totp(state, params),
 
         // --- Tunnels (read/compute) ---
