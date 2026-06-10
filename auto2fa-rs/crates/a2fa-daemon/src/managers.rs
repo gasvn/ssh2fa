@@ -544,6 +544,18 @@ pub fn boot_autostart(
         if a2fa_core::ssh::master::adopt_if_alive(&mut pool) {
             let idx = pool.active_index;
             managers.write_back(&host_name, &pool);
+            // Sweep DUPLICATE masters on every adopted slot: adoption takes
+            // the socket OWNER, but older-generation masters on the same
+            // path were never targeted by anything (the stale-socket sweep
+            // only runs when a slot RESTARTS, and adopted slots don't
+            // restart) — kill-9 deploys accumulated one duplicate per
+            // deploy, each holding an authenticated cluster connection.
+            for slot in 0..POOL_SIZE {
+                if pool.slot_status[slot] == SlotStatus::Ready {
+                    let p = pool.pool_path(slot);
+                    a2fa_core::ssh::control::sweep_duplicate_masters(&p, &host_name);
+                }
+            }
             let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
                 h.is_master_ready = true;
@@ -1467,6 +1479,10 @@ fn tick_host(
                     // is accounted correctly.
                     p.mark_slot_ready(slot);
                 });
+                // Same duplicate sweep as boot adoption: we just adopted the
+                // socket owner — evict any older-generation master still
+                // squatting on this path.
+                a2fa_core::ssh::control::sweep_duplicate_masters(&pool.pool_path(slot), host_name);
                 // Reflect in engine State: count Ready slots; mark Connected
                 // if this is the active slot.
                 let (alive_count, is_active_slot) = managers

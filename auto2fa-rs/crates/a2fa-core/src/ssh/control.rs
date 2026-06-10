@@ -479,6 +479,192 @@ pub fn cleanup_stale_socket(path: &Path, host: &str) {
 /// same path is never hit. SIGTERM, brief grace, then SIGKILL (mirrors
 /// backend.py:169-176). Bounded helpers only; runs on the login/teardown worker
 /// (never the heartbeat tick).
+/// Ask the live master who owns `control_path`: parse the pid out of
+/// `ssh -O check`'s "Master running (pid=NNN)" (printed to stderr).
+/// `None` → no master / timeout / unparseable.
+pub fn master_owner_pid(control_path: &Path, host: &str) -> Option<i32> {
+    let control_opt = format!("ControlPath={}", control_path.display());
+    let (tx, rx) = mpsc::channel();
+    let host_owned = host.to_string();
+    let spawn_res = std::thread::Builder::new()
+        .name("ssh-check-pid".into())
+        .spawn(move || {
+            let child = Command::new("ssh")
+                .args(["-O", "check", "-o", &control_opt, &host_owned])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+            let mut child = match child {
+                Ok(c) => c,
+                Err(_) => {
+                    let _ = tx.send(None);
+                    return;
+                }
+            };
+            let deadline = Instant::now() + MASTER_CHECK_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let out = if status.success() {
+                            let mut s = String::new();
+                            if let Some(mut e) = child.stderr.take() {
+                                use std::io::Read;
+                                let _ = e.read_to_string(&mut s);
+                            }
+                            Some(s)
+                        } else {
+                            None
+                        };
+                        let _ = tx.send(out);
+                        return;
+                    }
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = tx.send(None);
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(_) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = tx.send(None);
+                        return;
+                    }
+                }
+            }
+        });
+    if spawn_res.is_err() {
+        return None;
+    }
+    let text = rx
+        .recv_timeout(MASTER_CHECK_TIMEOUT + Duration::from_secs(1))
+        .ok()
+        .flatten()?;
+    parse_master_pid(&text)
+}
+
+/// Parse "Master running (pid=NNN)" → NNN.
+fn parse_master_pid(check_output: &str) -> Option<i32> {
+    let idx = check_output.find("pid=")?;
+    let rest = &check_output[idx + 4..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// Kill every `[mux]` master claiming `control_path` EXCEPT the one that
+/// actually owns the socket. Returns the number killed.
+///
+/// WHY: boot adoption (zero-relogin kill-9 deploys) adopts the socket OWNER —
+/// but duplicate masters from earlier daemon generations on the SAME path
+/// were never targeted by anything: the stale-socket sweep only runs when a
+/// slot RESTARTS, and adopted slots don't restart. Observed live: 4 deploys
+/// in one day accumulated ~10 duplicate masters, each holding an
+/// authenticated connection to the cluster.
+pub fn sweep_duplicate_masters(control_path: &Path, host: &str) -> usize {
+    let owner = match master_owner_pid(control_path, host) {
+        Some(p) => p,
+        None => return 0, // no live owner — the restart path's sweep handles it
+    };
+    let needle = control_path.to_string_lossy().into_owned();
+    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", &needle], Duration::from_secs(2)) {
+        Some(o) if o.status.code() == Some(0) => o,
+        _ => return 0,
+    };
+    let mut killed = 0usize;
+    for pid_str in String::from_utf8_lossy(&found.stdout).split_whitespace() {
+        let pid: i32 = match pid_str.trim().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if pid == owner {
+            continue;
+        }
+        // Confirm: a [mux] master whose proctitle carries this exact path.
+        let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str.trim()], Duration::from_secs(2))
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !cmd.contains("[mux]") || !cmd.contains(&needle) {
+            continue;
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        unsafe {
+            if libc::kill(pid, 0) == 0 {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        warn!("[{host}] killed DUPLICATE ControlMaster pid {pid} (owner {owner}, {needle})");
+        killed += 1;
+    }
+    killed
+}
+
+/// Boot-time sweep of `cm-auto2fa-*` masters whose ControlPath base is not
+/// among `valid_bases` (the resolved bases of every known host). These are
+/// strays from a CHANGED path resolution (ssh-config edits): no per-slot
+/// sweep ever targets the old path again, so they leaked forever — observed
+/// live as 6h-old `cm-auto2fa-b8-*` masters after b8's base became
+/// `cm-auto2fa-boslogin08…`. Only our own `cm-auto2fa-` prefix is touched;
+/// custom user ControlPaths are never swept here.
+pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
+    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", "cm-auto2fa-"], Duration::from_secs(2)) {
+        Some(o) if o.status.code() == Some(0) => o,
+        _ => return 0,
+    };
+    let valid: Vec<String> = valid_bases
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut killed = 0usize;
+    for pid_str in String::from_utf8_lossy(&found.stdout).split_whitespace() {
+        let pid: i32 = match pid_str.trim().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str.trim()], Duration::from_secs(2))
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !cmd.contains("[mux]") || !cmd.contains("cm-auto2fa-") {
+            continue;
+        }
+        // proctitle: "ssh: <path> [mux]" — extract the path token.
+        let path_tok = cmd
+            .split_whitespace()
+            .find(|t| t.contains("cm-auto2fa-"))
+            .unwrap_or("");
+        // Strip the trailing "-<slot>" to recover the base.
+        let base = match path_tok.rfind('-') {
+            Some(i) if path_tok[i + 1..].chars().all(|c| c.is_ascii_digit())
+                && !path_tok[i + 1..].is_empty() =>
+            {
+                &path_tok[..i]
+            }
+            _ => path_tok,
+        };
+        if valid.iter().any(|v| v == base) {
+            continue; // belongs to a known host — adoption/dup-sweep owns it
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        unsafe {
+            if libc::kill(pid, 0) == 0 {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        warn!("killed STRAY ControlMaster pid {pid} on retired path {path_tok}");
+        killed += 1;
+    }
+    killed
+}
+
 fn kill_orphaned_master(control_path: &Path, host: &str) {
     let needle = control_path.to_string_lossy().into_owned();
     let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", &needle], Duration::from_secs(2)) {
@@ -530,6 +716,67 @@ fn dirs_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ----- parse_master_pid --------------------------------------------------
+
+    #[test]
+    fn parse_master_pid_basics() {
+        assert_eq!(parse_master_pid("Master running (pid=12345)\n"), Some(12345));
+        assert_eq!(parse_master_pid("Master running (pid=1)"), Some(1));
+        assert_eq!(parse_master_pid("No ControlPath specified"), None);
+        assert_eq!(parse_master_pid("pid="), None);
+        assert_eq!(parse_master_pid(""), None);
+    }
+
+    /// sweep_duplicate_masters with no live owner must be a no-op (the
+    /// restart path's stale-socket sweep owns that case).
+    #[test]
+    fn sweep_duplicates_noop_without_owner() {
+        let bogus = std::path::Path::new("/tmp/a2fa-test-no-such-socket-xyz");
+        assert_eq!(sweep_duplicate_masters(bogus, "nosuchhost-xyz"), 0);
+    }
+
+    /// sweep_stray_masters with every running master's base in the valid set
+    /// must kill nothing (count can only reflect TRUE strays).
+    #[test]
+    fn sweep_strays_respects_valid_bases() {
+        // Collect the bases of any LIVE cm-auto2fa masters on this machine
+        // and declare them all valid — the sweep must then be a no-op.
+        let out = crate::sys::run_cmd_bounded(
+            "pgrep",
+            &["-f", "--", "cm-auto2fa-"],
+            std::time::Duration::from_secs(2),
+        );
+        let mut valid: Vec<PathBuf> = Vec::new();
+        if let Some(o) = out {
+            for pid in String::from_utf8_lossy(&o.stdout).split_whitespace() {
+                if let Some(ps) = crate::sys::run_cmd_bounded(
+                    "ps",
+                    &["-o", "command=", "-p", pid],
+                    std::time::Duration::from_secs(2),
+                ) {
+                    let cmd = String::from_utf8_lossy(&ps.stdout).into_owned();
+                    if let Some(tok) = cmd.split_whitespace().find(|t| t.contains("cm-auto2fa-")) {
+                        let base = match tok.rfind('-') {
+                            Some(i)
+                                if !tok[i + 1..].is_empty()
+                                    && tok[i + 1..].chars().all(|c| c.is_ascii_digit()) =>
+                            {
+                                &tok[..i]
+                            }
+                            _ => tok,
+                        };
+                        valid.push(PathBuf::from(base));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            sweep_stray_masters(&valid),
+            0,
+            "all live bases declared valid — nothing may be killed"
+        );
+    }
 
     // -- Pure resolution helpers (deterministic, no ssh invoked) ------------
 

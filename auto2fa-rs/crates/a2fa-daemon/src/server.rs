@@ -219,6 +219,27 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // Sweep STRAY cm-auto2fa masters sitting on RETIRED ControlPath bases:
+    // when ssh-config edits change a host's resolved path, the old path's
+    // masters are never targeted by any per-slot sweep again — they leaked
+    // forever (observed live: 6h-old cm-auto2fa-b8-* masters after b8's base
+    // became cm-auto2fa-boslogin08…). Resolving every known host's base here
+    // also pre-warms the control-path cache before the heartbeat starts.
+    {
+        let host_names: Vec<String> = {
+            let guard = crate::lock_state(&state);
+            guard.hosts.iter().map(|h| h.host.clone()).collect()
+        };
+        let bases: Vec<std::path::PathBuf> = host_names
+            .iter()
+            .map(|h| a2fa_core::ssh::control::resolve_control_base(h))
+            .collect();
+        let swept = a2fa_core::ssh::control::sweep_stray_masters(&bases);
+        if swept > 0 {
+            log::warn!("boot: swept {swept} stray ControlMaster(s) on retired paths");
+        }
+    }
+
     // 5a. Reap stray ssh -L tunnel processes left from a previous daemon run.
     {
         let ports: Vec<u16> = state
