@@ -118,6 +118,13 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
     let mut app = AppModel::new();
     let mut sheets = Sheets::default();
 
+    // Paint ONE frame before the initial (blocking, up to 30 s/RPC) loads —
+    // a wedged daemon previously meant a frozen BLANK alternate screen with
+    // no indication of what was happening.
+    app.status_msg = "connecting to daemon…".to_string();
+    terminal.draw(|f| render_frame(f, &app, &sheets))?;
+    app.status_msg.clear();
+
     // Initial load.
     match client::rpc("list_hosts", serde_json::json!({})) {
         Ok(v) => {
@@ -144,41 +151,44 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         }
     }
 
-    // Fetch initial log tail. (Param key is "lines" — the daemon ignores
-    // unknown keys, so the old "n" silently fell back to the default.)
-    match client::rpc("log_tail", serde_json::json!({ "lines": 200 })) {
-        Ok(v) => {
-            if let Some(lines) = v.get("lines").and_then(Value::as_array) {
-                let ls: Vec<String> = lines
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect();
-                app.append_logs(ls);
-            }
-        }
-        Err(_) => {} // log_tail is best-effort
-    }
+    // Fetch initial log tail.
+    refresh_logs(&mut app);
 
-    // Spawn event subscriber on background thread.
+    // Spawn the event subscriber on a background thread with a RECONNECT
+    // loop. The old single `subscribe` call exited silently on daemon
+    // restart (or if the daemon wasn't up yet) — live updates died for the
+    // rest of the session with zero indication. The synthetic events let the
+    // UI report the gap and re-fetch full snapshots on reconnect.
     let (tx, rx): (mpsc::Sender<Value>, Receiver<Value>) = mpsc::channel();
     {
         let tx2 = tx.clone();
-        std::thread::spawn(move || {
-            let _ = client::subscribe(tx2);
+        std::thread::spawn(move || loop {
+            let _ = client::subscribe(tx2.clone());
+            // Receiver gone → the TUI is shutting down; stop retrying.
+            if tx2
+                .send(serde_json::json!({ "event": "__events_disconnected" }))
+                .is_err()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(2));
         });
     }
 
-    // Initial render.
+    // Render the loaded state.
     terminal.draw(|f| render_frame(f, &app, &sheets))?;
 
     loop {
-        // Drain any pending daemon events (non-blocking).
-        let mut got_daemon_event = false;
+        // Drain any pending daemon events (non-blocking), COALESCED: an event
+        // storm (post-wake flapping) queued one full list RPC per event —
+        // K events = K sequential 30s-timeout RPCs on this UI thread. Collect
+        // flags across the whole drain, then refresh each list at most once.
+        let mut flags = EventFlags::default();
         while let Ok(event) = rx.try_recv() {
-            apply_daemon_event(&mut app, event);
-            got_daemon_event = true;
+            flags.collect(&event);
         }
+        let got_daemon_event = flags.any();
+        flags.apply(&mut app);
 
         // Poll for crossterm key/resize events (250 ms timeout).
         // This is the sole render-triggering mechanism — no busy loop.
@@ -207,11 +217,16 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
             }
         }
 
-        // Drain events that may have arrived during key handling.
+        // Drain events that may have arrived during key handling (coalesced
+        // the same way as the top-of-loop drain).
+        let mut flags = EventFlags::default();
         while let Ok(ev) = rx.try_recv() {
-            apply_daemon_event(&mut app, ev);
+            flags.collect(&ev);
+        }
+        if flags.any() {
             needs_redraw = true;
         }
+        flags.apply(&mut app);
 
         // Auto-clear an expired toast (loop wakes at least every 250 ms).
         if app.expire_toast() {
@@ -240,6 +255,25 @@ fn handle_key(
     app: &mut AppModel,
     sheets: &mut Sheets,
 ) {
+    // Ctrl+C — handle BEFORE the modal matches: the sheet branches match
+    // KeyCode::Char without checking modifiers, so Ctrl+C used to insert a
+    // literal 'c' into the focused buffer (raw mode = no SIGINT either).
+    // In a modal it cancels the modal (like Esc); in Normal mode it quits.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        match app.input_mode {
+            InputMode::Normal => app.should_quit = true,
+            InputMode::Filter => app.cancel_filter(),
+            InputMode::Sheet(_) => {
+                sheets.add_host = None;
+                sheets.new_tunnel = None;
+                sheets.node_picker = None;
+                sheets.confirm_delete = None;
+                app.input_mode = InputMode::Normal;
+            }
+        }
+        return;
+    }
+
     // ----- Sheet / modal input modes -----
     match app.input_mode {
         InputMode::Sheet(SheetKind::AddHost) => {
@@ -468,7 +502,11 @@ fn handle_key(
 
         InputMode::Filter => {
             match key.code {
-                KeyCode::Enter | KeyCode::Esc => app.commit_filter(),
+                KeyCode::Enter => app.commit_filter(),
+                // Esc ABORTS (every other Esc in this file cancels) — it used
+                // to commit, so escaping a junk partial filter applied it and
+                // could hide every row.
+                KeyCode::Esc => app.cancel_filter(),
                 KeyCode::Backspace => {
                     app.filter_buf.pop();
                 }
@@ -500,12 +538,15 @@ fn handle_key(
         // Switch pane
         KeyCode::Tab => app.cycle_focus(),
 
-        // Logs view (Rust-only addition, kept on `l`).
+        // Logs view (Rust-only addition, kept on `l`). Re-fetch on ENTRY —
+        // there is no log event stream, so without this the pane showed the
+        // tail as of TUI launch forever.
         KeyCode::Char('l') => {
             if app.focus == Pane::Logs {
                 app.focus = Pane::Tunnels;
             } else {
                 app.focus = Pane::Logs;
+                refresh_logs(app);
             }
         }
 
@@ -545,9 +586,19 @@ fn handle_key(
         KeyCode::Char('x') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
-                app.mark_user_stopped(&name);
+                // Mark "user stopped" ONLY when the tunnel is currently alive
+                // AND the stop RPC succeeded. The old unconditional pre-RPC
+                // mark left a stale flag when aborting a starting/failed
+                // tunnel — a LATER genuine drop then consumed it and the real
+                // outage was reported as a quiet "stopped".
+                let was_alive = t.status.to_string() == "alive";
                 match client::rpc("tunnel_stop", serde_json::json!({ "name": name })) {
-                    Ok(_) => app.status_msg = format!("Stopped {name}"),
+                    Ok(_) => {
+                        if was_alive {
+                            app.mark_user_stopped(&name);
+                        }
+                        app.status_msg = format!("Stopped {name}");
+                    }
                     Err(e) => app.status_msg = format!("stop failed: {e}"),
                 }
                 refresh_tunnels(app);
@@ -557,12 +608,15 @@ fn handle_key(
         KeyCode::Char(' ') if app.focus == Pane::Tunnels => {
             if let Some(t) = app.selected_tunnel() {
                 let name = t.name.clone();
-                // If currently alive, a toggle stops it — mark intentional.
-                if t.status.to_string() == "alive" {
-                    app.mark_user_stopped(&name);
-                }
+                let was_alive = t.status.to_string() == "alive";
                 match client::rpc("tunnel_toggle", serde_json::json!({ "name": name })) {
-                    Ok(_) => app.status_msg = format!("Toggled {name}"),
+                    Ok(_) => {
+                        // Alive + toggle succeeded = an intentional stop.
+                        if was_alive {
+                            app.mark_user_stopped(&name);
+                        }
+                        app.status_msg = format!("Toggled {name}");
+                    }
                     Err(e) => app.status_msg = format!("toggle failed: {e}"),
                 }
                 refresh_tunnels(app);
@@ -764,31 +818,66 @@ fn refresh_hosts(app: &mut AppModel) {
     }
 }
 
+/// Re-fetch the daemon log tail and REPLACE the buffer (best-effort).
+/// (Param key is "lines" — the daemon ignores unknown keys, so the old "n"
+/// silently fell back to the default.)
+fn refresh_logs(app: &mut AppModel) {
+    if let Ok(v) = client::rpc("log_tail", serde_json::json!({ "lines": 200 })) {
+        if let Some(lines) = v.get("lines").and_then(Value::as_array) {
+            let ls: Vec<String> = lines
+                .iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect();
+            app.set_logs(ls);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Daemon event application
 // ---------------------------------------------------------------------------
 
-fn apply_daemon_event(app: &mut AppModel, event: Value) {
-    // The daemon emits (proto/event.rs):
-    //   {"event": "tunnel_status_changed", "data": {...}}
-    //   {"event": "host_status_changed",   "data": {...}}
-    //   {"event": "notification",          "data": {...}}
-    // (The old "tunnel_update"/"host_update"/"log_line" names never existed in
-    // either daemon — the TUI matched nothing and never live-updated.)
-    let event_type = event.get("event").and_then(Value::as_str).unwrap_or("");
-    match event_type {
-        "tunnel_status_changed" => {
-            // Re-fetch the full list for simplicity.
+/// Flags accumulated over one channel drain, applied as at most ONE refresh
+/// per list. The daemon emits (proto/event.rs) tunnel_status_changed /
+/// host_status_changed / notification; the subscriber thread adds the
+/// synthetic __subscribed / __events_disconnected markers.
+#[derive(Default)]
+struct EventFlags {
+    tunnels: bool,
+    hosts: bool,
+    subscribed: bool,
+    disconnected: bool,
+}
+
+impl EventFlags {
+    fn collect(&mut self, event: &Value) {
+        match event.get("event").and_then(Value::as_str).unwrap_or("") {
+            "tunnel_status_changed" => self.tunnels = true,
+            "host_status_changed" => self.hosts = true,
+            // (Re)connected: every event during the gap was missed — both
+            // lists may be arbitrarily stale.
+            "__subscribed" => self.subscribed = true,
+            "__events_disconnected" => self.disconnected = true,
+            _ => {}
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.tunnels || self.hosts || self.subscribed || self.disconnected
+    }
+
+    fn apply(self, app: &mut AppModel) {
+        if self.tunnels || self.subscribed {
             refresh_tunnels(app);
         }
-        "host_status_changed" => {
-            if let Ok(v) = client::rpc("list_hosts", serde_json::json!({})) {
-                if let Ok(hosts) = serde_json::from_value(v) {
-                    app.set_hosts(hosts);
-                }
-            }
+        if self.hosts || self.subscribed {
+            refresh_hosts(app);
         }
-        _ => {}
+        if self.disconnected && !self.subscribed {
+            app.status_msg =
+                "live updates disconnected — reconnecting… (data may be stale)".to_string();
+        }
     }
 }
 

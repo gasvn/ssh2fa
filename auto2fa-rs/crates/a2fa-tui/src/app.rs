@@ -389,6 +389,14 @@ impl AppModel {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Cancel filter ENTRY: discard the in-progress buffer and return to
+    /// Normal mode, keeping the previously-active filter. Esc must abort —
+    /// committing a junk partial filter could hide every row.
+    pub fn cancel_filter(&mut self) {
+        self.filter_buf.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
     /// Replace the tunnel list with a fresh snapshot from the daemon.
     ///
     /// Detects per-tunnel status transitions vs. the last snapshot, emits the
@@ -483,9 +491,10 @@ impl AppModel {
         }
     }
 
-    /// Append log lines (used by the log_tail response and event stream).
-    pub fn append_logs(&mut self, lines: Vec<String>) {
-        self.log_lines.extend(lines);
+    /// Replace the log buffer with a fresh `log_tail` snapshot (the daemon
+    /// has no log event stream — the view re-fetches on entry instead).
+    pub fn set_logs(&mut self, lines: Vec<String>) {
+        self.log_lines = lines;
         // Keep at most 2000 lines to avoid unbounded memory growth.
         if self.log_lines.len() > 2000 {
             let overflow = self.log_lines.len() - 2000;
@@ -750,5 +759,35 @@ mod tests {
         app.commit_filter();
         // After filtering to 1 item, selection must be clamped to 0.
         assert_eq!(app.tunnels_sel, 0);
+    }
+
+    /// Esc during filter entry must DISCARD the buffer and keep the
+    /// previously-active filter (it used to commit, hiding every row on a
+    /// junk partial filter).
+    #[test]
+    fn cancel_filter_discards_buffer_keeps_active_filter() {
+        let mut app = AppModel::with_tunnels(vec![tunnel("alpha", "n")]);
+        app.filter = "alp".to_string(); // previously committed filter
+        app.input_mode = InputMode::Filter;
+        app.filter_buf = "zzz-junk".to_string(); // in-progress junk
+        app.cancel_filter();
+        assert_eq!(app.filter, "alp", "active filter must survive a cancel");
+        assert!(app.filter_buf.is_empty(), "buffer must be discarded");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    /// set_logs REPLACES the buffer (re-fetch on entering the logs view —
+    /// append would duplicate the overlap) and trims to the 2000-line cap.
+    #[test]
+    fn set_logs_replaces_and_trims() {
+        let mut app = AppModel::with_tunnels(vec![]);
+        app.set_logs(vec!["old1".into(), "old2".into()]);
+        app.set_logs(vec!["new1".into()]);
+        assert_eq!(app.log_lines, vec!["new1".to_string()], "must replace, not append");
+
+        let many: Vec<String> = (0..2500).map(|i| format!("line{i}")).collect();
+        app.set_logs(many);
+        assert_eq!(app.log_lines.len(), 2000, "must trim to the cap");
+        assert_eq!(app.log_lines[0], "line500", "must keep the NEWEST lines");
     }
 }

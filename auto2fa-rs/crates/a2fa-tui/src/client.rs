@@ -145,6 +145,11 @@ pub fn subscribe(tx: Sender<Value>) -> Result<()> {
     writer.write_all(line.as_bytes()).context("send subscribe request")?;
     // Do NOT shutdown the write half — the daemon keeps streaming events.
 
+    // Tell the UI the stream is (re)established. On a REconnect the UI must
+    // re-fetch full snapshots — every event between drop and reconnect was
+    // missed, so the lists may be arbitrarily stale.
+    let _ = tx.send(serde_json::json!({ "event": "__subscribed" }));
+
     let reader = BufReader::new(stream);
     for raw in reader.lines() {
         match raw {
