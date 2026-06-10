@@ -93,7 +93,23 @@ actor BackendClient {
     private func yieldEvent(_ e: DaemonEvent) {
         for c in eventSubscribers.values { c.yield(e) }
     }
+
+    /// Last connection state actually broadcast (nil = none yet). Used to
+    /// collapse repeated identical states into edges only.
+    private var lastConnectionState: Bool?
+
     private func yieldConnectionState(_ up: Bool) {
+        // EDGE-ONLY: emit a connection event only when the state actually
+        // changes. `handleClosed()` fires for BOTH the NWConnection `.failed`
+        // and `.cancelled` callbacks of a single drop, and a daemon that is
+        // restarting/flapping produces connect→drop→connect churn — without
+        // this guard each of those yielded the same value again, and the
+        // connection watcher called `notchPresenter.show()` on every one,
+        // expanding/hiding the Dynamic Notch repeatedly (the "mad flicker"
+        // on reconnect). One real disconnect → one toast; one real reconnect
+        // → one toast.
+        if up == lastConnectionState { return }
+        lastConnectionState = up
         for c in stateSubscribers.values { c.yield(up) }
     }
 
