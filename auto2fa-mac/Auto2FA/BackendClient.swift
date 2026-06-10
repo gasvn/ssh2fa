@@ -177,11 +177,31 @@ actor BackendClient {
             throw error
         }
 
+        // Connected. Sync the dedup state with reality — CRITICAL: the
+        // bootstrap reconnect path calls connect() directly (it never goes
+        // through yieldConnectionState), so without this a reconnect would
+        // leave lastConnectionState stuck at `false` and the NEXT real drop
+        // would be deduped away → the app sits "connected" while the daemon
+        // is down. markConnected emits `true` only on a genuine down→up edge.
+        markConnected()
+
         // Start the read loop AFTER connection is ready
         Task { await self.beginReceive() }
         // Subscribe to event pushes — non-fatal if it fails
         do { _ = try await sendRaw(method: "subscribe_events", params: [:]) }
         catch { /* swallow */ }
+    }
+
+    /// Record that the connection is up, keeping `lastConnectionState` in sync.
+    /// First-ever connect (state nil) just records `true` silently — no
+    /// spurious "reconnected" toast at launch. A connect after a known drop
+    /// (state false) emits `true` so the watcher restores state exactly once.
+    private func markConnected() {
+        if lastConnectionState == false {
+            yieldConnectionState(true)   // real down→up edge: emit (also sets true)
+        } else {
+            lastConnectionState = true   // first connect: record without emitting
+        }
     }
 
     /// Replace the connect-time handler with one that only reacts to drops.
@@ -360,8 +380,9 @@ actor BackendClient {
             if Task.isCancelled { return false }
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             do {
+                // connect() → markConnected() emits the `true` edge; no
+                // separate yield (which would be a deduped no-op anyway).
                 try await connect()
-                yieldConnectionState(true)
                 return true
             } catch {
                 // keep trying
