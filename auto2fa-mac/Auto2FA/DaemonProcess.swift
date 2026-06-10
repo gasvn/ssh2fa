@@ -265,16 +265,31 @@ final class DaemonProcess {
             }
         }
 
-        // (Re)load. `bootout` then `bootstrap` is the modern domain API; if the
-        // service is already loaded and unchanged we just `kickstart -k` to pick
-        // up a new binary. All best-effort across macOS versions.
+        // (Re)load. To pick up a CHANGED plist (e.g. a new daemon path) the
+        // service must be booted out and re-bootstrapped — `kickstart` keeps
+        // the old definition. `bootout` is ASYNC, so a `bootstrap` fired
+        // immediately after can race the teardown and FAIL, leaving the
+        // service UNLOADED (observed: "Could not find service … in domain").
+        // So: bootout, then bootstrap with a bounded retry until it sticks.
         let uid = getuid()
         let domain = "gui/\(uid)"
+        let target = "\(domain)/\(label)"
         if plistChanged {
-            DaemonProcess.runLaunchctl(["bootout", "\(domain)/\(label)"])  // ignore "not loaded"
-            DaemonProcess.runLaunchctl(["bootstrap", domain, plistPath])
+            DaemonProcess.runLaunchctl(["bootout", target])  // async; ignore "not loaded"
+            var loaded = false
+            for attempt in 0..<6 {
+                if DaemonProcess.runLaunchctl(["bootstrap", domain, plistPath]) == 0 {
+                    loaded = true
+                    break
+                }
+                // bootout not finished yet (or transient) — back off briefly.
+                if attempt < 5 { Thread.sleep(forTimeInterval: 0.5) }
+            }
+            if !loaded {
+                NSLog("[Auto2FA] LaunchAgent bootstrap did not succeed after retries — the daemon may need a manual relaunch")
+            }
         } else if daemonWasUpdated {
-            DaemonProcess.runLaunchctl(["kickstart", "-k", "\(domain)/\(label)"])
+            DaemonProcess.runLaunchctl(["kickstart", "-k", target])
         }
     }
 
