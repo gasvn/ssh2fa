@@ -168,7 +168,6 @@ struct TunnelSnapshot {
     wants_alive: bool,
     active_jump: Option<String>,
     last_node: Option<String>,
-    #[allow(dead_code)]
     last_user: Option<String>,
     #[allow(dead_code)]
     post_connect_cmd: Option<String>,
@@ -430,8 +429,12 @@ fn run_squeue_check(
 
     let cp = active_symlink_path(&jump);
 
-    // Run squeue off-lock (blocking ssh command, ~100 ms).
-    let jobs = match discover_nodes_via_control(&jump, &cp) {
+    // Run squeue off-lock (blocking ssh command, ~100 ms). Pass the tunnel's
+    // OWN cluster account (last_user): the jump may log in as a DIFFERENT
+    // account (observed live: rkempner → rzhu while the job belongs to
+    // shgao), and `-u $USER` through such a jump NEVER lists the job — every
+    // check "missed" and a working tunnel was repeatedly marked stale.
+    let jobs = match discover_nodes_via_control(&jump, &cp, snap.last_user.as_deref()) {
         Ok(j) => j,
         Err(e) => {
             warn!("[tunnel:{name}] squeue discovery error: {e}");

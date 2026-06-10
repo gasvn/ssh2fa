@@ -169,6 +169,36 @@ pub fn expand_first_node(nodelist: &str) -> (String, bool) {
     }
 }
 
+/// Build the value for squeue's `-u` flag.
+///
+/// `Some(user)` → that literal account, **validated** against a strict
+/// whitelist first: the string is re-parsed by the REMOTE shell (ssh argv is
+/// concatenated and re-tokenized), so anything outside `[A-Za-z0-9._-]` could
+/// inject remote commands. Invalid/empty/absent → `$USER` (the remote login
+/// account — the old behavior).
+///
+/// WHY an explicit user at all (observed live, txgent via rkempner): jump
+/// hosts can log in as DIFFERENT cluster accounts (rkempner → rzhu). The
+/// tunnel's job belongs to `last_user` (shgao); `squeue -u $USER` through
+/// such a jump NEVER lists it, so every staleness check "missed" and a
+/// perfectly working tunnel was repeatedly marked stale and killed.
+fn squeue_user_arg(user: Option<&str>) -> String {
+    match user {
+        Some(u)
+            if !u.is_empty()
+                && u.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) =>
+        {
+            u.to_string()
+        }
+        Some(u) if !u.is_empty() => {
+            log::warn!("discovery: ignoring invalid squeue user {u:?} — falling back to $USER");
+            "$USER".to_string()
+        }
+        _ => "$USER".to_string(),
+    }
+}
+
 /// Run `squeue` on the jump host via a plain `ssh` call.
 ///
 /// The jump host's SSH master **must** already be live; this never opens a
@@ -176,10 +206,14 @@ pub fn expand_first_node(nodelist: &str) -> (String, bool) {
 /// the ambient agent/known-hosts setup).  Pass the full `user@host` string
 /// (or just `host`) as `jump`.
 ///
+/// `user`: the cluster account whose jobs to list (see [`squeue_user_arg`]);
+/// `None` → the jump's remote `$USER`.
+///
 /// Returns `Err(Error::Discovery(_))` when the command times out, fails to
 /// spawn, or squeue exits non-zero.
-pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
+pub fn discover_nodes(jump: &str, user: Option<&str>) -> Result<Vec<Job>> {
     use std::process::Command;
+    let user_arg = squeue_user_arg(user);
     let mut cmd = Command::new("ssh");
     cmd.args([
         // ConnectTimeout bounds the TCP connect; BatchMode ensures ssh never
@@ -197,13 +231,12 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
         "'%i|%P|%j|%T|%M|%R'",
-        // Restrict to the CURRENT USER's jobs. `$USER` is expanded by the
-        // REMOTE shell. WITHOUT this, squeue lists EVERY job on the cluster
-        // (thousands on FAS-RC) → the query exceeds the 15s deadline and times
-        // out → discovery returns nothing → "no compute node found". The Python
-        // reference always passed `-u $USER` (tunnels.py).
+        // Restrict to one user's jobs. WITHOUT this, squeue lists EVERY job
+        // on the cluster (thousands on FAS-RC) → the query exceeds the 15s
+        // deadline and times out → discovery returns nothing → "no compute
+        // node found". The Python reference always passed `-u $USER`.
         "-u",
-        "$USER",
+        &user_arg,
     ]);
     // Hard kill-on-deadline so a wedged ssh can never hang the caller.
     let output = ssh_squeue_output(cmd, SQUEUE_TIMEOUT)?;
@@ -231,9 +264,19 @@ pub fn discover_nodes(jump: &str) -> Result<Vec<Job>> {
 /// `a2fa_core::ssh::control::active_symlink_path(host)`.
 ///
 /// Returns `Err(Error::Discovery(_))` on any failure.
-pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) -> Result<Vec<Job>> {
+///
+/// `user`: the cluster account whose jobs to list (see [`squeue_user_arg`]);
+/// `None` → the jump's remote `$USER`. Pass the tunnel's `last_user` when
+/// checking a specific tunnel's node — jump hosts can log in as DIFFERENT
+/// accounts, and `$USER` through such a jump never lists the job.
+pub fn discover_nodes_via_control(
+    jump: &str,
+    control_path: &std::path::Path,
+    user: Option<&str>,
+) -> Result<Vec<Job>> {
     use std::process::Command;
     let cp = control_path.to_string_lossy();
+    let user_arg = squeue_user_arg(user);
     let mut cmd = Command::new("ssh");
     cmd.args([
         "-o",
@@ -257,13 +300,12 @@ pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) ->
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
         "'%i|%P|%j|%T|%M|%R'",
-        // Restrict to the CURRENT USER's jobs. `$USER` is expanded by the
-        // REMOTE shell. WITHOUT this, squeue lists EVERY job on the cluster
-        // (thousands on FAS-RC) → the query exceeds the 15s deadline and times
-        // out → discovery returns nothing → "no compute node found". The Python
-        // reference always passed `-u $USER` (tunnels.py).
+        // Restrict to one user's jobs (default: remote `$USER`, expanded by
+        // the REMOTE shell). WITHOUT this, squeue lists EVERY job on the
+        // cluster (thousands on FAS-RC) → the query exceeds the 15s deadline
+        // and times out → discovery returns nothing → "no compute node found".
         "-u",
-        "$USER",
+        &user_arg,
     ]);
     // Hard kill-on-deadline so a stale ControlMaster socket can never hang the
     // maintenance loop.
@@ -284,6 +326,26 @@ pub fn discover_nodes_via_control(jump: &str, control_path: &std::path::Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- squeue_user_arg --------------------------------------------------
+
+    /// REGRESSION (txgent via rkempner): an explicit user must reach `-u`
+    /// verbatim — `$USER` through a jump logging in as a different account
+    /// never lists the job (every staleness check missed → false stale).
+    /// And the value is re-parsed by the REMOTE shell, so anything outside
+    /// the whitelist must fall back to `$USER`, never pass through.
+    #[test]
+    fn squeue_user_arg_validation() {
+        assert_eq!(squeue_user_arg(Some("shgao")), "shgao");
+        assert_eq!(squeue_user_arg(Some("j.doe_2-x")), "j.doe_2-x");
+        assert_eq!(squeue_user_arg(None), "$USER");
+        assert_eq!(squeue_user_arg(Some("")), "$USER");
+        // Remote-shell metacharacters must NEVER pass through.
+        assert_eq!(squeue_user_arg(Some("a;rm -rf /")), "$USER");
+        assert_eq!(squeue_user_arg(Some("$(whoami)")), "$USER");
+        assert_eq!(squeue_user_arg(Some("a|b")), "$USER");
+        assert_eq!(squeue_user_arg(Some("a b")), "$USER");
+    }
 
     // ---- expand_first_node ---------------------------------------------
 

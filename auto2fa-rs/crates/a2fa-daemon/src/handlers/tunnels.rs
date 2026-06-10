@@ -537,6 +537,15 @@ pub fn tunnel_set_node(
     // Persist the new node assignment (off-lock — no fsync under State lock).
     persist_tunnels(state);
 
+    // Fresh node = fresh staleness budget. The miss counter accumulated
+    // against the OLD node (legitimately gone from squeue) — carrying it over
+    // meant the FIRST miss against the new node could cross the stale
+    // threshold instantly (observed live: txgent re-noded, alive 4 s, then
+    // "squeue miss #3" → killed).
+    if let Some(rt) = &runtime {
+        rt.with_rt_mut(&name, |r| r.consecutive_squeue_misses = 0);
+    }
+
     let params_with_name = json!({"name": name});
 
     match old_status {
@@ -935,8 +944,16 @@ pub fn discover_nodes(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value
     // Get the active ControlPath for the host.
     let cp = active_symlink_path(&host_name);
 
+    // Optional explicit cluster account — the jump may log in as a different
+    // user than the one whose jobs the caller wants (rkempner → rzhu while
+    // the jobs belong to shgao). Empty/absent → remote $USER.
+    let user = params
+        .get("user")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
     // Run squeue via the master socket (blocking, but fast — local pipe).
-    let jobs = discover_nodes_via_control(&host_name, &cp)?;
+    let jobs = discover_nodes_via_control(&host_name, &cp, user)?;
 
     let result: Vec<Value> = jobs
         .iter()
@@ -1241,6 +1258,35 @@ mod tests {
         let guard = crate::lock_state(&state);
         assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu01"));
         assert_eq!(guard.tunnels[0].last_user.as_deref(), Some("jdoe"));
+    }
+
+    /// REGRESSION (txgent, observed live): the miss counter accumulated
+    /// against the OLD node must reset on set_node — carrying it over meant
+    /// the FIRST miss against the new node crossed the stale threshold
+    /// (re-noded tunnel alive 4 s, then "squeue miss #3" → killed).
+    #[test]
+    fn tunnel_set_node_resets_squeue_miss_counter() {
+        let state = make_state_with_tunnel("nb", 9502);
+        // Tunnel was Alive on the old node so set_node with the SAME node
+        // takes the no-restart branch (no ssh spawn in tests).
+        {
+            let mut guard = crate::lock_state(&state);
+            guard.tunnels[0].status = TunnelStatus::Alive;
+            guard.tunnels[0].last_node = Some("holygpu99".into());
+        }
+        let rt = TunnelRuntime::new();
+        rt.with_rt_mut("nb", |r| r.consecutive_squeue_misses = 2);
+
+        tunnel_set_node(
+            &state,
+            &json!({"name": "nb", "node": "holygpu99", "user": "jdoe"}),
+            Some(Arc::clone(&rt)),
+            None,
+        )
+        .unwrap();
+
+        let misses = rt.with_rt_mut("nb", |r| r.consecutive_squeue_misses);
+        assert_eq!(misses, 0, "set_node must reset the staleness budget");
     }
 
     /// SLURM range strings must be normalised to the first concrete node before
