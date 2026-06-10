@@ -7,6 +7,7 @@ import SwiftUI
 enum SettingsKey {
     static let notchEnabled = "auto2fa.notch.enabled"
     static let notchPersistent = "auto2fa.notch.persistent"
+    static let notchDoNotDisturb = "auto2fa.notch.dnd"
     static let autoOpenBrowser = "auto2fa.autoOpenBrowser"
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
@@ -17,6 +18,7 @@ enum SettingsKey {
 struct SettingsView: View {
     @AppStorage(SettingsKey.notchEnabled) private var notchEnabled = true
     @AppStorage(SettingsKey.notchPersistent) private var notchPersistent = false
+    @AppStorage(SettingsKey.notchDoNotDisturb) private var notchDoNotDisturb = false
     @AppStorage(SettingsKey.autoOpenBrowser) private var autoOpenBrowser = false
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
@@ -57,6 +59,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)
                     Text("Notifications for tunnel state changes appear over the MacBook Pro notch. Disabling falls back to no UI feedback.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Do Not Disturb (compact notch)", isOn: $notchDoNotDisturb)
+                        .disabled(!notchEnabled)
+                    Text("In Do Not Disturb, toasts don't drop a panel down — they just expand compactly around the notch (icon + a few words). Less intrusive while you work.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle("Always-on notch status (experimental)", isOn: $notchPersistent)

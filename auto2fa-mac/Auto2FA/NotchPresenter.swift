@@ -39,6 +39,11 @@ final class NotchPresenter: ObservableObject {
         let enabled = UserDefaults.standard.object(forKey: SettingsKey.notchEnabled) as? Bool ?? true
         guard enabled else { return }
 
+        // Do Not Disturb: show toasts as the COMPACT pill that hugs the notch
+        // (icon + brief text, left/right) instead of EXPANDing a panel down.
+        // Read once here and capture by value into the transition closure.
+        let dnd = UserDefaults.standard.bool(forKey: SettingsKey.notchDoNotDisturb)
+
         hideTimer?.cancel()
 
         let info = DynamicNotchInfo(
@@ -49,12 +54,16 @@ final class NotchPresenter: ObservableObject {
         let prev = current
         current = info
 
-        // Serialize hide(prev) → expand(new) so the two animations never overlap.
+        // Serialize hide(prev) → show(new) so the two animations never overlap.
         let prevTransition = transition
         transition = Task { @MainActor in
             await prevTransition?.value
             if let prev { await prev.hide() }
-            await info.expand()
+            if dnd {
+                await info.compact()   // DND: minimal pill around the notch
+            } else {
+                await info.expand()    // normal: full drop-down toast
+            }
         }
 
         // Auto-hide after the dwell time — but only if THIS toast is still the
