@@ -160,26 +160,52 @@ fn run_ssh_g(host: &str) -> Option<String> {
     }
 }
 
-/// Resolve the **base** ControlPath for `host` (no `-<index>` suffix), cached.
+/// Resolve the base ControlPath for `host`, returning `(path, authoritative)`.
 ///
-/// Mirrors `get_ssh_control_path` in backend.py.
-pub fn resolve_control_base(host: &str) -> PathBuf {
+/// `authoritative` is `true` iff `ssh -G` actually RAN (success — even when it
+/// reports no `ControlPath` directive, which is a legitimate fallback to
+/// `cm-auto2fa-<host>`). It is `false` only when `ssh -G` timed out / failed /
+/// couldn't spawn: the returned path is then a GUESS (the same fallback), and
+/// callers that would act destructively on it — the boot stray-master sweep —
+/// MUST treat `false` as "I don't actually know this host's path" and refrain.
+///
+/// CRITICAL: a non-authoritative result is NOT cached. The old code cached the
+/// failure-fallback for the daemon's lifetime, so one transient `ssh -G` blip
+/// at a deploy respawn poisoned the path forever — every adoption probed the
+/// wrong path (→ full 2FA relogin) AND the stray sweep killed the host's real
+/// live masters as "strays". Not caching lets the next call retry cleanly.
+pub fn resolve_control_base_result(host: &str) -> (PathBuf, bool) {
     // Poison-tolerant: this cache is read on login workers AND the heartbeat
     // path — a panicked writer must not poison every future resolution.
+    // A cached entry was, by construction, written from a successful ssh -G.
     if let Some(p) = control_base_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(host)
     {
-        return p.clone();
+        return (p.clone(), true);
     }
-    let value = run_ssh_g(host);
-    let base = control_base_from_ssh_g(host, value.as_deref().and_then(parse_ssh_g_controlpath).as_deref());
-    control_base_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(host.to_string(), base.clone());
-    base
+    match run_ssh_g(host) {
+        Some(stdout) => {
+            let base =
+                control_base_from_ssh_g(host, parse_ssh_g_controlpath(&stdout).as_deref());
+            control_base_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(host.to_string(), base.clone());
+            (base, true)
+        }
+        None => (control_base_from_ssh_g(host, None), false),
+    }
+}
+
+/// Resolve the **base** ControlPath for `host` (no `-<index>` suffix), cached.
+///
+/// Mirrors `get_ssh_control_path` in backend.py. On `ssh -G` failure returns
+/// the (uncached) fallback — see [`resolve_control_base_result`] for the
+/// authoritative-vs-guess distinction the stray sweep relies on.
+pub fn resolve_control_base(host: &str) -> PathBuf {
+    resolve_control_base_result(host).0
 }
 
 /// Return the **pool-member** ControlPath for a given host and pool index.
@@ -555,6 +581,30 @@ fn parse_master_pid(check_output: &str) -> Option<i32> {
     digits.parse().ok()
 }
 
+/// Extract the socket path from an ssh master proctitle `ssh: <path> [mux]`.
+/// Returns `None` for anything that isn't a master line — in particular a
+/// multiplexed CLIENT (`ssh -S <path> host cmd`) has the path in its argv but
+/// NO `[mux]` proctitle, so it is never matched. Tolerates a path containing
+/// spaces (extracts the whole span between `ssh: ` and ` [mux]`).
+fn mux_socket_path(cmd: &str) -> Option<&str> {
+    let rest = cmd.split_once("ssh: ")?.1;
+    let idx = rest.find(" [mux]")?;
+    Some(rest[..idx].trim())
+}
+
+/// Strip a trailing `-<digits>` pool-slot suffix from a control path token to
+/// recover the base. `cm-auto2fa-h-0` → `cm-auto2fa-h`; a token with no such
+/// suffix (a plain-base master, or a host name ending in `-<digits>` with no
+/// slot) is returned unchanged.
+fn strip_slot_suffix(tok: &str) -> &str {
+    match tok.rfind('-') {
+        Some(i) if !tok[i + 1..].is_empty() && tok[i + 1..].chars().all(|c| c.is_ascii_digit()) => {
+            &tok[..i]
+        }
+        _ => tok,
+    }
+}
+
 /// Kill every `[mux]` master claiming `control_path` EXCEPT the one that
 /// actually owns the socket. Returns the number killed.
 ///
@@ -583,11 +633,13 @@ pub fn sweep_duplicate_masters(control_path: &Path, host: &str) -> usize {
         if pid == owner {
             continue;
         }
-        // Confirm: a [mux] master whose proctitle carries this exact path.
+        // Confirm: a [mux] master whose proctitle path EXACTLY equals this
+        // slot path. Substring matching let a host whose path is a PREFIX of
+        // another's (e.g. `gpu` vs `gpu-01`) kill the other host's masters.
         let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str.trim()], Duration::from_secs(2))
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
-        if !cmd.contains("[mux]") || !cmd.contains(&needle) {
+        if mux_socket_path(&cmd) != Some(needle.as_str()) {
             continue;
         }
         unsafe {
@@ -630,24 +682,17 @@ pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
         let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str.trim()], Duration::from_secs(2))
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
-        if !cmd.contains("[mux]") || !cmd.contains("cm-auto2fa-") {
-            continue;
-        }
-        // proctitle: "ssh: <path> [mux]" — extract the path token.
-        let path_tok = cmd
-            .split_whitespace()
-            .find(|t| t.contains("cm-auto2fa-"))
-            .unwrap_or("");
-        // Strip the trailing "-<slot>" to recover the base.
-        let base = match path_tok.rfind('-') {
-            Some(i) if path_tok[i + 1..].chars().all(|c| c.is_ascii_digit())
-                && !path_tok[i + 1..].is_empty() =>
-            {
-                &path_tok[..i]
-            }
-            _ => path_tok,
+        // Must be a [mux] master whose socket path is one of OURS.
+        let path_tok = match mux_socket_path(&cmd) {
+            Some(p) if p.contains("cm-auto2fa-") => p,
+            _ => continue,
         };
-        if valid.iter().any(|v| v == base) {
+        // NOT a stray if the full token equals a valid base (a plain-base
+        // master, incl. hosts whose name ends in -<digits>) OR if the
+        // slot-stripped base does (a normal `<base>-<slot>` master). Checking
+        // BOTH avoids mis-stripping a hostname like `node-01` into `node`.
+        let base = strip_slot_suffix(path_tok);
+        if valid.iter().any(|v| v == path_tok || v == base) {
             continue; // belongs to a known host — adoption/dup-sweep owns it
         }
         unsafe {
@@ -667,7 +712,7 @@ pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
 
 fn kill_orphaned_master(control_path: &Path, host: &str) {
     let needle = control_path.to_string_lossy().into_owned();
-    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", &needle], Duration::from_secs(2)) {
+    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", &needle], Duration::from_secs(2)) {
         Some(o) if o.status.success() => o, // exit 0 → at least one match
         _ => return,                         // no match / pgrep unavailable
     };
@@ -677,11 +722,14 @@ fn kill_orphaned_master(control_path: &Path, host: &str) {
             Ok(p) => p,
             Err(_) => continue,
         };
-        // Confirm it's the ssh MUX master, not a transient client.
+        // Confirm it's the ssh MUX master for THIS exact path, not a transient
+        // client and not a prefix-collision (`gpu` vs `gpu-01`): pgrep -f
+        // matches substrings, so require the proctitle socket path to equal
+        // the needle exactly.
         let cmd = crate::sys::run_cmd_bounded("ps", &["-o", "command=", "-p", pid_str], Duration::from_secs(2))
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
-        if !cmd.contains("[mux]") {
+        if mux_socket_path(&cmd) != Some(needle.as_str()) {
             continue;
         }
         // SAFETY: kill() with a valid signal id; harmless (ESRCH) if the pid
@@ -726,6 +774,46 @@ mod tests {
         assert_eq!(parse_master_pid("No ControlPath specified"), None);
         assert_eq!(parse_master_pid("pid="), None);
         assert_eq!(parse_master_pid(""), None);
+    }
+
+    // ----- mux_socket_path / strip_slot_suffix -------------------------------
+
+    #[test]
+    fn mux_socket_path_extracts_master_only() {
+        assert_eq!(
+            mux_socket_path("ssh: /Users/x/.ssh/cm-auto2fa-b8-0 [mux]"),
+            Some("/Users/x/.ssh/cm-auto2fa-b8-0")
+        );
+        // A multiplexed CLIENT (no [mux] proctitle) → None (never a victim).
+        assert_eq!(
+            mux_socket_path("ssh -O check -o ControlPath=/Users/x/.ssh/cm-auto2fa-b8-0 b8"),
+            None
+        );
+        assert_eq!(mux_socket_path("/usr/bin/ssh-agent"), None);
+        assert_eq!(mux_socket_path(""), None);
+    }
+
+    /// REGRESSION (prefix collision): exact-token match means host `gpu`'s
+    /// slot path is NOT a match for host `gpu-01`'s master line.
+    #[test]
+    fn mux_path_is_exact_not_substring() {
+        let gpu0 = "ssh: /h/.ssh/cm-auto2fa-gpu-0 [mux]";
+        let gpu01_0 = "ssh: /h/.ssh/cm-auto2fa-gpu-01-0 [mux]";
+        assert_eq!(mux_socket_path(gpu0), Some("/h/.ssh/cm-auto2fa-gpu-0"));
+        assert_eq!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-auto2fa-gpu-01-0"));
+        assert_ne!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-auto2fa-gpu-0"));
+    }
+
+    #[test]
+    fn strip_slot_suffix_cases() {
+        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-b8-0"), "/h/cm-auto2fa-b8");
+        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-b8-1"), "/h/cm-auto2fa-b8");
+        // Host name ending in -<digits>, normal slot suffix stripped once.
+        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-node-01-0"), "/h/cm-auto2fa-node-01");
+        // Plain base (no slot suffix) returned unchanged.
+        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-node-01"), "/h/cm-auto2fa-node");
+        // …which is exactly why sweep_stray_masters ALSO checks the full token
+        // against valid_bases (covered by the both-arms `||` there).
     }
 
     /// sweep_duplicate_masters with no live owner must be a no-op (the

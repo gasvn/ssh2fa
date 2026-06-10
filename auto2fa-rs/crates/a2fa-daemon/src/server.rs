@@ -225,18 +225,35 @@ pub fn run() -> Result<()> {
     // forever (observed live: 6h-old cm-auto2fa-b8-* masters after b8's base
     // became cm-auto2fa-boslogin08…). Resolving every known host's base here
     // also pre-warms the control-path cache before the heartbeat starts.
+    //
+    // SAFETY: only sweep when EVERY host's path resolved AUTHORITATIVELY. If
+    // `ssh -G` failed/timed out for even one host, its "base" is a guess and
+    // its real live masters would look stray — killing them + a relogin storm
+    // (the exact catastrophe this sweep exists to prevent). When uncertain we
+    // leak rather than mass-kill; the next boot with a clean resolve cleans up.
     {
         let host_names: Vec<String> = {
             let guard = crate::lock_state(&state);
             guard.hosts.iter().map(|h| h.host.clone()).collect()
         };
-        let bases: Vec<std::path::PathBuf> = host_names
-            .iter()
-            .map(|h| a2fa_core::ssh::control::resolve_control_base(h))
-            .collect();
-        let swept = a2fa_core::ssh::control::sweep_stray_masters(&bases);
-        if swept > 0 {
-            log::warn!("boot: swept {swept} stray ControlMaster(s) on retired paths");
+        let mut bases: Vec<std::path::PathBuf> = Vec::with_capacity(host_names.len());
+        let mut all_authoritative = true;
+        for h in &host_names {
+            let (base, ok) = a2fa_core::ssh::control::resolve_control_base_result(h);
+            if !ok {
+                all_authoritative = false;
+                log::warn!(
+                    "boot: ssh -G could not resolve ControlPath for {h} — SKIPPING the \
+                     stray-master sweep this boot to avoid killing live masters"
+                );
+            }
+            bases.push(base);
+        }
+        if all_authoritative {
+            let swept = a2fa_core::ssh::control::sweep_stray_masters(&bases);
+            if swept > 0 {
+                log::warn!("boot: swept {swept} stray ControlMaster(s) on retired paths");
+            }
         }
     }
 
