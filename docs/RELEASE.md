@@ -109,20 +109,20 @@ a first release.
   `~/.auto2fa/a2fa-daemon` → `kill -9` the running one (launchd respawns and
   re-adopts live masters → zero relogin). The packaged app does this install
   itself on first run.
-- **`OS_REASON_EXEC` after copying an Apple-Development-signed daemon.** A
-  daemon signed with an *Apple Development* cert (hardened runtime) that is
-  **copied** to a new path (e.g. the app's first-run install copies the bundled
-  daemon to `~/.auto2fa/a2fa-daemon`) can be refused at exec by the kernel
-  (`launchctl print …` → `last exit reason = OS_REASON_EXEC`) even though
-  `codesign -v` passes — an Apple-Development-cert/AMFI per-path quirk. Fix on a
-  dev machine: re-sign **in place** after the copy
-  (`codesign --force --options runtime --identifier com.auto2fa.daemon --sign
-  "<Apple Development …>" ~/.auto2fa/a2fa-daemon`). **This does NOT affect a
-  Developer-ID-signed + notarized release** — notarized code is trusted when
-  copied. Still, on the clean-machine install test, confirm the installed
-  daemon actually launches (`launchctl print gui/$UID/com.auto2fa.daemon` shows
-  `state = running`); if a notarized copy were ever rejected, the fallback is to
-  point the LaunchAgent at the daemon inside the app bundle instead of copying.
+- **The LaunchAgent runs the daemon IN PLACE from inside the app bundle**
+  (`Auto2FA.app/Contents/Resources/a2fa-daemon`), it is NOT copied to
+  `~/.auto2fa`. This is deliberate: a daemon signed with an *Apple Development*
+  cert (the free, un-notarized build) that is **copied** to a new path is
+  refused at exec by the kernel (`launchctl print …` →
+  `last exit reason = OS_REASON_EXEC`) even though `codesign -v` passes — an
+  AMFI per-path quirk. Running it where it was signed sidesteps that, and app
+  updates update the daemon automatically. The first-run installer re-points
+  the LaunchAgent on every launch, so moving the app (e.g. into /Applications)
+  self-heals. On the clean-machine test, confirm
+  `launchctl print gui/$UID/com.auto2fa.daemon` shows `state = running` after
+  first launch. (If you hand-deploy a daemon to `~/.auto2fa` on a dev machine
+  instead, re-sign it **in place** after any copy — never run a copied
+  Apple-Development-signed binary.)
 - **Don't exec the deployed daemon from the dev shell to test it** — a binary
   under `$HOME` exec'd from the (sandboxed) dev shell is SIGKILLed (exit 137),
   a false negative. Test via launchd (`launchctl kickstart`/`print`).

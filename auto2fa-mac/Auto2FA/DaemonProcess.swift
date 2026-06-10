@@ -129,16 +129,17 @@ final class DaemonProcess {
         let fm = FileManager.default
         let home = NSHomeDirectory()
 
-        // 1. Installed/stable path (same as the LaunchAgent ProgramArguments).
+        // 1. Daemon shipped inside this app bundle — preferred for a packaged
+        //    release, and the same path the LaunchAgent runs (run in place from
+        //    where it was signed; avoids the copy → OS_REASON_EXEC issue).
+        if let bundled = bundledDaemonURL()?.path, fm.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+
+        // 2. Installed/stable path (legacy hand-deploy / dev convenience).
         let installed = home + "/.auto2fa/a2fa-daemon"
         if fm.isExecutableFile(atPath: installed) {
             return installed
-        }
-
-        // 2. Daemon shipped inside this app bundle (a packaged release that
-        //    hasn't run its first-run install yet).
-        if let bundled = bundledDaemonURL()?.path, fm.isExecutableFile(atPath: bundled) {
-            return bundled
         }
 
         // 3. Dev release build under the project checkout.
@@ -156,20 +157,35 @@ final class DaemonProcess {
     /// (`Auto2FA.app/Contents/Resources/a2fa-daemon`), or nil in a dev build
     /// where it isn't bundled (the packaging script copies it in).
     static func bundledDaemonURL() -> URL? {
-        Bundle.main.url(forResource: "a2fa-daemon", withExtension: nil)
+        // Construct the path explicitly from the Resources dir rather than
+        // Bundle.main.url(forResource:withExtension:) — the latter is
+        // unreliable for an EXTENSIONLESS executable dropped into Resources by
+        // the packaging script (it returned nil, so first-run install silently
+        // no-op'd). resourceURL/a2fa-daemon is deterministic.
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let url = res.appendingPathComponent("a2fa-daemon")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    /// First-run / post-update install: copy the bundled daemon to the stable
-    /// `~/.auto2fa/a2fa-daemon` path and register the per-user LaunchAgent that
-    /// keeps it running (RunAtLoad + KeepAlive) and re-adopts live masters
-    /// across reboots. Idempotent and NON-DESTRUCTIVE:
-    ///   - no-op in a dev build (no bundled daemon → existing setup untouched);
-    ///   - copies the daemon only when this app build ships a newer one than
-    ///     last installed (tracked by a version marker);
-    ///   - (re)writes the LaunchAgent with THIS user's home paths — never the
-    ///     developer's — and reloads launchd so the new binary takes over.
-    /// Best-effort: every failure is logged, never fatal (the app can still
-    /// fall back to direct-spawning the daemon).
+    /// First-run / post-update install: register the per-user LaunchAgent that
+    /// keeps the daemon running (RunAtLoad + KeepAlive) and re-adopts live
+    /// masters across reboots.
+    ///
+    /// The LaunchAgent points DIRECTLY at the daemon inside this app bundle
+    /// (`Auto2FA.app/Contents/Resources/a2fa-daemon`) — it is NOT copied to
+    /// `~/.auto2fa`. Two reasons:
+    ///   1. A code-signed binary that is COPIED to a new path can be refused at
+    ///      exec (`OS_REASON_EXEC`) under an Apple-Development cert — i.e. the
+    ///      free, un-notarized distribution build. Running it in place from the
+    ///      bundle (where it was signed) sidesteps that entirely.
+    ///   2. App updates then update the daemon automatically (same path, new
+    ///      bytes) — a kickstart picks them up.
+    /// The trade-off (LaunchAgent path breaks if the app is moved/deleted) is
+    /// handled by re-pointing on every launch.
+    ///
+    /// Idempotent and NON-DESTRUCTIVE: a no-op in a dev build (no bundled
+    /// daemon → an existing hand-installed setup is untouched); rewrites the
+    /// LaunchAgent only when it's missing or differs.
     func installBundledDaemonIfNeeded() {
         let fm = FileManager.default
         guard let bundled = DaemonProcess.bundledDaemonURL(), fm.fileExists(atPath: bundled.path) else {
@@ -178,31 +194,22 @@ final class DaemonProcess {
         }
         let home = NSHomeDirectory()
         let autoDir = home + "/.auto2fa"
-        let installed = autoDir + "/a2fa-daemon"
         let marker = autoDir + "/.daemon-bundle-version"
+        // Marker = "<app build>@<bundle daemon path>". A change in either (app
+        // updated, or app moved) means launchd should kickstart to pick up the
+        // new binary / path.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
+        let stamp = "\(appVersion)@\(bundled.path)"
 
         try? fm.createDirectory(atPath: autoDir, withIntermediateDirectories: true)
-
-        // Copy the daemon only when this app build ships a daemon we haven't
-        // installed yet (marker mismatch) or none is installed.
-        let installedMarker = (try? String(contentsOfFile: marker, encoding: .utf8))?
+        let prevStamp = (try? String(contentsOfFile: marker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let needsCopy = !fm.isExecutableFile(atPath: installed) || installedMarker != appVersion
-        if needsCopy {
-            do {
-                if fm.fileExists(atPath: installed) { try fm.removeItem(atPath: installed) }
-                try fm.copyItem(atPath: bundled.path, toPath: installed)
-                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: installed)
-                try? appVersion.write(toFile: marker, atomically: true, encoding: .utf8)
-                NSLog("[Auto2FA] installed bundled daemon → %@ (v%@)", installed, appVersion)
-            } catch {
-                NSLog("[Auto2FA] daemon install copy failed: %@", error.localizedDescription)
-                return
-            }
+        let daemonChanged = prevStamp != stamp
+        if daemonChanged {
+            try? stamp.write(toFile: marker, atomically: true, encoding: .utf8)
         }
 
-        installOrRefreshLaunchAgent(daemonPath: installed, daemonWasUpdated: needsCopy)
+        installOrRefreshLaunchAgent(daemonPath: bundled.path, daemonWasUpdated: daemonChanged)
     }
 
     /// Write `~/Library/LaunchAgents/com.auto2fa.daemon.plist` with this user's

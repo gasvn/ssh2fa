@@ -58,11 +58,21 @@ daemon to `~/.auto2fa/` and registers the `com.auto2fa.daemon` LaunchAgent for
 you — nothing else to set up. Then use **Add Host** to register a host's
 credentials (stored in the Keychain).
 
-> Releases are signed with a Developer ID and notarized by Apple, so Gatekeeper
-> lets them run. A locally-built `.app` is **not** notarized and macOS will
-> block it unless you remove the quarantine attribute yourself.
+**If the release is notarized** (Developer ID), it just opens. **If it isn't**
+(a free, un-notarized build), macOS Gatekeeper blocks it the first time — open
+it once via **System Settings → Privacy & Security → "Open Anyway"**, or clear
+the quarantine flag yourself:
 
-**From source:** see below + [docs/RELEASE.md](docs/RELEASE.md).
+```sh
+xattr -dr com.apple.quarantine /Applications/Auto2FA.app
+```
+
+After that it launches normally and the bundled daemon runs in place. (See
+[docs/RELEASE.md](docs/RELEASE.md) for why notarization needs a paid Apple
+Developer account, and how to build/distribute without one.)
+
+**From source:** see below + [docs/RELEASE.md](docs/RELEASE.md). A self-built
+app signed with your own free Apple ID has no Gatekeeper friction at all.
 
 ## Build from source
 
