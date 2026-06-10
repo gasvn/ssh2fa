@@ -88,6 +88,18 @@ version to the latest GitHub release tag. To make it work:
 
 Tags may be `vX.Y.Z` or `X.Y.Z`; the checker strips a leading `v`.
 
+## Project landing page (GitHub Pages)
+
+A one-page site lives at [`docs/index.html`](index.html). To publish it at
+`https://gasvn.github.io/auto2fa/`:
+
+1. Repo **Settings → Pages**.
+2. **Source: Deploy from a branch → `main` → `/docs`** → Save.
+
+That's the only step — `docs/.nojekyll` makes GitHub serve the HTML as-is. The
+markdown docs (README/SECURITY/RELEASE) stay GitHub-rendered; the landing page
+links to them.
+
 ## Future: Sparkle auto-update
 
 The current updater only *notifies* (it never downloads/installs — the user

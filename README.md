@@ -1,9 +1,27 @@
 # Auto2FA
 
+![platform: macOS 13+](https://img.shields.io/badge/platform-macOS%2013%2B-black?logo=apple)
+![arch: universal](https://img.shields.io/badge/arch-arm64%20%2B%20x86__64-informational)
+![license: MIT](https://img.shields.io/badge/license-MIT-green)
+[![latest release](https://img.shields.io/github/v/release/gasvn/auto2fa?display_name=tag&sort=semver)](https://github.com/gasvn/auto2fa/releases)
+
 A macOS menu-bar app + background daemon that keeps **SSH ControlMaster** pools
 warm to 2FA-protected hosts, auto-answering the **Duo / TOTP** login so you log
 in once and stay connected — plus **SLURM-aware port forwarding** to compute
 nodes.
+
+### 60-second quickstart
+
+1. **Download** `Auto2FA.dmg` from [Releases](https://github.com/gasvn/auto2fa/releases) → drag the app to `/Applications` → open it. (Un-notarized build? First launch: **System Settings → Privacy & Security → “Open Anyway.”**)
+2. **Add Host** → enter your ssh-config **alias**, **password**, and your **2FA secret** (the wizard has a "How do I get this?" walkthrough, incl. Duo). It test-logs-in before saving.
+3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
+
+Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's wrong.
+
+<!-- Screenshot: drop an image at docs/screenshot.png and uncomment:
+![Auto2FA dashboard](docs/screenshot.png)
+(Couldn't auto-capture one headlessly — it needs Accessibility permission.) -->
+
 
 > **What it's for, honestly:** this is built for **HPC / SLURM clusters that
 > use keyboard-interactive 2FA** (e.g. FAS-RC with Duo). The TOTP secret is

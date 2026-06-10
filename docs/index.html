@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto2FA — no-retype 2FA SSH for macOS</title>
+<meta name="description" content="A macOS menu-bar app that keeps SSH ControlMaster connections warm to 2FA-protected hosts and auto-answers the Duo/TOTP login — built for HPC/SLURM clusters.">
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131722; --text:#e6e9ef; --muted:#9aa4b2;
+    --accent:#5b9cff; --green:#3fb950; --border:#222838; --code:#1b2030;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#ffffff; --panel:#f6f8fa; --text:#1f2328; --muted:#5b636d;
+           --accent:#0969da; --green:#1a7f37; --border:#d0d7de; --code:#f0f2f5; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px}
+  header{padding:72px 0 40px;text-align:center}
+  .logo{font-size:54px}
+  h1{font-size:40px;margin:.2em 0 .1em;letter-spacing:-.02em}
+  .tag{font-size:20px;color:var(--muted);margin:0 auto;max-width:640px}
+  .scope{font-size:14px;color:var(--muted);margin-top:14px}
+  .cta{margin:30px 0 8px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;padding:11px 20px;border-radius:10px;font-weight:600;border:1px solid var(--border)}
+  .btn.primary{background:var(--accent);color:#fff;border-color:transparent}
+  section{padding:34px 0;border-top:1px solid var(--border)}
+  h2{font-size:24px;margin:0 0 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .card h3{margin:.1em 0 .3em;font-size:16px}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  code,pre{background:var(--code);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  code{padding:2px 6px}
+  pre{padding:14px 16px;overflow:auto;border:1px solid var(--border)}
+  .note{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--green);
+    border-radius:10px;padding:14px 16px;color:var(--muted);font-size:14px}
+  ul{padding-left:20px;color:var(--muted)}
+  footer{padding:40px 0 60px;text-align:center;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">🔗</div>
+    <h1>Auto2FA</h1>
+    <p class="tag">Log into your 2FA-protected SSH hosts once, then stay connected — no more typing a Duo/TOTP code every <code>ssh</code>.</p>
+    <p class="scope">macOS menu-bar app · built for HPC / SLURM cluster logins · works with any host that asks for a password + a typed 2FA code</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/gasvn/auto2fa/releases">Download</a>
+      <a class="btn" href="https://github.com/gasvn/auto2fa">View on GitHub</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Stay logged in</h3><p>Keeps two SSH ControlMaster connections warm per host. Every <code>ssh</code> reuses them instantly — no code to type.</p></div>
+      <div class="card"><h3>Answers 2FA for you</h3><p>Submits your password + TOTP code at login, serialized so a shared Duo secret is never replayed.</p></div>
+      <div class="card"><h3>Self-healing</h3><p>Adopts live connections across restarts, and auto-recovers after sleep, network changes, and reboots — zero re-login.</p></div>
+      <div class="card"><h3>SLURM port forwarding</h3><p>Optional: forward a local port to a running job's compute node (Jupyter, etc.), with staleness detection when the node changes.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <p>Download <code>Auto2FA.dmg</code> from <a href="https://github.com/gasvn/auto2fa/releases">Releases</a>, drag the app to <code>/Applications</code>, and launch it. On first run it installs its background helper and registers a LaunchAgent for you — then use <strong>Add Host</strong> to save a host's credentials (stored in your macOS Keychain).</p>
+    <div class="note">
+      If the build isn't notarized, macOS blocks it the first time — open it once via
+      <strong>System Settings → Privacy &amp; Security → “Open Anyway,”</strong> or run:
+      <pre>xattr -dr com.apple.quarantine /Applications/Auto2FA.app</pre>
+    </div>
+    <p style="margin-top:18px">Prefer to build it yourself? A locally-built app has no Gatekeeper friction — see the <a href="https://github.com/gasvn/auto2fa#build-from-source">build instructions</a>.</p>
+  </section>
+
+  <section>
+    <h2>Is it for me?</h2>
+    <div class="grid">
+      <div class="card"><h3>✅ Yes if…</h3><p>A host makes you type a password + a 2FA code every login (Duo passcode, Google-Authenticator-style TOTP), and you want persistent, instant SSH on a Mac.</p></div>
+      <div class="card"><h3>❌ Not for…</h3><p>Key-based logins (ssh-agent already handles those), push-only 2FA (approve-on-phone, no typed code), or as a terminal — you still <code>ssh</code> in your own terminal.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Security, plainly</h2>
+    <p class="note">Auto2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That's the convenience — but it means your "second factor" no longer protects you against someone with access to your unlocked Mac. Read the full <a href="https://github.com/gasvn/auto2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p>
+  </section>
+
+  <footer>
+    <a href="https://github.com/gasvn/auto2fa">GitHub</a> ·
+    <a href="https://github.com/gasvn/auto2fa/blob/main/SECURITY.md">Security</a> ·
+    <a href="https://github.com/gasvn/auto2fa/blob/main/docs/RELEASE.md">Releasing</a> ·
+    MIT licensed
+  </footer>
+
+</div>
+</body>
+</html>
