@@ -93,21 +93,25 @@ struct TunnelsView: View {
 
     private var emptyState: some View {
         VStack(spacing: Spacing.m) {
-            Image(systemName: "sparkles")
+            Image(systemName: "arrow.triangle.branch")
                 .font(.largeTitle)
-                .foregroundStyle(.yellow)
-            Text("No tunnels yet")
+                .foregroundStyle(.secondary)
+            Text("Port forwarding (optional)")
                 .font(.title3)
-            Text("Click  +  in the toolbar (or press ⌘N) to create one.")
+            Text("Tunnels forward a local port to a **SLURM compute node** (e.g. a Jupyter server) over your warm SSH connection — and auto-recover when the node or your network changes.\n\nIf you just want no-retype 2FA SSH, you don't need this — your hosts already work in the Hosts list.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 appState.presentNewTunnel()
             } label: {
-                Label("New tunnel", systemImage: "plus")
+                Label("Add a tunnel", systemImage: "plus")
             }
             .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
+            Text("on a cluster? · ⌘N")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(Spacing.xl)

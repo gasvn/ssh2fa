@@ -23,6 +23,7 @@ struct AddHostSheet: View {
     @State private var testing = false
     @State private var testResult: (ok: Bool, message: String)? = nil
     @State private var error: String?
+    @State private var showOTPHelp = false
     @FocusState private var focused: Field?
 
     enum Field { case hostname, password, otpauth }
@@ -95,14 +96,21 @@ struct AddHostSheet: View {
                         .buttonStyle(.borderless)
                         .help(showingPassword ? "Hide" : "Show")
                       })
-                field("OTP secret (otpauth:// URL)",
+                field("2FA secret (otpauth:// URL or secret key)",
                       VStack(alignment: .leading, spacing: Spacing.xs) {
-                        TextField("otpauth://totp/SiteName:user?secret=...",
+                        TextField("otpauth://totp/…?secret=…   — or just the secret key",
                                   text: $otpauthURL)
                             .focused($focused, equals: .otpauth)
-                        Text("Paste the full URL from your 2FA setup page. We extract the secret automatically.")
+                        Text("Paste the full otpauth:// URL or the bare base32 secret — either works.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        DisclosureGroup(isExpanded: $showOTPHelp) {
+                            otpHelp
+                        } label: {
+                            Label("How do I get this?", systemImage: "questionmark.circle")
+                                .font(.caption)
+                        }
+                        .padding(.top, 2)
                       })
             }
             .padding(Spacing.m)
@@ -130,6 +138,43 @@ struct AddHostSheet: View {
         .onChange(of: hostname) { _, _ in invalidateTest() }
         .onChange(of: password) { _, _ in invalidateTest() }
         .onChange(of: otpauthURL) { _, _ in invalidateTest() }
+    }
+
+    /// In-wizard walkthrough for the thing most newcomers get stuck on:
+    /// extracting the TOTP secret (especially from Duo, which hides it behind
+    /// "add a new device → manual entry").
+    private var otpHelp: some View {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            Text("Your 2FA app is seeded by a secret. You need that secret (a base32 string) or the full otpauth:// URL it came from. To reveal it:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            helpBlock(
+                "Duo",
+                "Open your Duo self-service / device-management page (often the same prompt you log in with) → Add a new device → choose Tablet or “a different authenticator app” → when it shows the QR, click “Can’t scan it?” / “Manual setup.” Copy the secret key (or the otpauth:// URL) it reveals.")
+            helpBlock(
+                "Google / GitHub / generic TOTP",
+                "When the site shows the authenticator QR code, click “Can’t scan?” / “Enter setup key / manual entry.” Paste the key (or the otpauth:// URL) it shows.")
+            helpBlock(
+                "Already in an authenticator app?",
+                "Most apps can re-export an account’s setup key / otpauth URL from its details screen.")
+
+            Text("Only TOTP codes (the kind you type) are supported — not Duo Push (approve-on-phone). Your secret is stored in the macOS Keychain.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
+        }
+        .padding(.vertical, Spacing.xs)
+    }
+
+    private func helpBlock(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.caption.weight(.semibold))
+            Text(body).font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var stepConfirm: some View {
