@@ -156,6 +156,13 @@ final class DaemonProcess {
     /// The daemon binary shipped inside this .app
     /// (`Auto2FA.app/Contents/Resources/a2fa-daemon`), or nil in a dev build
     /// where it isn't bundled (the packaging script copies it in).
+    /// True iff a `com.auto2fa.daemon` LaunchAgent is installed — i.e. launchd
+    /// owns the daemon's lifecycle and the app must not spawn a competing copy.
+    static func launchAgentInstalled() -> Bool {
+        let p = NSHomeDirectory() + "/Library/LaunchAgents/com.auto2fa.daemon.plist"
+        return FileManager.default.fileExists(atPath: p)
+    }
+
     static func bundledDaemonURL() -> URL? {
         // Construct the path explicitly from the Resources dir rather than
         // Bundle.main.url(forResource:withExtension:) — the latter is
@@ -322,6 +329,20 @@ final class DaemonProcess {
     func ensureRunning() async -> SpawnResult {
         if DaemonProcess.socketResponds() {
             NSLog("[Auto2FA] daemon already running; not spawning")
+            return .alreadyRunning
+        }
+
+        // If a LaunchAgent manages the daemon, NEVER spawn a competing copy.
+        // A non-responding socket here means the daemon is either down (launchd
+        // KeepAlive respawns it) or merely BUSY — e.g. a relogin storm makes its
+        // IPC briefly unresponsive. Spawning our own daemon in that window
+        // created a SECOND instance → singleton-lock conflict → a graceful
+        // shutdown that tore down every master (full 2FA relogin) → the daemon
+        // got busy again → the probe failed again → an infinite
+        // teardown/relogin loop. Defer to launchd; the connection watcher +
+        // poll fallback reconnect on their own once it's responsive again.
+        if DaemonProcess.launchAgentInstalled() {
+            NSLog("[Auto2FA] socket not responding but a LaunchAgent manages the daemon — deferring to launchd, not spawning a duplicate")
             return .alreadyRunning
         }
 
