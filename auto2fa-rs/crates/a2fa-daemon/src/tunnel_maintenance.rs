@@ -707,9 +707,8 @@ fn spawn_tunnel_start_with_runtime(
     let spawn_res = std::thread::Builder::new()
         .name(format!("maintenance-start:{name}"))
         .spawn(move || {
-            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward};
+            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward, ProbeOutcome};
             use a2fa_core::tunnels::post_connect::run_post_connect;
-            use a2fa_core::config::save_tunnels;
 
             info!("[tunnel:{name}] maintenance: starting via {jump}");
 
@@ -732,7 +731,7 @@ fn spawn_tunnel_start_with_runtime(
 
             let timeout = std::time::Duration::from_secs(10);
             match probe_and_settle(child, local_port, timeout) {
-                Ok((true, child)) => {
+                Ok((ProbeOutcome::Ready, child)) => {
                     let now = now_unix();
 
                     // Abort check: the user may have hit Stop during the start
@@ -777,15 +776,10 @@ fn spawn_tunnel_start_with_runtime(
                         }
                     }
 
-                    // Persist wants_alive (off-lock — never fsync under the
-                    // State lock, which would freeze tick/heartbeat/IPC).
-                    {
-                        let (path, tunnels) = {
-                            let g = crate::lock_state(&state);
-                            (g.tunnels_path.clone(), g.tunnels.clone())
-                        };
-                        let _ = save_tunnels(&path, &tunnels);
-                    }
+                    // Persist wants_alive (off-lock + through the serialized
+                    // save helper — a raw snapshot-then-save here could rename
+                    // a stale snapshot over a newer tunnel_add save).
+                    crate::handlers::tunnels::persist_tunnels(&state);
 
                     // Post-connect hook.
                     if let Some(cmd) = post_connect_cmd {
@@ -799,14 +793,24 @@ fn spawn_tunnel_start_with_runtime(
                         );
                     }
                 }
-                Ok((false, _child)) => {
-                    warn!("[tunnel:{name}] maintenance: probe timed out");
-                    runtime.record(&name, now_unix(), "probe timed out");
+                Ok((outcome @ (ProbeOutcome::TimedOut | ProbeOutcome::ChildExited), mut child)) => {
+                    let msg = match outcome {
+                        ProbeOutcome::ChildExited => {
+                            // Reap the exited child (TimedOut already kills+waits
+                            // inside probe_and_settle).
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            format!("local port {local_port} in use by another process (ssh exited at bind)")
+                        }
+                        _ => "probe timed out".to_string(),
+                    };
+                    warn!("[tunnel:{name}] maintenance: {msg}");
+                    runtime.record(&name, now_unix(), &msg);
                     let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = "probe timed out".into();
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                 }

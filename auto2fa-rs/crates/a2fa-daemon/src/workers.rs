@@ -348,7 +348,7 @@ fn spawn_tunnel_start_inner(
     let spawn_res = std::thread::Builder::new()
         .name(format!("tunnel-start:{name}"))
         .spawn(move || {
-            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward};
+            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward, ProbeOutcome};
             use a2fa_core::tunnels::post_connect::run_post_connect;
             use a2fa_core::model::TunnelStatus;
 
@@ -375,7 +375,7 @@ fn spawn_tunnel_start_inner(
 
             let timeout = std::time::Duration::from_secs(10);
             match probe_and_settle(child, local_port, timeout) {
-                Ok((true, child)) => {
+                Ok((ProbeOutcome::Ready, child)) => {
                     // Tunnel is alive.
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -425,14 +425,10 @@ fn spawn_tunnel_start_inner(
                     }
                     drop(guard);
 
-                    // Persist wants_alive (off-lock — no fsync under State lock).
-                    {
-                        let (path, tunnels) = {
-                            let g = crate::lock_state(&state);
-                            (g.tunnels_path.clone(), g.tunnels.clone())
-                        };
-                        let _ = a2fa_core::config::save_tunnels(&path, &tunnels);
-                    }
+                    // Persist wants_alive (off-lock + through the serialized
+                    // save helper — a raw snapshot-then-save here could rename
+                    // a stale snapshot over a newer tunnel_add save).
+                    crate::handlers::tunnels::persist_tunnels(&state);
 
                     // Post-connect hook.
                     if let Some(cmd) = post_connect_cmd {
@@ -446,17 +442,28 @@ fn spawn_tunnel_start_inner(
                         );
                     }
                 }
-                Ok((false, _child)) => {
-                    warn!("[tunnel:{name}] probe timed out");
+                Ok((outcome @ (ProbeOutcome::TimedOut | ProbeOutcome::ChildExited), mut child)) => {
+                    let msg = match outcome {
+                        ProbeOutcome::ChildExited => {
+                            // Reap the exited child (TimedOut already kills+waits
+                            // inside probe_and_settle; ChildExited returns it
+                            // un-reaped).
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            format!("local port {local_port} in use by another process (ssh exited at bind)")
+                        }
+                        _ => "probe timed out".to_string(),
+                    };
+                    warn!("[tunnel:{name}] {msg}");
                     if let Some(rt) = &runtime {
                         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-                        rt.record(&name, ts, "probe timed out");
+                        rt.record(&name, ts, &msg);
                     }
                     let mut guard = crate::lock_state(&state);
                     if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
                         t.fail_count += 1;
                         t.status = TunnelStatus::Failed;
-                        t.last_msg = "probe timed out".into();
+                        t.last_msg = msg;
                         t.active_jump = None;
                     }
                 }

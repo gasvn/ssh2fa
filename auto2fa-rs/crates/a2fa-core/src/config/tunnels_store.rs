@@ -142,6 +142,10 @@ pub fn load_tunnels(path: &Path) -> Vec<Tunnel> {
         };
         out.push(tunnel);
     }
+    // The on-disk map is a HashMap — iteration order is nondeterministic per
+    // process, so without this the UI row order shuffled on every daemon
+    // restart. Sort by name for a stable, predictable order.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
@@ -231,6 +235,25 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The on-disk map is a HashMap — without an explicit sort the loaded
+    /// order shuffled per process (UI rows reordered on every restart).
+    #[test]
+    fn load_order_is_deterministic_by_name() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(
+            &p,
+            r#"{"tunnels":{
+            "zeta":{"local_port":1,"remote_port":1},
+            "alpha":{"local_port":2,"remote_port":2},
+            "mid":{"local_port":3,"remote_port":3}
+        }}"#,
+        )
+        .unwrap();
+        let names: Vec<String> = load_tunnels(&p).into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    }
 
     #[test]
     fn round_trip_and_skip_malformed() {

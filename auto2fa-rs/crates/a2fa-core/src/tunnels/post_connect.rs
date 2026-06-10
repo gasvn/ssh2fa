@@ -14,6 +14,24 @@ const POST_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the bounded-run poll loop wakes up to check for child exit.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// SIGKILL the hook's whole process group, then reap the shell.
+///
+/// The child was spawned with `process_group(0)`, so its pgid == its pid and
+/// `killpg` reaches every descendant that hasn't re-setsid'd — compound hooks
+/// (`a && b`, pipelines, `helper &`) no longer leak grandchildren past the
+/// deadline. The follow-up `kill()+wait()` is belt-and-braces reaping of the
+/// direct child (idempotent if killpg already got it).
+fn kill_hook_group(child: &mut std::process::Child) {
+    let pgid = child.id() as i32;
+    if pgid > 0 {
+        unsafe {
+            let _ = libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// RAII guard that removes `name` from the `running` dedup set on drop.
 ///
 /// This guarantees the name is removed on EVERY exit path of the worker —
@@ -126,6 +144,15 @@ fn run_post_connect_inner(
     // and stdout/stderr nulled so a backgrounded server inheriting the pipe
     // can't hold us open. Poll try_wait against a 30 s deadline; kill+wait on
     // timeout. Mirrors `run_ssh_bounded` in ssh/control.rs.
+    //
+    // process_group(0): the hook runs in its OWN process group so the timeout
+    // kill can take out the WHOLE group. `child.kill()` alone SIGKILLs only
+    // /bin/sh — a compound hook (`a && b`, pipeline, backgrounded helper)
+    // left grandchildren running past the deadline, and once RunningGuard
+    // freed the dedup slot each tunnel flap spawned another generation.
+    // (A hook that finishes in time and intentionally leaves a background
+    // server behind is unaffected — the group is only killed on timeout.)
+    use std::os::unix::process::CommandExt;
     let mut child = match Command::new("/bin/sh")
         .arg("-c")
         .arg(cmd)
@@ -133,6 +160,7 @@ fn run_post_connect_inner(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
     {
         Ok(c) => c,
@@ -159,18 +187,16 @@ fn run_post_connect_inner(
             Ok(None) => {
                 if Instant::now() >= deadline {
                     log::warn!(
-                        "[tunnel:{tunnel_name}] post_connect: timed out after {POST_CONNECT_TIMEOUT:?} — killing"
+                        "[tunnel:{tunnel_name}] post_connect: timed out after {POST_CONNECT_TIMEOUT:?} — killing process group"
                     );
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_hook_group(&mut child);
                     return;
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
             Err(e) => {
-                log::error!("[tunnel:{tunnel_name}] post_connect: wait error: {e} — killing");
-                let _ = child.kill();
-                let _ = child.wait();
+                log::error!("[tunnel:{tunnel_name}] post_connect: wait error: {e} — killing process group");
+                kill_hook_group(&mut child);
                 return;
             }
         }
@@ -182,6 +208,76 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
+
+    /// REGRESSION (grandchild leak): killing only /bin/sh left backgrounded
+    /// grandchildren alive past the timeout — kill_hook_group must take out
+    /// the whole process group.
+    #[test]
+    fn kill_hook_group_kills_grandchildren() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        // sh backgrounds a long sleep (the grandchild, same process group),
+        // writes its pid, then sleeps itself.
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "sleep 30 & echo $! > {}; sleep 30",
+                pid_file.display()
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+
+        // Wait for the grandchild pid to land on disk.
+        let grand_pid: i32 = {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Ok(s) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(p) = s.trim().parse() {
+                        break p;
+                    }
+                }
+                assert!(Instant::now() < deadline, "grandchild pid never appeared");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        // Grandchild is alive before the kill.
+        assert_eq!(unsafe { libc::kill(grand_pid, 0) }, 0);
+
+        kill_hook_group(&mut child);
+
+        // Grandchild must no longer be RUNNING. NOTE: `kill(pid, 0)` returns
+        // 0 for a zombie, and the orphan's reaping (by launchd, after the
+        // reparent) is asynchronous and can take a while under load — so
+        // accept either "gone" (ESRCH) or "zombie" (state Z = killed,
+        // awaiting reap) and only fail on a genuinely still-running process.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if unsafe { libc::kill(grand_pid, 0) } != 0 {
+                break; // ESRCH — fully gone
+            }
+            let state = Command::new("ps")
+                .args(["-o", "state=", "-p", &grand_pid.to_string()])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if state.is_empty() || state.starts_with('Z') {
+                break; // gone, or killed-but-unreaped zombie — both fine
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild survived kill_hook_group (state {state})"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     #[test]
     fn sanitize_strips_metacharacters() {

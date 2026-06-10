@@ -64,6 +64,17 @@ pub fn start_forward(
     local_port: u16,
     remote_port: u16,
 ) -> Result<Child> {
+    // A leading "-" in any of these would be parsed by ssh as an OPTION
+    // (e.g. a node named "-oProxyCommand=…" runs a local command). No shell
+    // is involved so spaces/semicolons are inert, but argument injection
+    // isn't — reject outright.
+    for (label, v) in [("jump", jump), ("user", user), ("node", node)] {
+        if v.starts_with('-') {
+            return Err(Error::BadParams(format!(
+                "invalid {label} '{v}': must not start with '-'"
+            )));
+        }
+    }
     let argv = build_forward_argv(jump, user, node, local_port, remote_port);
     // The retained `ssh -N` child is long-lived and nobody ever drains its
     // output pipes.  If stderr (or stdout) were PIPED, a chatty ssh could fill
@@ -83,6 +94,21 @@ pub fn start_forward(
         .map_err(|e| Error::Internal(format!("ssh spawn failed: {e}")))
 }
 
+/// Outcome of [`probe_and_settle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Port became ready AND the ssh child is still running — tunnel alive.
+    Ready,
+    /// Timeout elapsed without a successful connect; child terminated.
+    TimedOut,
+    /// The port answered but the ssh child had already EXITED — the listener
+    /// belongs to some OTHER process (local port collision: with
+    /// `ExitOnForwardFailure=yes` ssh dies instantly when the bind fails,
+    /// while the foreign listener answers the probe). Marking this "alive"
+    /// would route user traffic to the wrong process and flap forever.
+    ChildExited,
+}
+
 /// Wait for `local_port` to become connectable, then decide the tunnel status.
 ///
 /// Wraps [`probe_port_ready`] so that **any** error (including panics unwound
@@ -90,22 +116,43 @@ pub fn start_forward(
 /// Python fix: "on probe EXCEPTION also terminate the child".
 ///
 /// Returns:
-/// - `Ok(true)`  — port became ready within `timeout`; tunnel is **alive**.
-/// - `Ok(false)` — timeout elapsed without a successful connect; child is
-///                 terminated before returning.
-/// - `Err(_)`    — probe itself raised an error; child is terminated.
-pub fn probe_and_settle(mut child: Child, local_port: u16, timeout: Duration) -> Result<(bool, Child)> {
+/// - `Ok((ProbeOutcome::Ready, child))`       — tunnel is **alive**.
+/// - `Ok((ProbeOutcome::TimedOut, child))`    — child terminated before returning.
+/// - `Ok((ProbeOutcome::ChildExited, child))` — port collision; child reaped.
+/// - `Err(_)` — probe itself raised an error; child is terminated.
+pub fn probe_and_settle(
+    mut child: Child,
+    local_port: u16,
+    timeout: Duration,
+) -> Result<(ProbeOutcome, Child)> {
     // Use catch_unwind so a panic inside probe_port_ready still tears down
     // the child (the explicit safety guarantee stated in the task spec).
     let probe_result = std::panic::catch_unwind(|| probe_port_ready(local_port, timeout));
 
     match probe_result {
-        Ok(true) => Ok((true, child)),
+        Ok(true) => {
+            // The port answers — but is it OUR ssh listening, or a foreign
+            // process that was already bound? With ExitOnForwardFailure=yes a
+            // bind failure kills ssh almost instantly, so a dead child here
+            // means the probe connected to someone else's listener.
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    log::warn!(
+                        "probe: port {local_port} answers but ssh child already exited \
+                         ({status}) — local port in use by another process"
+                    );
+                    Ok((ProbeOutcome::ChildExited, child))
+                }
+                // Still running (or try_wait errored — assume alive; the
+                // maintenance child-liveness check backstops).
+                _ => Ok((ProbeOutcome::Ready, child)),
+            }
+        }
         Ok(false) => {
             // Timeout: kill the ssh child.
             let _ = child.kill();
             let _ = child.wait();
-            Ok((false, child))
+            Ok((ProbeOutcome::TimedOut, child))
         }
         Err(panic_payload) => {
             // Probe panicked: still kill the child, then re-surface as Error.
@@ -208,5 +255,48 @@ mod tests {
         let l_pos = argv.iter().position(|a| a == "-L").unwrap();
         assert!(j_pos < l_pos, "-J must come before -L");
         assert!(argv.last().unwrap().contains('@'), "last arg must be user@node");
+    }
+
+    /// A leading "-" in jump/user/node would be parsed by ssh as an option
+    /// (argument injection, e.g. node "-oProxyCommand=…") — must be rejected
+    /// before any spawn.
+    #[test]
+    fn start_forward_rejects_leading_dash() {
+        assert!(start_forward("-oProxyCommand=x", "u", "n", 1, 2).is_err());
+        assert!(start_forward("j", "-u", "n", 1, 2).is_err());
+        assert!(start_forward("j", "u", "-n", 1, 2).is_err());
+    }
+
+    /// REGRESSION (port-collision false-Alive): if the local port answers but
+    /// the ssh child has already exited (ExitOnForwardFailure kills it at a
+    /// failed bind while a FOREIGN listener answers the probe), the outcome
+    /// must be ChildExited — never Ready. Marking it alive routed user traffic
+    /// to the wrong process and flapped forever.
+    #[test]
+    fn probe_with_dead_child_and_foreign_listener_is_child_exited() {
+        // Foreign listener on an ephemeral port.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A child that exits immediately (stands in for ssh dying at bind).
+        let mut child = Command::new("true").spawn().unwrap();
+        let _ = child.wait(); // ensure it has exited (wait reaps; try_wait then reports Some)
+        let (outcome, mut child) =
+            probe_and_settle(child, port, Duration::from_secs(3)).unwrap();
+        assert_eq!(outcome, ProbeOutcome::ChildExited);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The healthy path: port answers AND the child is still running → Ready.
+    #[test]
+    fn probe_with_live_child_and_listener_is_ready() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let (outcome, mut child) =
+            probe_and_settle(child, port, Duration::from_secs(3)).unwrap();
+        assert_eq!(outcome, ProbeOutcome::Ready);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

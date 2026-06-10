@@ -40,7 +40,20 @@ use crate::workers::{spawn_tunnel_start, spawn_tunnel_start_with_runtime};
 /// daemon wedge until the fsync returns. Snapshot path+tunnels under a brief
 /// (poison-tolerant) lock, drop it, then save. Best-effort, matching the
 /// already-correct off-lock sites (tunnel_add / tunnel_remove).
+/// ALL tunnel persistence must go through here. The save lock serializes
+/// writers AND the snapshot is taken INSIDE it, so rename order == snapshot
+/// order: a stale snapshot can never land after a newer one. (Before this,
+/// each site snapshotted then saved independently — per-call unique temp
+/// files made every write internally consistent, but a maintenance save
+/// holding a pre-add snapshot could rename over a later `tunnel_add` save,
+/// leaving the new tunnel off disk until the next save: a crash in that
+/// window lost it.)
+///
+/// Lock order: SAVE → State (brief clone) → drop State → fsync. Never call
+/// this while already holding the State lock.
 pub(crate) fn persist_tunnels(state: &Arc<Mutex<State>>) {
+    static SAVE_LOCK: Mutex<()> = Mutex::new(());
+    let _g = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (path, tunnels) = {
         let g = crate::lock_state(state);
         (g.tunnels_path.clone(), g.tunnels.clone())
@@ -173,12 +186,10 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
     let snap = tunnel_snapshot(&tunnel);
     guard.tunnels.push(tunnel);
+    drop(guard);
 
     // Persist — best effort; don't fail the add if the write fails.
-    let path = guard.tunnels_path.clone();
-    let tunnels = guard.tunnels.clone();
-    drop(guard);
-    let _ = save_tunnels(&path, &tunnels);
+    persist_tunnels(state);
 
     Ok(snap)
 }
@@ -218,11 +229,8 @@ pub fn tunnel_remove(
     guard.tunnels[pos].status = TunnelStatus::Idle;
     guard.tunnels[pos].wants_alive = false;
     guard.tunnels.remove(pos);
-
-    let path = guard.tunnels_path.clone();
-    let tunnels = guard.tunnels.clone();
     drop(guard);
-    let _ = save_tunnels(&path, &tunnels);
+    persist_tunnels(state);
 
     // Clean up runtime state (counters + child entry) for this tunnel.
     if let Some(rt) = &runtime {
@@ -427,11 +435,7 @@ pub fn tunnel_stop(
     }
 
     // Persist the change.
-    let guard = crate::lock_state(state);
-    let path = guard.tunnels_path.clone();
-    let tunnels = guard.tunnels.clone();
-    drop(guard);
-    let _ = save_tunnels(&path, &tunnels);
+    persist_tunnels(state);
 
     Ok(Value::Null)
 }
