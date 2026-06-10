@@ -114,10 +114,15 @@ impl Drop for WakeRecoverClaim {
 /// Uses a backwards block-read to stay cheap on large files
 /// (mirrors `_tail_file` in daemon.py).
 pub fn log_tail(_state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    // Clamp: an unbounded `lines` would walk the WHOLE file backwards holding
+    // every line in RAM (multi-GB log → handler thread pinned + OOM risk) over
+    // a single bad request. 10k lines is far more than any UI shows.
+    const MAX_TAIL_LINES: usize = 10_000;
     let n = params
         .get("lines")
         .and_then(|v| v.as_u64())
-        .unwrap_or(200) as usize;
+        .unwrap_or(200)
+        .min(MAX_TAIL_LINES as u64) as usize;
 
     let path = "/tmp/auto2fa_daemon.log";
     let lines = tail_file(path, n)?;
@@ -305,17 +310,34 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result
     //    lock, then check the concrete control path with no lock held. (Using
     //    `with_pool(.., active_master_ready)` would hold the map mutex across the
     //    5s probe and stall the heartbeat loop — see the lock-discipline note.)
+    //    The probes run in PARALLEL (scoped threads): serially, a real
+    //    network-down wake ran every probe to its full 5s deadline — 5s × N
+    //    hosts on this connection-handler thread, starving the app's other
+    //    requests. Parallel bounds the whole step at ~one probe deadline.
     let active_hosts = active_host_names(&ctx.state);
-    let masters_failed: Vec<String> = active_hosts
-        .iter()
-        .filter(|host| {
-            let idx = ctx.managers.snapshot(host).active_index; // brief lock, no I/O
-            let path = a2fa_core::ssh::control::control_path(host, idx);
-            let ready = a2fa_core::ssh::control::master_check(&path, host); // off-lock 5s
-            !ready
-        })
-        .cloned()
-        .collect();
+    let masters_failed: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = active_hosts
+            .iter()
+            .map(|host| {
+                let idx = ctx.managers.snapshot(host).active_index; // brief lock, no I/O
+                scope.spawn(move || {
+                    let path = a2fa_core::ssh::control::control_path(host, idx);
+                    let ready = a2fa_core::ssh::control::master_check(&path, host); // off-lock 5s
+                    (host.clone(), ready)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| match h.join() {
+                Ok((host, ready)) if !ready => Some(host),
+                // A panicked probe thread counts as "not failed" — rebuilding a
+                // master on probe-infrastructure failure would burn 2FA for
+                // nothing; the heartbeat's own health check backstops.
+                _ => None,
+            })
+            .collect()
+    });
 
     log::info!(
         "wake_recover: {} tunnels alive at wake, {} of {} masters failed",

@@ -10,17 +10,14 @@
 //! 3. **Emit events** for any key that changed.
 //! 4. **Update bookmarks** (`last_host_keys` / `last_tunnel_keys`).
 //!
-//! Actual SSH / tunnel maintenance (heartbeat probes, forward restarts) is
-//! **structurally present** as a TODO stub. When wired, the blocking calls
-//! will happen **off-lock** on a Rayon thread pool or `std::thread::spawn`,
-//! and results will be written back under a brief re-lock. See the DEFERRED
-//! note below.
+//! # Maintenance lives ELSEWHERE — do NOT wire it here
 //!
-//! # DEFERRED
-//!
-//! - SSH heartbeat probes and master rebuild calls.
-//! - Tunnel forward health checks and auto-restart.
-//! - Integration with `crate::ssh::master` and `crate::tunnels::forward`.
+//! SSH heartbeat probes / master rebuilds and tunnel health checks /
+//! auto-restarts are FULLY IMPLEMENTED in the daemon crate
+//! (`a2fa-daemon/src/managers.rs` heartbeat loop and
+//! `a2fa-daemon/src/tunnel_maintenance.rs`). This tick is change-detection +
+//! event emission ONLY. Adding a second maintenance pass here would compete
+//! with the daemon's loops — double login attempts burn real 2FA codes.
 //!
 //! # `poll_loop`
 //!
@@ -131,25 +128,35 @@ pub fn run_tick(state: &Mutex<State>) {
         guard.emit(line);
     }
 
-    // ---- DEFERRED: SSH / tunnel maintenance ----------------------------
+    // ---- Cleanup bookmarks for removed hosts ---------------------------
     //
-    // TODO(integration): Off-lock maintenance pattern:
-    //
-    //   drop(guard);  // <-- MUST drop lock before any blocking I/O
-    //
-    //   // 1. Heartbeat probe for each active host.
-    //   //    crate::ssh::master::PoolState::active_master_ready() (fast, local socket check)
-    //   //    If dead → spawn thread → start_master / try_rotate.
-    //
-    //   // 2. Tunnel forward health check.
-    //   //    crate::tunnels::probe::probe_port_ready(local_port, timeout)
-    //   //    If dead and wants_alive → spawn thread → start_forward.
-    //
-    //   // re-lock here to write results back.
-    //
-    // The guard is intentionally NOT dropped before function return in this
-    // stub so the compiler is happy.  When the above is wired, add `drop(guard)`
-    // before the spawned threads.
+    // Mirror of the tunnel loop above. No host-removal RPC exists today, so
+    // this is currently a no-op — but the day one lands, a host removed and
+    // re-added with identical stable fields would otherwise match its stale
+    // bookmark and emit NO host_status_changed (ghost suppression).
+    let current_host_names: std::collections::HashSet<&str> =
+        guard.hosts.iter().map(|h| h.host.as_str()).collect();
+
+    let removed_hosts: Vec<String> = guard
+        .last_host_keys
+        .keys()
+        .filter(|n| !current_host_names.contains(n.as_str()))
+        .cloned()
+        .collect();
+
+    for name in removed_hosts {
+        guard.last_host_keys.remove(&name);
+        // encode_event returns JSON + '\n' — the wire protocol requires the newline.
+        let line = encode_event(
+            Event::HostStatusChanged.as_str(),
+            serde_json::json!({ "host": name, "status": "removed" }),
+        );
+        guard.emit(line);
+    }
+
+    // NOTE: SSH / tunnel maintenance is implemented in the daemon crate
+    // (managers.rs heartbeat + tunnel_maintenance.rs) — see the module docs.
+    // This tick must stay change-detection-only.
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +330,37 @@ mod tests {
 
         let msg = rx.try_recv().expect("expected removed event");
         assert!(msg.contains("removed"), "expected 'removed' in event: {msg}");
+    }
+
+    /// Removing a host cleans its bookmark and emits a "removed" event —
+    /// mirror of the tunnel cleanup. Without this, a host removed and
+    /// re-added with identical stable fields would match its stale bookmark
+    /// and emit NO host_status_changed (ghost suppression).
+    #[test]
+    fn removed_host_emits_removed_event_and_cleans_bookmark() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let mut inner = State::with_tunnels(vec![]);
+        inner.hosts.push(make_host("k6", false));
+        inner.subscribe(tx);
+        let state = Mutex::new(inner);
+
+        run_tick(&state);
+        let _ = rx.try_recv(); // first-tick event
+
+        // Remove the host.
+        state.lock().unwrap().hosts.clear();
+        run_tick(&state);
+
+        let msg = rx.try_recv().expect("expected removed event for host");
+        assert!(
+            msg.contains(Event::HostStatusChanged.as_str()) && msg.contains("removed"),
+            "expected host removed event, got: {msg}"
+        );
+        // Bookmark must be gone so a re-add with identical fields re-emits.
+        assert!(
+            state.lock().unwrap().last_host_keys.is_empty(),
+            "stale host bookmark must be cleaned"
+        );
     }
 
     /// Host changes are also detected; event name must be lowercase on the wire.

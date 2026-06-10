@@ -1,7 +1,15 @@
 //! Daemon log rotation — mirrors Python `_rotate_log_if_huge`.
 //!
-//! Called once at daemon startup *before* the logger is initialised so that
-//! the log file never grows unbounded across restarts.
+//! Called once at daemon startup *before* the logger is initialised, and then
+//! periodically from a dedicated thread ([`spawn_periodic_rotation`]) so a
+//! daemon that stays up for weeks can't grow the log without bound (the boot
+//! check alone only capped growth ACROSS restarts).
+//!
+//! Runtime rotation is safe with the live logger because the logger opens the
+//! file with O_APPEND: after the in-place truncate, the next write lands at
+//! the (new) EOF. Lines appended between the copy and the truncate are lost —
+//! a handful of log lines at a 10 MB boundary, accepted (same race the boot
+//! rotation always had with a still-exiting previous daemon).
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -19,6 +27,25 @@ const KEEP_ROTATIONS: usize = 3;
 /// Convenience entry-point used by `main.rs`.
 pub fn rotate_daemon_log() {
     rotate_log_if_huge(LOG_PATH, DEFAULT_MAX_BYTES);
+}
+
+/// How often the runtime rotation check runs. The check itself is one
+/// `fs::metadata` when under the threshold — effectively free.
+const PERIODIC_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Spawn the detached background thread that re-checks the log size every
+/// ~10 minutes. Panics inside one iteration are caught so a single bad
+/// rotation can never kill the thread (let alone the daemon).
+pub fn spawn_periodic_rotation() {
+    let res = std::thread::Builder::new()
+        .name("log-rotation".into())
+        .spawn(|| loop {
+            std::thread::sleep(PERIODIC_CHECK_INTERVAL);
+            let _ = std::panic::catch_unwind(rotate_daemon_log);
+        });
+    if let Err(e) = res {
+        log::warn!("log-rotation thread failed to spawn (boot-only rotation remains): {e}");
+    }
 }
 
 /// If `path` exists and its size >= `max_bytes`:
@@ -52,12 +79,14 @@ fn try_rotate(path: &str, max_bytes: u64) -> io::Result<()> {
         .unwrap_or(0);
     let rotated = format!("{}.{}.gz", path, secs);
 
-    // Read the existing log and gzip it into the rotated file.
-    let src_data = fs::read(path)?;
+    // Stream the existing log into the gzip — never fs::read the whole file
+    // into RAM (a multi-GB log would pin gigabytes on the boot path).
+    let mut src = fs::File::open(path)?;
     let out_file = fs::File::create(&rotated)?;
     let mut encoder = GzEncoder::new(out_file, Compression::default());
-    io::copy(&mut src_data.as_slice(), &mut encoder)?;
+    io::copy(&mut src, &mut encoder)?;
     encoder.finish()?;
+    drop(src);
 
     // Truncate the original to 0 bytes so the daemon starts a fresh log.
     fs::OpenOptions::new()

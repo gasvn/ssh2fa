@@ -30,6 +30,10 @@ fn main() {
         }
     }
 
+    // Keep rotating while running — the boot check alone let a weeks-long
+    // daemon grow the log without bound (safe: the logger fd is O_APPEND).
+    a2fa_daemon::log_rotation::spawn_periodic_rotation();
+
     // launchd hands user agents a soft RLIMIT_NOFILE of only 256, which a
     // long-lived SSH/pty/tunnel daemon can exhaust — after which every spawn
     // fails with "Too many open files" and the daemon retry-storms. Raise it
