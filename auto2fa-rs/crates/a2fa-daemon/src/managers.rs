@@ -961,6 +961,56 @@ fn heartbeat_loop(
     }
 }
 
+/// Decide the host-level State fields after a slot-restart outcome.
+///
+/// Pure (unit-tested). Key rule: a failed SPARE relogin must NOT repaint a
+/// healthy host as failed — observed live (rkempner): slot 1's login timed
+/// out and wrote "Reconnect failed" while the ACTIVE slot 0 master was
+/// verifiably alive, and nothing on the healthy path ever repaired it.
+///
+/// Returns `(mark_master_ready, status, last_msg)`.
+fn restart_outcome_host_fields(
+    slot: usize,
+    ready: bool,
+    active_index: usize,
+    active_ready: bool,
+) -> (bool, &'static str, String) {
+    if ready {
+        (true, "Connected", format!("Slot {slot} reconnected"))
+    } else if active_ready && slot != active_index {
+        (
+            true,
+            "Connected",
+            format!("Slot {slot} reconnect failed (active slot OK)"),
+        )
+    } else {
+        (
+            false,
+            "Reconnect failed",
+            format!("Slot {slot} reconnect failed"),
+        )
+    }
+}
+
+/// Converge a host's engine-State fields with a VERIFIED-alive active master.
+///
+/// Called from the heartbeat's Healthy arm: stale writes (e.g. a spare-slot
+/// login failure) could leave status "Reconnect failed" / is_master_ready
+/// false forever, because the healthy path previously wrote nothing back.
+/// Idempotent — re-writing identical values doesn't re-emit events (the tick
+/// loop's stable-key change detection sees no difference).
+fn heal_host_state(state: &Arc<Mutex<State>>, host: &str, slot: usize, alive_count: u8) {
+    let mut guard = crate::lock_state(state);
+    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host) {
+        h.pool_alive = alive_count;
+        if !h.is_master_ready || h.status != "Connected" {
+            h.is_master_ready = true;
+            h.status = "Connected".into();
+            h.last_msg = format!("Connected (slot {slot} verified)");
+        }
+    }
+}
+
 /// Run one heartbeat tick for a single host.
 ///
 /// This function is called from the heartbeat loop and is the actual
@@ -1131,29 +1181,41 @@ fn tick_host(
                         // the ACTIVE slot only (restarting the spare must not
                         // repoint the UI), and pool_alive is the real Ready
                         // count (not a hardcoded 1 that clobbers a 2).
-                        let alive_count = managers2
+                        let (alive_count, reg_active_idx, active_ready) = managers2
                             .with_pool(&host_owned, |p| {
-                                p.slot_status
+                                let alive = p
+                                    .slot_status
                                     .iter()
                                     .filter(|s| **s == SlotStatus::Ready)
-                                    .count() as u8
+                                    .count() as u8;
+                                (
+                                    alive,
+                                    p.active_index,
+                                    p.slot_status[p.active_index] == SlotStatus::Ready,
+                                )
                             })
-                            .unwrap_or(u8::from(ready));
+                            .unwrap_or((u8::from(ready), active_index, false));
                         {
+                            // restart_outcome_host_fields: a failed SPARE
+                            // relogin must not repaint a healthy host as
+                            // failed when the active master is fine.
+                            let (mark_ready, status, last_msg) = restart_outcome_host_fields(
+                                slot,
+                                ready,
+                                reg_active_idx,
+                                active_ready,
+                            );
                             let mut guard = crate::lock_state(&state2);
                             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
-                                if ready {
+                                if mark_ready {
                                     h.is_master_ready = true;
                                     h.pool_alive = alive_count;
-                                    if slot == active_index {
+                                    if ready && slot == active_index {
                                         h.pool_index = slot as u8;
                                     }
-                                    h.status = "Connected".into();
-                                    h.last_msg = format!("Slot {slot} reconnected");
-                                } else {
-                                    h.status = "Reconnect failed".into();
-                                    h.last_msg = format!("Slot {slot} reconnect failed");
                                 }
+                                h.status = status.into();
+                                h.last_msg = last_msg;
                             }
                         }
 
@@ -1350,7 +1412,28 @@ fn tick_host(
                 }
             }
 
-            MaintenanceAction::Healthy | MaintenanceAction::Skip => {
+            MaintenanceAction::Healthy => {
+                // Converge engine State with the verified registry truth, but
+                // only off the ACTIVE slot's PASSING live check. A failed
+                // spare-slot relogin (or any stale write) could leave the
+                // host-level status "Reconnect failed" / is_master_ready =
+                // false while the active master is demonstrably alive —
+                // observed live (rkempner): the UI showed a failed host
+                // indefinitely because the healthy path wrote nothing back.
+                if slot == pool.active_index && check_result == Some(true) {
+                    let alive_count = managers
+                        .with_pool(host_name, |p| {
+                            p.slot_status
+                                .iter()
+                                .filter(|s| **s == SlotStatus::Ready)
+                                .count() as u8
+                        })
+                        .unwrap_or(1);
+                    heal_host_state(state, host_name, slot, alive_count);
+                }
+            }
+
+            MaintenanceAction::Skip => {
                 // Nothing to do.
             }
         }
@@ -1790,6 +1873,72 @@ mod tests {
         pool.slot_status[0] = SlotStatus::Ready;
         let action = next_action(&pool, 0, true, Some(true), Instant::now());
         assert_eq!(action, MaintenanceAction::Healthy);
+    }
+
+    /// REGRESSION (rkempner, observed live): a failed SPARE relogin must not
+    /// repaint a healthy host as failed when the active master is Ready.
+    #[test]
+    fn restart_outcome_spare_failure_keeps_host_connected() {
+        // Spare slot 1 failed, active slot 0 Ready → host stays Connected.
+        let (mark_ready, status, msg) = restart_outcome_host_fields(1, false, 0, true);
+        assert!(mark_ready);
+        assert_eq!(status, "Connected");
+        assert!(msg.contains("active slot OK"), "msg: {msg}");
+
+        // Spare failed AND active not Ready → genuine failure.
+        let (mark_ready, status, _) = restart_outcome_host_fields(1, false, 0, false);
+        assert!(!mark_ready);
+        assert_eq!(status, "Reconnect failed");
+
+        // ACTIVE slot itself failed → failure even if the registry claims the
+        // active slot Ready (it just failed — registry info is the past).
+        let (mark_ready, status, _) = restart_outcome_host_fields(0, false, 0, true);
+        assert!(!mark_ready);
+        assert_eq!(status, "Reconnect failed");
+
+        // Success path unchanged.
+        let (mark_ready, status, msg) = restart_outcome_host_fields(0, true, 0, true);
+        assert!(mark_ready);
+        assert_eq!(status, "Connected");
+        assert!(msg.contains("reconnected"));
+    }
+
+    /// REGRESSION (rkempner, observed live): the Healthy arm must repair
+    /// stale host-level failure status once the active master verifies alive
+    /// — previously the healthy path wrote nothing and "Reconnect failed"
+    /// stuck forever despite pool_alive=2.
+    #[test]
+    fn heal_host_state_repairs_stale_failure_status() {
+        let mut st = State::with_tunnels(vec![]);
+        st.hosts.push(a2fa_core::model::Host {
+            host: "rk".into(),
+            status: "Reconnect failed".into(),
+            active: true,
+            is_master_ready: false,
+            pool_index: 0,
+            pool_alive: 0,
+            is_mounted: false,
+            last_msg: "Slot 1 reconnect failed".into(),
+        });
+        let state = Arc::new(Mutex::new(st));
+
+        heal_host_state(&state, "rk", 0, 2);
+
+        let guard = crate::lock_state(&state);
+        let h = &guard.hosts[0];
+        assert!(h.is_master_ready, "must repair is_master_ready");
+        assert_eq!(h.status, "Connected");
+        assert_eq!(h.pool_alive, 2);
+
+        // Idempotent: a second heal doesn't churn last_msg once Connected.
+        drop(guard);
+        {
+            let mut g = crate::lock_state(&state);
+            g.hosts[0].last_msg = "via k6".into();
+        }
+        heal_host_state(&state, "rk", 0, 2);
+        let guard = crate::lock_state(&state);
+        assert_eq!(guard.hosts[0].last_msg, "via k6", "no churn when already Connected");
     }
 
     #[test]
