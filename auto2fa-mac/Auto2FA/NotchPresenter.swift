@@ -23,6 +23,11 @@ final class NotchPresenter: ObservableObject {
     private var current: DynamicNotchInfo?
 
     func show(systemImage: String, title: String, description: String, tint: Color = .primary) {
+        // Honor the "Show Dynamic Notch toasts" setting at the single
+        // chokepoint — ~20 call sites (errors, sleep/wake, copy, import…)
+        // bypassed the per-tunnel check and toasted even when disabled.
+        let enabled = UserDefaults.standard.object(forKey: SettingsKey.notchEnabled) as? Bool ?? true
+        guard enabled else { return }
         // If a previous notch is still on screen, hide it so we don't pile up
         // overlapping animations.
         inFlight?.cancel()

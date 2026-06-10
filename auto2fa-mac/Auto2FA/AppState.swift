@@ -730,8 +730,14 @@ final class AppState: ObservableObject {
                     try? await client.setTunnelUrlPath(t.name, path: up)
                 }
                 if let node = t.last_node, !node.isEmpty {
+                    // start:false — restoring a backup records each tunnel's
+                    // node WITHOUT firing an immediate SSH start at a
+                    // possibly-dead SLURM node (auto_start tunnels still come
+                    // up on the next daemon boot). Importing 10 tunnels used
+                    // to launch 10 starts + a toast storm.
                     try? await client.setTunnelNode(t.name, node: node,
-                                                    user: t.last_user ?? "")
+                                                    user: t.last_user ?? "",
+                                                    start: false)
                 }
                 added += 1
             } catch {

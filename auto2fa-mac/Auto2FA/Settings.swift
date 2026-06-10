@@ -86,7 +86,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Start the auto2fa daemon when this app launches", isOn: $spawnDaemonOnLaunch)
-                    Text("Off if you prefer to run the daemon yourself (LaunchAgent, manual `python -m auto2fa.daemon`, etc.).")
+                    Text("Off if you prefer to run the daemon yourself (LaunchAgent, or run a2fa-daemon manually).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Daemon") }

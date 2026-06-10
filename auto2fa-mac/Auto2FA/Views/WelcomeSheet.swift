@@ -55,7 +55,7 @@ struct WelcomeSheet: View {
                     body: "Pick a SLURM compute node, the tunnel runs `ssh -L localhost:<port>:<node>:<port> via your warm jump`. Auto-recovers on Mac sleep/wake.")
                 row(icon: "menubar.dock.rectangle",
                     title: "Lives in your menu bar + Dock",
-                    body: "Tunnel count badge. Right-click for quick actions. ⌘, for Settings, ⌘⇧L for daemon logs.")
+                    body: "Tunnel count badge. Right-click for quick actions. ⌘, for Settings; open daemon logs from the menu-bar menu.")
             }
             .padding(Spacing.m)
             .glassCard(cornerRadius: Radius.control)

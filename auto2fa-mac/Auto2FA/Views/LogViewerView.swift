@@ -11,6 +11,12 @@ struct LogViewerView: View {
     @State private var autoScroll = true
     @State private var error: String?
     @State private var pollTask: Task<Void, Never>?
+    /// How many lines the poll fetches. Reload bumps it so "see more history"
+    /// isn't overwritten back to 500 on the next 2s tick.
+    @State private var tailCount = 500
+    /// Bumped whenever `lines` actually changes — drives auto-scroll even when
+    /// the line COUNT is pinned at the cap (count-based onChange never fired).
+    @State private var scrollTrigger = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,8 +28,10 @@ struct LogViewerView: View {
                 Toggle("Auto-scroll", isOn: $autoScroll)
                     .toggleStyle(.checkbox)
                 Button {
-                    Task { await refreshOnce(lineCount: 1000) }
+                    tailCount = 1000
+                    Task { await refreshOnce(lineCount: tailCount) }
                 } label: { Label("Reload", systemImage: "arrow.clockwise") }
+                    .help("Load more history (keeps showing it — the live tail won't shrink it back)")
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: "/tmp/auto2fa_daemon.log")])
@@ -59,7 +67,7 @@ struct LogViewerView: View {
                     .padding(.vertical, 4)
                 }
                 .background(Color.black.opacity(0.02))
-                .onChange(of: filtered.count) { _, _ in
+                .onChange(of: scrollTrigger) { _, _ in
                     if autoScroll, !filtered.isEmpty {
                         proxy.scrollTo(filtered.count - 1, anchor: .bottom)
                     }
@@ -68,7 +76,7 @@ struct LogViewerView: View {
         }
         .frame(minWidth: 700, minHeight: 400)
         .task {
-            await refreshOnce(lineCount: 500)
+            await refreshOnce(lineCount: tailCount)
             startPolling()
         }
         .onDisappear {
@@ -88,10 +96,17 @@ struct LogViewerView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let state = appState else { return }
+                let count = await MainActor.run { self.tailCount }
                 do {
-                    let fresh = try await state.client.logTail(lines: 500)
+                    let fresh = try await state.client.logTail(lines: count)
                     await MainActor.run {
-                        self.lines = fresh
+                        // Only reassign when the content actually changed: a
+                        // wholesale array replace every 2s destroyed any
+                        // in-progress text selection even when nothing was new.
+                        if fresh != self.lines {
+                            self.lines = fresh
+                            self.scrollTrigger &+= 1
+                        }
                         // Clear a stale error once polling recovers — one
                         // transient failure used to leave a permanent red
                         // banner above a perfectly live log.
@@ -111,7 +126,10 @@ struct LogViewerView: View {
         do {
             let fresh = try await appState.client.logTail(lines: lineCount)
             await MainActor.run {
-                self.lines = fresh
+                if fresh != self.lines {
+                    self.lines = fresh
+                    self.scrollTrigger &+= 1
+                }
                 self.error = nil
             }
         } catch {

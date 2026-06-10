@@ -42,6 +42,23 @@ struct TunnelsView: View {
             }
         }
         .padding(Spacing.m)
+        // Prune the multi-select set when the list changes (rename / delete /
+        // import): a stale name kept the batch bar showing "N selected" and
+        // sent dead names to batchTunnels ("0/1 started").
+        .onChange(of: appState.tunnels.map(\.name)) { _, names in
+            let live = Set(names)
+            if !selection.isSubset(of: live) {
+                selection = selection.intersection(live)
+            }
+        }
+        // Clear a tag filter whose tag no longer exists on any tunnel —
+        // otherwise the chip row (incl. "All") hides while the filter stays
+        // set, hiding every row with no UI left to clear it.
+        .onChange(of: allTags) { _, tags in
+            if let f = activeTagFilter, !tags.contains(f) {
+                activeTagFilter = nil
+            }
+        }
     }
 
     // MARK: - Header

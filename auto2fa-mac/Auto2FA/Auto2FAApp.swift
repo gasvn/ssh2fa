@@ -40,8 +40,12 @@ struct Auto2FAApp: App {
                         case .spawned(let pid):
                             NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
                         case .failed(let reason):
+                            // Surface the reason but DON'T return — fall
+                            // through to bootstrap() so the connection watcher
+                            // + poll fallback start and recover once a daemon
+                            // appears (launchd may bring one up seconds later).
+                            // The old `return` was a permanent dead end.
                             appState.connectionError = reason
-                            return
                         }
                     } else {
                         NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
@@ -65,7 +69,13 @@ struct Auto2FAApp: App {
             }
             CommandGroup(after: .saveItem) {
                 Button("Export Tunnels…") {
-                    _ = TunnelExportImport.exportToFile(appState.tunnels)
+                    // Surface a write failure (disk full / read-only volume) —
+                    // it was silently swallowed, so a "backup" could fail with
+                    // zero feedback. nil = success, "cancelled" = user cancelled.
+                    if let err = TunnelExportImport.exportToFile(appState.tunnels),
+                       err != "cancelled" {
+                        appState.showActionError("Export failed: \(err)")
+                    }
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 Button("Import Tunnels…") {

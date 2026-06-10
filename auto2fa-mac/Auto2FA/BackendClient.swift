@@ -436,9 +436,13 @@ actor BackendClient {
         _ = try await sendRaw(method: "tunnel_toggle", params: ["name": name])
     }
 
-    func setTunnelNode(_ name: String, node: String, user: String) async throws {
-        _ = try await sendRaw(method: "tunnel_set_node",
-                              params: ["name": name, "node": node, "user": user])
+    func setTunnelNode(_ name: String, node: String, user: String,
+                       start: Bool = true) async throws {
+        var params: [String: Any] = ["name": name, "node": node, "user": user]
+        // Only send `start` when false — older daemons ignore the unknown
+        // key, and the daemon default is true anyway.
+        if !start { params["start"] = false }
+        _ = try await sendRaw(method: "tunnel_set_node", params: params)
     }
 
     func discoverNodes(host: String) async throws -> [SqueueJob] {

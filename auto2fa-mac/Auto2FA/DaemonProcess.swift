@@ -188,6 +188,11 @@ final class DaemonProcess {
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
+        // Close any handle from a previous spawn attempt before opening a new
+        // one — the backoff loop can call ensureRunning several times per
+        // disconnect, and overwriting the property leaked one fd each time.
+        try? self.logFileHandle?.close()
+        self.logFileHandle = nil
         if let handle = try? FileHandle(forWritingTo: logURL) {
             _ = try? handle.seekToEnd()
             handle.write("\n--- a2fa-daemon spawn at \(Date()) ---\n".data(using: .utf8)!)
