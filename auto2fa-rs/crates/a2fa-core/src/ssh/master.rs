@@ -44,6 +44,10 @@ pub const FLAP_MIN_UPTIME: Duration = Duration::from_secs(30);
 /// Consecutive flaps before arming the flap back-off.
 pub const FLAP_THRESHOLD: u32 = 4;
 
+/// Consecutive confident "dead" probes before a Ready master is condemned.
+/// One transient probe failure must never trigger a reconnect.
+pub const PROBE_FAILURE_THRESHOLD: u32 = 3;
+
 /// How long to back off restarting a slot that keeps flapping. Stops a host
 /// that authenticates then immediately drops from being reconnected (full 2FA)
 /// every few seconds forever — the connect-then-drop case the login-failure
@@ -94,6 +98,10 @@ pub struct PoolState {
     pub slot_ready_since: [Option<Instant>; POOL_SIZE],
     pub flap_count: u32,
     pub flap_backoff_until: Option<Instant>,
+
+    /// Consecutive confident `Dead` probe results per slot (hysteresis). Reset
+    /// to 0 on any `Alive`; untouched by `Inconclusive`.
+    pub consecutive_probe_failures: [u32; POOL_SIZE],
 }
 
 impl PoolState {
@@ -109,6 +117,7 @@ impl PoolState {
             slot_ready_since: [None; POOL_SIZE],
             flap_count: 0,
             flap_backoff_until: None,
+            consecutive_probe_failures: [0; POOL_SIZE],
         }
     }
 
@@ -155,6 +164,19 @@ impl PoolState {
                 self.flap_count = 0;
                 self.flap_backoff_until = None;
             }
+        }
+    }
+
+    /// Fold one probe result into the per-slot hysteresis counter.
+    pub fn note_probe_result(&mut self, index: usize, liveness: crate::ssh::control::MasterLiveness) {
+        use crate::ssh::control::MasterLiveness::*;
+        if index >= POOL_SIZE {
+            return;
+        }
+        match liveness {
+            Alive => self.consecutive_probe_failures[index] = 0,
+            Dead => self.consecutive_probe_failures[index] += 1,
+            Inconclusive => {} // no confident answer — leave the counter alone
         }
     }
 
@@ -275,6 +297,30 @@ impl PoolState {
     pub fn active_master_ready(&self) -> bool {
         let path = self.pool_path(self.active_index);
         control::master_check(&path, &self.host)
+    }
+}
+
+/// Map a probe result + current failure count to the legacy `Option<bool>`
+/// "check_alive" that `next_action` consumes — applying hysteresis so a Ready
+/// slot is only reported dead (`Some(false)`) after `threshold` consecutive
+/// confident `Dead` probes. `Alive` → `Some(true)`; everything inconclusive or
+/// below threshold → `None` (which `next_action` treats as "no restart").
+pub fn probe_to_check(
+    liveness: crate::ssh::control::MasterLiveness,
+    consecutive_failures: u32,
+    threshold: u32,
+) -> Option<bool> {
+    use crate::ssh::control::MasterLiveness::*;
+    match liveness {
+        Alive => Some(true),
+        Inconclusive => None,
+        Dead => {
+            if consecutive_failures >= threshold {
+                Some(false)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -471,6 +517,40 @@ pub fn stop_all(state: &mut PoolState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_to_check_maps_with_hysteresis() {
+        use crate::ssh::control::MasterLiveness::*;
+        // Alive → always Some(true)
+        assert_eq!(probe_to_check(Alive, 0, 3), Some(true));
+        assert_eq!(probe_to_check(Alive, 9, 3), Some(true));
+        // Inconclusive → never an answer
+        assert_eq!(probe_to_check(Inconclusive, 5, 3), None);
+        // Dead → None until the failure count reaches the threshold
+        assert_eq!(probe_to_check(Dead, 1, 3), None);
+        assert_eq!(probe_to_check(Dead, 2, 3), None);
+        assert_eq!(probe_to_check(Dead, 3, 3), Some(false));
+        assert_eq!(probe_to_check(Dead, 4, 3), Some(false));
+    }
+
+    #[test]
+    fn note_probe_result_counts_only_confident_deaths() {
+        use crate::ssh::control::MasterLiveness::*;
+        let mut p = PoolState::new("k6");
+        p.note_probe_result(0, Dead);
+        p.note_probe_result(0, Dead);
+        assert_eq!(p.consecutive_probe_failures[0], 2);
+        // Inconclusive does not move the counter.
+        p.note_probe_result(0, Inconclusive);
+        assert_eq!(p.consecutive_probe_failures[0], 2);
+        // A single Alive resets it.
+        p.note_probe_result(0, Alive);
+        assert_eq!(p.consecutive_probe_failures[0], 0);
+        // Slots are independent.
+        p.note_probe_result(1, Dead);
+        assert_eq!(p.consecutive_probe_failures[1], 1);
+        assert_eq!(p.consecutive_probe_failures[0], 0);
+    }
 
     #[test]
     fn login_failure_increments_and_trips_cooldown_at_threshold() {
