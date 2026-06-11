@@ -55,3 +55,26 @@ targets:
       properties:
         CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "100"
+
+  Auto2FATests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      # Compile the pure core DIRECTLY into the test bundle (Foundation-only, no
+      # app host) so tests run headlessly — the app never launches, so its
+      # daemon-install / spawn side-effects never fire during `xcodebuild test`.
+      - path: Auto2FATests
+      - path: Auto2FA/SyncCore.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.auto2fa.tests
+
+schemes:
+  Auto2FATests:
+    build:
+      targets:
+        Auto2FATests: [test]
+    test:
+      targets:
+        - Auto2FATests
