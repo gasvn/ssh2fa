@@ -504,6 +504,19 @@ pub fn master_exit(control_path: &Path, host: &str) {
 /// [`run_ssh_bounded`] so a wedged socket cannot block the pre-login cleanup
 /// forever. The socket file is force-removed afterward regardless of outcome.
 pub fn cleanup_stale_socket(path: &Path, host: &str) {
+    // SAFETY GATE: never disturb a master that is currently listening. A live
+    // listener means real client sessions may be multiplexed on it — removing
+    // its socket or killing it would drop the user's sessions. The reconnect
+    // path only reaches cleanup when we've decided the master is gone; this is
+    // belt-and-suspenders against a master that recovered in between.
+    if master_probe(path) == MasterLiveness::Alive {
+        warn!(
+            "[{host}] cleanup_stale_socket: master is ALIVE on {} — refusing to clean",
+            path.display()
+        );
+        return;
+    }
+
     // 1. Polite exit via the control socket if it's still there — a graceful
     //    close of the socket's current owner before we hard-kill any remaining
     //    masters in step 2.
@@ -754,6 +767,10 @@ pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
 }
 
 fn kill_orphaned_master(control_path: &Path, host: &str) {
+    // SAFETY GATE: a listening master is serving clients — do not kill it.
+    if master_probe(control_path) == MasterLiveness::Alive {
+        return;
+    }
     let needle = control_path.to_string_lossy().into_owned();
     let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", &needle], Duration::from_secs(2)) {
         Some(o) if o.status.success() => o, // exit 0 → at least one match
@@ -1075,6 +1092,21 @@ mod probe_tests {
         let sock = std::env::temp_dir().join("a2fa-probe-absent-does-not-exist.sock");
         let _ = std::fs::remove_file(&sock);
         assert_eq!(master_probe(&sock), MasterLiveness::Dead);
+    }
+
+    #[test]
+    fn cleanup_is_noop_when_master_is_listening() {
+        let dir = std::env::temp_dir().join(format!("a2fa-cleanup-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("live.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        // A live listener must survive cleanup: the socket file is untouched.
+        cleanup_stale_socket(&sock, "testhost");
+        assert!(sock.exists(), "cleanup must not remove a live master's socket");
+        assert_eq!(master_probe(&sock), MasterLiveness::Alive);
+        drop(listener);
+        let _ = std::fs::remove_file(&sock);
     }
 
     #[test]
