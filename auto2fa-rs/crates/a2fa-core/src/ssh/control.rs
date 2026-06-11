@@ -30,6 +30,17 @@ const SSH_G_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the bounded-run poll loop wakes up to check for child exit.
 const BOUNDED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Result of the cheap, fork-free ControlMaster liveness probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasterLiveness {
+    /// A master is listening on the socket (connect succeeded).
+    Alive,
+    /// Socket file absent, or present but no listener (ECONNREFUSED).
+    Dead,
+    /// No confident answer (transient error / would-block). Never escalates.
+    Inconclusive,
+}
+
 // ---------------------------------------------------------------------------
 // ControlPath scheme
 // ---------------------------------------------------------------------------
@@ -424,6 +435,38 @@ pub fn master_check(control_path: &Path, host: &str) -> bool {
         "ssh -O check",
     )
     .is_success()
+}
+
+/// Cheap, fork-free liveness probe for a ControlMaster socket.
+///
+/// Does a single **blocking** unix-domain `connect()` to `control_path` and maps
+/// the outcome:
+/// - connect succeeds              → [`MasterLiveness::Alive`] (a master is
+///   listening; the kernel completes the connect against the listening socket
+///   even if the master's user-space event loop is momentarily busy)
+/// - `ECONNREFUSED`                → [`MasterLiveness::Dead`] (file exists, no
+///   listener — the master died and left its socket behind)
+/// - `NotFound`/`ENOENT`           → [`MasterLiveness::Dead`] (no master at all)
+/// - any other error               → [`MasterLiveness::Inconclusive`]
+///
+/// A unix-domain connect is a *local* operation — it returns in microseconds and
+/// cannot block on the network the way `ssh -O check` (which forks a process and
+/// can hang for seconds on a stale connection) does. A blocking connect is used
+/// deliberately: on macOS a *non-blocking* connect to a dead unix socket returns
+/// success prematurely (the refusal only surfaces on later I/O), so it is not a
+/// reliable liveness signal — a blocking connect refuses immediately. This
+/// replaces `master_check` on the heartbeat hot path and honors the
+/// no-wedge-on-the-heartbeat invariant (no subprocess, no network wait).
+pub fn master_probe(control_path: &Path) -> MasterLiveness {
+    match std::os::unix::net::UnixStream::connect(control_path) {
+        Ok(_stream) => MasterLiveness::Alive, // dropped immediately → client disconnect
+        Err(e) => match e.raw_os_error() {
+            Some(libc::ECONNREFUSED) => MasterLiveness::Dead,
+            Some(libc::ENOENT) => MasterLiveness::Dead,
+            _ if e.kind() == std::io::ErrorKind::NotFound => MasterLiveness::Dead,
+            _ => MasterLiveness::Inconclusive,
+        },
+    }
 }
 
 /// Send `ssh -O exit` to cleanly shut down the ControlMaster for a pool slot.
@@ -1007,5 +1050,59 @@ mod tests {
             elapsed < std::time::Duration::from_secs(4),
             "run_ssh_bounded took too long: {elapsed:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn probe_alive_when_listener_present() {
+        let dir = std::env::temp_dir().join(format!("a2fa-probe-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("alive.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        assert_eq!(master_probe(&sock), MasterLiveness::Alive);
+        drop(listener);
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[test]
+    fn probe_dead_when_socket_file_absent() {
+        let sock = std::env::temp_dir().join("a2fa-probe-absent-does-not-exist.sock");
+        let _ = std::fs::remove_file(&sock);
+        assert_eq!(master_probe(&sock), MasterLiveness::Dead);
+    }
+
+    #[test]
+    fn probe_dead_when_socket_lingers_without_listener() {
+        // std's UnixListener does NOT unlink on drop, so the file lingers with
+        // no listener — exactly the "master died, socket left behind" case.
+        let dir = std::env::temp_dir().join(format!("a2fa-probe-stale-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("stale.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        drop(listener); // fd closed, file remains
+        // Poll to tolerate a TEST-ONLY race: the a2fa-core suite has tests that
+        // fork+exec subprocesses, and on macOS CLOEXEC is set non-atomically
+        // after socket(), so a concurrent fork can briefly inherit our listener
+        // fd and keep the socket connectable until that short-lived child exits.
+        // The probe itself is correct (verified single-threaded); we just wait
+        // out the race. (Production is unaffected: the daemon never binds master
+        // sockets, so it can't keep a dead master's socket alive.)
+        let mut result = master_probe(&sock);
+        for _ in 0..100 {
+            if result == MasterLiveness::Dead {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            result = master_probe(&sock);
+        }
+        assert_eq!(result, MasterLiveness::Dead);
+        let _ = std::fs::remove_file(&sock);
     }
 }
