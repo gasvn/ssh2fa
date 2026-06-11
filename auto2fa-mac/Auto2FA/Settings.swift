@@ -8,6 +8,7 @@ enum SettingsKey {
     static let notchEnabled = "auto2fa.notch.enabled"
     static let notchPersistent = "auto2fa.notch.persistent"
     static let notchDoNotDisturb = "auto2fa.notch.dnd"
+    static let requireTouchID = "auto2fa.security.requireTouchID"
     static let autoOpenBrowser = "auto2fa.autoOpenBrowser"
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
@@ -23,6 +24,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
+    @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     // launch-at-login state isn't a persisted preference (it's owned by
     // macOS via SMAppService); we just mirror it in @State for the Toggle.
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -97,6 +99,18 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Daemon") }
+
+                Section {
+                    Toggle("Require Touch ID to open the dashboard", isOn: $requireTouchID)
+                    Text("Locks the dashboard and log windows behind Touch ID (falls back to your Mac login password). The menu-bar icon stays visible. Re-locks ~60s after you close the window.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if requireTouchID && !BiometricLock.availability().ok {
+                        Text("⚠︎ This Mac can't evaluate Touch ID or a login password right now — the lock may not engage.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } header: { Text("Privacy & Security") }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
