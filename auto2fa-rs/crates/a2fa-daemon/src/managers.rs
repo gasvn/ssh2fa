@@ -51,7 +51,6 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 
 use a2fa_core::engine::State;
-use a2fa_core::ssh::control::master_check;
 use a2fa_core::ssh::master::{start_master, stop_all, PoolState, SlotStatus, POOL_SIZE};
 
 use crate::workers::{make_otp_closure, OtpRegistry};
@@ -420,6 +419,7 @@ impl HostManagers {
             slot_ready_since: p.slot_ready_since,
             flap_count: p.flap_count,
             flap_backoff_until: p.flap_backoff_until,
+            consecutive_probe_failures: p.consecutive_probe_failures,
         })
     }
 
@@ -455,6 +455,7 @@ impl HostManagers {
                     slot_ready_since: p.slot_ready_since,
                     flap_count: p.flap_count,
                     flap_backoff_until: p.flap_backoff_until,
+                    consecutive_probe_failures: p.consecutive_probe_failures,
                 })
                 .collect()
         };
@@ -1160,14 +1161,29 @@ fn tick_host(
         return;
     }
 
-    // --- Per-slot heartbeat: run ssh -O check (off-lock) ---
+    // --- Per-slot heartbeat: cheap non-blocking liveness probe (off-lock) ---
     for slot in 0..POOL_SIZE {
         let path = pool.pool_path(slot);
 
-        // Only bother checking slots that have ever been started.
+        // Only bother probing slots that have ever been started.
         let check_result: Option<bool> = match pool.slot_status[slot] {
             SlotStatus::Init => None, // never started — skip live check
-            _ => Some(master_check(&path, host_name)),
+            _ => {
+                let liveness = a2fa_core::ssh::control::master_probe(&path);
+                // Fold into the per-slot hysteresis counter, then derive the
+                // legacy check_alive with the threshold applied. A single Dead
+                // probe yields None (no restart); only PROBE_FAILURE_THRESHOLD
+                // consecutive Dead probes yield Some(false).
+                let failures = managers.with_pool_mut(host_name, |p| {
+                    p.note_probe_result(slot, liveness);
+                    p.consecutive_probe_failures[slot]
+                });
+                a2fa_core::ssh::master::probe_to_check(
+                    liveness,
+                    failures,
+                    a2fa_core::ssh::master::PROBE_FAILURE_THRESHOLD,
+                )
+            }
         };
 
         // Flap accounting: a Ready slot whose live check passes and that has been
