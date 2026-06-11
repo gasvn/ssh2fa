@@ -16,6 +16,8 @@ nodes.
 2. **Add Host** → enter your ssh-config **alias**, **password**, and your **2FA secret** (the wizard has a "How do I get this?" walkthrough, incl. Duo). It test-logs-in before saving.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
+Prefer Homebrew? `brew install --cask gasvn/tap/auto2fa` (once the tap is published — see [docs/RELEASE.md](docs/RELEASE.md#homebrew-cask)).
+
 Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's wrong.
 
 <!-- Screenshot: drop an image at docs/screenshot.png and uncomment:

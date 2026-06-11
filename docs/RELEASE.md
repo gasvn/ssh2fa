@@ -100,6 +100,30 @@ That's the only step — `docs/.nojekyll` makes GitHub serve the HTML as-is. The
 markdown docs (README/SECURITY/RELEASE) stay GitHub-rendered; the landing page
 links to them.
 
+## Homebrew cask
+
+A cask lives at [`Casks/auto2fa.rb`](../Casks/auto2fa.rb) — but this repo isn't a
+tap (a tap repo must be named `homebrew-*`). To let people
+`brew install --cask`:
+
+1. **One time:** create a public repo `gasvn/homebrew-tap` and copy
+   `Casks/auto2fa.rb` into its `Casks/` directory.
+2. **Each release:** after `package-app.sh`, paste the printed **DMG sha256**
+   and bump `version` in the cask, then push it to the tap.
+
+Then users install with:
+
+```sh
+brew tap gasvn/tap
+brew install --cask auto2fa          # or: brew install --cask gasvn/tap/auto2fa
+brew uninstall --zap --cask auto2fa  # full removal incl. Keychain creds
+```
+
+The cask quits the app + unloads the LaunchAgent on uninstall; `--zap` also
+trashes `~/.auto2fa`, the LaunchAgent plist, prefs, and every Keychain
+credential under the `auto2fa` service. Validate edits with
+`brew style ./Casks/auto2fa.rb` (and `brew audit --cask` once a release exists).
+
 ## Future: Sparkle auto-update
 
 The current updater only *notifies* (it never downloads/installs — the user

@@ -146,4 +146,8 @@ fi
 
 echo ""; echo "dist/:"; ls -lh "$DIST/" | grep -v '^total'
 echo ""; echo "Identity: $SIGN_ID | developer-id: $IS_DEVELOPER_ID | notarize: ${AUTO2FA_NOTARIZE:-0}"
+
+# Homebrew cask sha256 — paste into Casks/auto2fa.rb when cutting a release.
+echo ""; echo "DMG sha256 (for Casks/auto2fa.rb):"
+shasum -a 256 "$DMG" | awk '{print "  "$1}'
 rm -rf "$DD"
