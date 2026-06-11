@@ -231,9 +231,13 @@ pub fn resolve_control_base(host: &str) -> PathBuf {
 ///
 /// The active symlink (`target_control_path`) is stored **without** the
 /// `-<index>` suffix and is managed separately by `update_symlink`.
-pub fn control_path(host: &str, index: usize) -> PathBuf {
-    let base = resolve_control_base(host);
-    PathBuf::from(format!("{}-{index}", base.display()))
+pub fn control_path(host: &str, _index: usize) -> PathBuf {
+    // Single-master: the one master binds the **stable base** ControlPath
+    // directly — no `-<index>` suffix, no symlink indirection. This IS the path
+    // the user's ssh config (`ControlPath ~/.ssh/cm-…-%h`) resolves to, so
+    // `ssh <host>` attaches to the live master with nothing in between. The
+    // `_index` parameter is retained for call-site compatibility (always 0).
+    resolve_control_base(host)
 }
 
 /// Return the **active symlink** path (no pool index suffix).
@@ -248,43 +252,13 @@ pub fn active_symlink_path(host: &str) -> PathBuf {
 // Active-symlink management (mirrors `update_symlink` in backend.py)
 // ---------------------------------------------------------------------------
 
-/// Point the active symlink at the specified pool member socket, atomically.
+/// No-op in the single-master model.
 ///
-/// Uses a temp-link + `rename` so callers never see a broken/absent symlink.
-/// Returns `true` on success.
-pub fn update_symlink(host: &str, index: usize) -> bool {
-    let target = active_symlink_path(host);
-    let source = control_path(host, index);
-    // APPEND ".tmp" — `with_extension` REPLACES the final dot-component, so for
-    // an FQDN ControlPath ("…harvard.edu" → "…harvard.tmp") two hosts differing
-    // only in their last dot-component would share one tmp link and concurrent
-    // rotations could clobber each other.
-    let tmp_link = {
-        let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-        name.push(".tmp");
-        target.with_file_name(name)
-    };
-
-    // Ensure source path is absolute
-    let abs_source = match source.canonicalize() {
-        Ok(p) => p,
-        // socket may not exist yet (master not started); use as-is
-        Err(_) => source.clone(),
-    };
-
-    // Clean up stale tmp link
-    let _ = std::fs::remove_file(&tmp_link);
-
-    if let Err(e) = std::os::unix::fs::symlink(&abs_source, &tmp_link) {
-        warn!("[{host}] Failed to create tmp symlink: {e}");
-        return false;
-    }
-    if let Err(e) = std::fs::rename(&tmp_link, &target) {
-        warn!("[{host}] Failed to atomically replace symlink: {e}");
-        let _ = std::fs::remove_file(&tmp_link);
-        return false;
-    }
-    info!("[{host}] Rotated symlink → pool {index}");
+/// There is no active symlink anymore: the one master binds the stable base
+/// ControlPath directly (see [`control_path`]), so there is nothing to point.
+/// Retained as a `true`-returning no-op so the (now single-master) callers don't
+/// need conditional logic. `_index` is always 0.
+pub fn update_symlink(_host: &str, _index: usize) -> bool {
     true
 }
 
@@ -975,23 +949,23 @@ mod tests {
         let a = control_path(h, 0);
         let b = control_path(h, 0);
         assert_eq!(a, b);
-        assert_ne!(control_path(h, 0), control_path(h, 1));
+        // Single-master: the index is ignored — every call returns the same
+        // stable base path.
+        assert_eq!(control_path(h, 0), control_path(h, 1));
     }
 
     #[test]
-    fn control_path_has_index_suffix_and_symlink_does_not() {
+    fn control_path_is_the_stable_base_with_no_index_suffix() {
+        // Single-master: control_path returns the base ControlPath directly
+        // (what the user's ssh config resolves to) — no `-<index>` suffix and
+        // no symlink. It equals active_symlink_path (also the base).
         let h = "auto2fa-unittest-synthetic-host";
-        let pool1 = control_path(h, 1);
-        let s = pool1.to_string_lossy();
-        assert!(s.ends_with("-1"), "expected index suffix: {s}");
+        let p = control_path(h, 0);
+        let s = p.to_string_lossy();
+        assert!(!s.ends_with("-0"), "base path must have no index suffix: {s}");
+        assert!(!s.ends_with("-1"), "base path must have no index suffix: {s}");
         assert!(s.contains(h), "expected host in fallback path: {s}");
-
-        let sym = active_symlink_path(h);
-        let sym_s = sym.to_string_lossy();
-        assert!(!sym_s.ends_with("-0"), "symlink should have no index: {sym_s}");
-        assert!(!sym_s.ends_with("-1"), "symlink should have no index: {sym_s}");
-        // pool path is exactly the base + "-1"
-        assert_eq!(pool1, PathBuf::from(format!("{sym_s}-1")));
+        assert_eq!(p, active_symlink_path(h));
     }
 
     #[test]
