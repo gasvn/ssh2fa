@@ -1278,6 +1278,36 @@ fn tick_host(
                             return;
                         }
 
+                        // Adopt-before-restart: re-probe RIGHT before the
+                        // destructive restart. If a master is listening now (it
+                        // came back, or never actually died — a probe blip / load
+                        // spike), DO NOT kill it and DO NOT burn a 2FA login.
+                        // Adopt it back to Ready. This is the gate that makes a
+                        // false condemnation non-destructive.
+                        {
+                            let path = managers2.snapshot(&host_owned).pool_path(slot);
+                            if a2fa_core::ssh::control::master_probe(&path)
+                                == a2fa_core::ssh::control::MasterLiveness::Alive
+                            {
+                                info!("[{host_owned}] hb-restart: master ALIVE on re-probe — adopting (no kill, no 2FA)");
+                                managers2.with_pool_mut(&host_owned, |p| {
+                                    p.slot_status[slot] = SlotStatus::Ready;
+                                    p.consecutive_probe_failures[slot] = 0;
+                                    p.mark_slot_ready(slot);
+                                });
+                                let alive = managers2
+                                    .with_pool(&host_owned, |p| {
+                                        p.slot_status
+                                            .iter()
+                                            .filter(|s| **s == SlotStatus::Ready)
+                                            .count() as u8
+                                    })
+                                    .unwrap_or(1);
+                                heal_host_state(&state2, &host_owned, slot, alive);
+                                return; // StartGuard drops → releases the in-flight token
+                            }
+                        }
+
                         // Read Keychain creds IN-THREAD (may block on a prompt).
                         let (password, secret) = load_creds(&host_owned);
 
