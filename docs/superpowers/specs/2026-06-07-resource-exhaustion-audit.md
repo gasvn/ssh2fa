@@ -50,7 +50,7 @@ through these patterns, not re-implement bare `Command::output()`.**
 
 ## Verification
 
-Full workspace, single-threaded: **a2fa-core 122, a2fa-daemon 140, cli 15, tui 36** — 0 failures.
+Full workspace, single-threaded: **a2fa-core 122, ssh2fa-daemon 140, cli 15, tui 36** — 0 failures.
 Release compiles. Nothing deployed. Audit: 16 confirmed candidates → 9 distinct issues fixed;
 64 sites checked & cleared (incl. the Python daemon, the Swift timers, the already-guarded
 maintenance loops).
@@ -100,7 +100,7 @@ collections), the audits added two rules that the fixes now follow everywhere:
    (`into_inner()` recovery) + per-tick `catch_unwind` (survive + continue).
 
 ### Status
-Full workspace single-threaded: a2fa-core 125, a2fa-daemon 143, cli 15, tui 36 — 0 failures;
+Full workspace single-threaded: a2fa-core 125, ssh2fa-daemon 143, cli 15, tui 36 — 0 failures;
 Python compiles; release compiles. `rust-rewrite` ~72 commits ahead of main. **Not deployed.**
 Verdict: **GO** — no known reachable hang/crash/leak/deadlock; normal operation verified intact.
 
@@ -113,7 +113,7 @@ prompts — this is not normal." Systematic debugging (no guessing) of the live 
 
 **Evidence gathered (read-only first):** single daemon, correctly signed with the stable
 Apple Development identity, **0 ssh procs / 25 fds** at snapshot. The cumulative log
-(`/tmp/auto2fa_daemon.log`, **appended across 29 daemon restarts today**) showed ~8k
+(`/tmp/ssh2fa_daemon.log`, **appended across 29 daemon restarts today**) showed ~8k
 `spawning ssh master` with ~6k `dup of fd failed` + ~2k `Too many open files`. Splitting
 by restart boundary: **all 2039 fd-exhaustion failures and the bulk of the cred reads were
 in the 28 earlier (pre-round-3, buggy) instances; ZERO after the current binary's restart**
@@ -140,10 +140,10 @@ the master fd is **O_CLOEXEC**. The current pty teardown does NOT leak. (Probe r
   complete creds cached; `invalidate_creds_cache` from `host_add`). Poison-tolerant.
 - `sys.rs` (new): `raise_fd_limit()` lifts soft NOFILE toward 8192 (capped at hard/kernel),
   called first in `main()`.
-- Deploy procedure: sign with **pinned** `--identifier com.auto2fa.daemon`; optional plist
+- Deploy procedure: sign with **pinned** `--identifier com.ssh2fa.daemon`; optional plist
   `SoftResourceLimits NumberOfFiles`.
 
-Tests: a2fa-core **127** (+2 sys), a2fa-daemon **147** (+4 creds), cli 15, tui 36 — 0 failures.
+Tests: a2fa-core **127** (+2 sys), ssh2fa-daemon **147** (+4 creds), cli 15, tui 36 — 0 failures.
 The bug-class invariant is unchanged; this adds **"resolve each external secret once and
 cache it"** + **"raise the process fd limit at startup"** as standing rules.
 
@@ -187,7 +187,7 @@ INVARIANT EXTENDED: **non-ssh external commands also go through a bounded chokep
 (migration + cleanup on bounded workers), and **loop-thread spawns degrade, never `.expect`/`?`
 to process exit** (no launchd crashloop).
 
-Tests: a2fa-core **133**, a2fa-daemon **150** (+ mount latch, cap_transcript, run_cmd_bounded,
+Tests: a2fa-core **133**, ssh2fa-daemon **150** (+ mount latch, cap_transcript, run_cmd_bounded,
 log-prune tests), cli 15, tui 36 — 0 failures; clippy no new errors. Not yet deployed.
 
 ### Round 5b — fix-verification pass (do the fixes regress?) — 2026-06-07
@@ -218,7 +218,7 @@ were judged sound. **Accepted residual (low, non-hang):** a failed/timed-out ssh
 daemonized go-nfsv4/FUSE process that cleanup_orphans (matches only `ssh -N -J … -L`) doesn't
 reap — a slow resource leak under repeated failed mounts, not a machine hang.
 
-Tests after 5b: a2fa-core **134**, a2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
+Tests after 5b: a2fa-core **134**, ssh2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
 
 ### Round 5c — clean re-verification (full budget) — 2026-06-07
 
@@ -244,5 +244,5 @@ the stability verdict on the fixes is **CLEAN**.
 4 system-threatening, + 2 fix-verification regressions + 1 re-verification regression, all fixed)
 no known reachable hang/crash/leak/deadlock/crashloop remains; normal operation verified intact
 by the full suite. Residuals are LOW data-integrity/correctness items, none machine-threatening.
-Tests after 5c: a2fa-core **135**, a2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
+Tests after 5c: a2fa-core **135**, ssh2fa-daemon **150**, cli 15, tui 36 — 0 failures; clippy clean.
 Not yet deployed (awaiting user go-live + pinned-identifier signing).

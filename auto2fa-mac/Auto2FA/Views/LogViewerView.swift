@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Live-tail viewer for /tmp/auto2fa_daemon.log. Polls the daemon every 2s
+/// Live-tail viewer for /tmp/ssh2fa_daemon.log. Polls the daemon every 2s
 /// via the log_tail IPC method, colorises common patterns, supports
 /// substring filtering (case-insensitive). Bottom-pinned auto-scroll
 /// unless the user has scrolled away.
@@ -34,9 +34,9 @@ struct LogViewerView: View {
                     .help("Load more history (keeps showing it — the live tail won't shrink it back)")
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting(
-                        [URL(fileURLWithPath: "/tmp/auto2fa_daemon.log")])
+                        [URL(fileURLWithPath: "/tmp/ssh2fa_daemon.log")])
                 } label: { Label("Reveal", systemImage: "doc.text.magnifyingglass") }
-                    .help("Show /tmp/auto2fa_daemon.log in Finder")
+                    .help("Show /tmp/ssh2fa_daemon.log in Finder")
             }
             .padding(8)
             .background(.bar)

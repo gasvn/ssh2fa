@@ -13,7 +13,7 @@ struct Auto2FAApp: App {
     @State private var preferenceSync: PreferenceSync?
 
     var body: some Scene {
-        WindowGroup("Auto2FA") {
+        WindowGroup("SSH2FA") {
             LockGate {
                 ContentView()
                     .environmentObject(appState)
@@ -40,7 +40,7 @@ struct Auto2FAApp: App {
                     .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
                 if spawnAllowed {
                     // First-run / post-update: install the bundled daemon to
-                    // ~/.auto2fa + register the LaunchAgent (no-op in a dev
+                    // ~/.ssh2fa + register the LaunchAgent (no-op in a dev
                     // build or when already installed). This is what makes
                     // a downloaded .app self-contained — launchd then keeps
                     // the daemon alive across reboots; ensureRunning below
@@ -49,9 +49,9 @@ struct Auto2FAApp: App {
                     let result = await DaemonProcess.shared.ensureRunning()
                     switch result {
                     case .alreadyRunning:
-                        NSLog("[Auto2FA] daemon was already running")
+                        NSLog("[SSH2FA] daemon was already running")
                     case .spawned(let pid):
-                        NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
+                        NSLog("[SSH2FA] spawned daemon, PID=\(pid)")
                     case .failed(let reason):
                         // Surface the reason but DON'T return — fall
                         // through to bootstrap() so the connection watcher
@@ -61,7 +61,7 @@ struct Auto2FAApp: App {
                         appState.connectionError = reason
                     }
                 } else {
-                    NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
+                    NSLog("[SSH2FA] spawnDaemonOnLaunch=off; assuming external daemon")
                 }
                 await appState.bootstrap()
             }
@@ -103,8 +103,8 @@ struct Auto2FAApp: App {
                 }
             }
             CommandGroup(replacing: .help) {
-                Link("Auto2FA on GitHub",
-                     destination: URL(string: "https://github.com/gasvn/auto2fa")!)
+                Link("SSH2FA on GitHub",
+                     destination: URL(string: "https://github.com/gasvn/ssh2fa")!)
             }
         }
 
@@ -114,10 +114,10 @@ struct Auto2FAApp: App {
         }
 
         // A separate WindowGroup for the log viewer. SwiftUI auto-adds a
-        // "New Auto2FA Logs Window" item to the Window menu since this is a
+        // "New SSH2FA Logs Window" item to the Window menu since this is a
         // second WindowGroup. The menu-bar status item also offers a quick
         // way to open it via MenuBarController.
-        WindowGroup("Auto2FA Logs", id: "logs") {
+        WindowGroup("SSH2FA Logs", id: "logs") {
             LockGate {
                 LogViewerView()
                     .environmentObject(appState)
@@ -135,7 +135,7 @@ struct Auto2FAApp: App {
         // The main window is whichever NSWindow this WindowGroup vended. Pick
         // the most recently key window with a non-nil titlebar — that's our
         // main window, not the menu-bar overflow window or a settings panel.
-        let window = NSApp.windows.first { $0.isVisible && $0.title == "Auto2FA" }
+        let window = NSApp.windows.first { $0.isVisible && $0.title == "SSH2FA" }
             ?? NSApp.windows.first
         menuBar.install(appState: appState, window: window)
     }
@@ -210,7 +210,7 @@ struct Auto2FAApp: App {
                 let recover = UserDefaults.standard
                     .object(forKey: SettingsKey.autoRecoverOnWake) as? Bool ?? true
                 guard recover else {
-                    NSLog("[Auto2FA] wake observed; autoRecoverOnWake=off, skipping")
+                    NSLog("[SSH2FA] wake observed; autoRecoverOnWake=off, skipping")
                     return
                 }
                 appState.notchPresenter.show(
@@ -222,9 +222,9 @@ struct Auto2FAApp: App {
                 Task {
                     do {
                         try await appState.client.wakeRecover()
-                        NSLog("[Auto2FA] wake_recover dispatched")
+                        NSLog("[SSH2FA] wake_recover dispatched")
                     } catch {
-                        NSLog("[Auto2FA] wake_recover failed: \(error.localizedDescription)")
+                        NSLog("[SSH2FA] wake_recover failed: \(error.localizedDescription)")
                     }
                     await appState.reloadAll()
                 }

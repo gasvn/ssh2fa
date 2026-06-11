@@ -11,15 +11,15 @@ auto2fa's Python code is already portable — every path goes through
 path in the logic. What binds an install to one specific machine lives
 entirely in three hand-written deployment artifacts:
 
-- `~/Library/LaunchAgents/com.auto2fa.daemon.plist` — absolute interpreter and
+- `~/Library/LaunchAgents/com.ssh2fa.daemon.plist` — absolute interpreter and
   project paths
-- `~/.auto2fa/project-dir.txt` — absolute repo path (read by the Mac app)
-- `~/.auto2fa/python-path.txt` — absolute venv interpreter (read by the Mac app)
+- `~/.ssh2fa/project-dir.txt` — absolute repo path (read by the Mac app)
+- `~/.ssh2fa/python-path.txt` — absolute venv interpreter (read by the Mac app)
 
 Nothing generates these from the environment. Moving to a new Mac, reinstalling,
 or handing the project to someone else means editing absolute paths by hand —
-and the repo's checked-in `LaunchAgents/com.auto2fa.daemon.plist` template is
-stale (it points at `/usr/local/bin/auto2fa-daemon`, which does not match the
+and the repo's checked-in `LaunchAgents/com.ssh2fa.daemon.plist` template is
+stale (it points at `/usr/local/bin/ssh2fa-daemon`, which does not match the
 venv-based layout the daemon actually uses). The recurring "data vanished after
 reboot" failures were a symptom of this gap: the code assumes a generic per-user
 environment, but the boot/deploy wiring was implicitly tied to one interactive
@@ -35,7 +35,7 @@ per-OS dispatch seam.
 
 Non-goals for P0 (explicitly deferred):
 - No changes to the Swift Mac app (it keeps reading the two pointer files).
-- No unified `~/.auto2fa/config.toml` (later cross-cutting work).
+- No unified `~/.ssh2fa/config.toml` (later cross-cutting work).
 - No Slurm decoupling (P2).
 - No Linux service generation yet (P3 fills the seam P0 leaves).
 - No `uninstall` / `doctor` subcommands (out of chosen scope).
@@ -57,14 +57,14 @@ install.py            (repo root; stdlib-only; runs under the system python3)
         │
         ▼
 auto2fa/installer.py   (the real logic; invoked as the `auto2fa install` subcommand)
-   • detect()          -> resolve repo_dir, venv interpreter (.venv/bin/auto2fa-daemon
+   • detect()          -> resolve repo_dir, venv interpreter (.venv/bin/ssh2fa-daemon
                           + .venv/bin/python), config_dir() (~/.ssh), platform
-   • write_pointers()  -> write ~/.auto2fa/project-dir.txt and
-                          ~/.auto2fa/python-path.txt (the Mac app discovers via these)
+   • write_pointers()  -> write ~/.ssh2fa/project-dir.txt and
+                          ~/.ssh2fa/python-path.txt (the Mac app discovers via these)
    • render_service()  -> per-OS dispatch:
         macOS: render the LaunchAgent plist from a template with the detected
-               venv auto2fa-daemon path, WorkingDirectory, and SSH_CONFIG_PATH;
-               write to ~/Library/LaunchAgents/com.auto2fa.daemon.plist;
+               venv ssh2fa-daemon path, WorkingDirectory, and SSH_CONFIG_PATH;
+               write to ~/Library/LaunchAgents/com.ssh2fa.daemon.plist;
                launchctl bootout (ignore failure) + bootstrap + kickstart -k
         non-macOS: write pointers only, log "service auto-start not yet
                supported on <os> (P3)", exit success (do NOT fail)
@@ -86,7 +86,7 @@ auto2fa/installer.py   (the real logic; invoked as the `auto2fa install` subcomm
 The template is an inline string constant in `installer.py` (avoids package-data
 / MANIFEST plumbing so it is always present after `pip install -e .`), with
 placeholders for the interpreter path, working directory, and `SSH_CONFIG_PATH`.
-The installer renders it with detected values. The stale checked-in `LaunchAgents/com.auto2fa.daemon.plist`
+The installer renders it with detected values. The stale checked-in `LaunchAgents/com.ssh2fa.daemon.plist`
 is removed (or reduced to a documentation pointer) — the installer becomes the
 single source of truth so the two can never drift again.
 
@@ -95,7 +95,7 @@ single source of truth so the two can never drift again.
 1. User: `git clone … && cd auto2fa && python3 install.py`
 2. `install.py` creates `.venv`, `pip install -e .`, runs `.venv/bin/auto2fa install`
 3. `installer.detect()` resolves all paths from the live environment
-4. `installer.write_pointers()` writes the two `~/.auto2fa/*.txt` files
+4. `installer.write_pointers()` writes the two `~/.ssh2fa/*.txt` files
 5. `installer.render_service()` writes + (re)loads the LaunchAgent
 6. `installer.verify()` checks the socket; print "installed, daemon serving N
    hosts" or a clear failure with the log path
@@ -104,7 +104,7 @@ single source of truth so the two can never drift again.
 
 - Re-running overwrites the three artifacts with freshly-detected values.
 - An existing LaunchAgent plist is backed up once to
-  `com.auto2fa.daemon.plist.bak-YYYYMMDD` before being overwritten (matching the
+  `com.ssh2fa.daemon.plist.bak-YYYYMMDD` before being overwritten (matching the
   convention already used this session).
 - `launchctl bootstrap` returning "already loaded" is handled by always
   `bootout`-ing first (ignoring "no such process").
@@ -119,7 +119,7 @@ single source of truth so the two can never drift again.
 | `pip install` fails | surface pip output, abort |
 | `launchctl bootstrap` "already loaded" | bootout first (idempotent), retry |
 | non-macOS platform | write pointers, print P3 notice, exit 0 (don't fail) |
-| socket not responding after load | warn, point at `/tmp/auto2fa_daemon.log`, non-fatal |
+| socket not responding after load | warn, point at `/tmp/ssh2fa_daemon.log`, non-fatal |
 
 ## Testing
 
@@ -144,7 +144,7 @@ Per project policy, cover new and changed code.
 - Fresh clone on any of the user's Macs: `python3 install.py` →
   login-auto-starting daemon, data present, no manual path edits.
 - Idempotent re-run leaves a working install.
-- After install: `~/.auto2fa/auto2fa.sock` responds and `auto2fa list` lists hosts.
+- After install: `~/.ssh2fa/ssh2fa.sock` responds and `auto2fa list` lists hosts.
 - The stale repo plist template no longer exists to mislead.
 
 ## Sets up later phases

@@ -53,10 +53,10 @@ fn main() -> Result<()> {
     let otp_secret = std::env::var("A2FA_OTP_SECRET").ok();
 
     // Use a simple temporary socket path for this prototype
-    let control_path = format!("/tmp/cm-auto2fa-example-{host}-0");
+    let control_path = format!("/tmp/cm-ssh2fa-example-{host}-0");
 
     // Build argv — same options as master.rs start_master
-    let log_file = format!("/tmp/auto2fa_ssh_example_{host}.log");
+    let log_file = format!("/tmp/ssh2fa_ssh_example_{host}.log");
     let argv: Vec<String> = vec![
         "-v".into(),
         "-E".into(),         log_file,
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
 
     println!("[ssh_login] Connecting to {user}@{host} …");
     println!("[ssh_login] ControlPath: {control_path}");
-    println!("[ssh_login] See verbose log: /tmp/auto2fa_ssh_example_{host}.log");
+    println!("[ssh_login] See verbose log: /tmp/ssh2fa_ssh_example_{host}.log");
 
     let otp_provider = move || -> Result<String> {
         match &otp_secret {

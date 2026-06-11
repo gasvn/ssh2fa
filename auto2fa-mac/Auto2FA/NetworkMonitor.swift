@@ -13,7 +13,7 @@ import Network
 @MainActor
 final class NetworkMonitor {
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "com.auto2fa.networkmonitor")
+    private let queue = DispatchQueue(label: "com.ssh2fa.networkmonitor")
     private var lastInterfaceSignature: String = ""
     private var pendingFireTask: Task<Void, Never>?
     private let onChange: () -> Void
@@ -56,7 +56,7 @@ final class NetworkMonitor {
         guard signature != lastInterfaceSignature else { return }
         let prev = lastInterfaceSignature
         lastInterfaceSignature = signature
-        NSLog("[Auto2FA] network change: \(prev) → \(signature)")
+        NSLog("[SSH2FA] network change: \(prev) → \(signature)")
         guard !prev.isEmpty else { return }
 
         // Debounce: rapid changes (e.g. interface dropping then coming back
@@ -66,7 +66,7 @@ final class NetworkMonitor {
             try? await Task.sleep(nanoseconds: UInt64((self?.debounce ?? 3.0) * 1_000_000_000))
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                NSLog("[Auto2FA] network change settled — firing recovery")
+                NSLog("[SSH2FA] network change settled — firing recovery")
                 self?.onChange()
             }
         }

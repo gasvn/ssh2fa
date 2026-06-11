@@ -1,18 +1,18 @@
 import Foundation
 import AppKit
 
-/// Manages the lifecycle of the **Rust** `a2fa-daemon` process.
+/// Manages the lifecycle of the **Rust** `ssh2fa-daemon` process.
 ///
 /// On app launch we check whether a daemon is already listening on the Unix
-/// socket. If yes (the normal case — a LaunchAgent `com.auto2fa.daemon` keeps
+/// socket. If yes (the normal case — a LaunchAgent `com.ssh2fa.daemon` keeps
 /// the Rust daemon running), we leave it alone and just connect. If not, we
 /// spawn the Rust binary ourselves and keep its PID so we can shut it down when
 /// the app terminates.
 ///
 /// Daemon-binary discovery (the single self-contained Rust executable):
-///   1. `~/.auto2fa/a2fa-daemon` — the installed/stable path the LaunchAgent
+///   1. `~/.ssh2fa/ssh2fa-daemon` — the installed/stable path the LaunchAgent
 ///      also points at.
-///   2. `<project>/auto2fa-rs/target/release/a2fa-daemon` — dev checkout build.
+///   2. `<project>/auto2fa-rs/target/release/ssh2fa-daemon` — dev checkout build.
 ///   3. give up; surface error to user.
 ///
 /// The Rust daemon resolves its config dir from `SSH_CONFIG_PATH` (falling back
@@ -44,7 +44,7 @@ final class DaemonProcess {
         if ownedDaemonIsAlive {
             return nil  // still alive — let the regular reconnect try
         }
-        NSLog("[Auto2FA] owned daemon died — respawning")
+        NSLog("[SSH2FA] owned daemon died — respawning")
         // Do NOT clear ownedProcess here. ensureRunning() overwrites it with
         // the new Process only on a successful spawn; if the spawn fails we
         // must keep the (dead) reference so this guard stays true and a later
@@ -56,7 +56,7 @@ final class DaemonProcess {
     /// Returns true if a daemon is already responding on the socket. Used to
     /// short-circuit spawning a duplicate.
     static func socketResponds() -> Bool {
-        let path = ("~/.auto2fa/auto2fa.sock" as NSString).expandingTildeInPath
+        let path = ("~/.ssh2fa/ssh2fa.sock" as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: path) else { return false }
         // Try a quick connect; if it fails immediately, the socket is stale.
         // A real running daemon will accept and respond.
@@ -103,7 +103,7 @@ final class DaemonProcess {
         let home = NSHomeDirectory()
 
         // 1. Explicit override
-        let overridePath = home + "/.auto2fa/project-dir.txt"
+        let overridePath = home + "/.ssh2fa/project-dir.txt"
         if let data = try? String(contentsOfFile: overridePath, encoding: .utf8) {
             let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty && fm.fileExists(atPath: trimmed + "/auto2fa-rs") {
@@ -120,9 +120,9 @@ final class DaemonProcess {
         return nil
     }
 
-    /// Resolve the Rust `a2fa-daemon` binary to launch.
+    /// Resolve the Rust `ssh2fa-daemon` binary to launch.
     ///
-    /// Order: installed stable path (`~/.auto2fa/a2fa-daemon`, what the
+    /// Order: installed stable path (`~/.ssh2fa/ssh2fa-daemon`, what the
     /// LaunchAgent uses) > daemon bundled inside this .app > dev release build
     /// under the project checkout > nil.
     static func discoverDaemonBinary() -> String? {
@@ -137,14 +137,14 @@ final class DaemonProcess {
         }
 
         // 2. Installed/stable path (legacy hand-deploy / dev convenience).
-        let installed = home + "/.auto2fa/a2fa-daemon"
+        let installed = home + "/.ssh2fa/ssh2fa-daemon"
         if fm.isExecutableFile(atPath: installed) {
             return installed
         }
 
         // 3. Dev release build under the project checkout.
         if let projectDir = discoverProjectDir() {
-            let devBuild = projectDir + "/auto2fa-rs/target/release/a2fa-daemon"
+            let devBuild = projectDir + "/auto2fa-rs/target/release/ssh2fa-daemon"
             if fm.isExecutableFile(atPath: devBuild) {
                 return devBuild
             }
@@ -154,12 +154,12 @@ final class DaemonProcess {
     }
 
     /// The daemon binary shipped inside this .app
-    /// (`Auto2FA.app/Contents/Resources/a2fa-daemon`), or nil in a dev build
+    /// (`SSH2FA.app/Contents/Resources/ssh2fa-daemon`), or nil in a dev build
     /// where it isn't bundled (the packaging script copies it in).
-    /// True iff a `com.auto2fa.daemon` LaunchAgent is installed — i.e. launchd
+    /// True iff a `com.ssh2fa.daemon` LaunchAgent is installed — i.e. launchd
     /// owns the daemon's lifecycle and the app must not spawn a competing copy.
     static func launchAgentInstalled() -> Bool {
-        let p = NSHomeDirectory() + "/Library/LaunchAgents/com.auto2fa.daemon.plist"
+        let p = NSHomeDirectory() + "/Library/LaunchAgents/com.ssh2fa.daemon.plist"
         return FileManager.default.fileExists(atPath: p)
     }
 
@@ -168,9 +168,9 @@ final class DaemonProcess {
         // Bundle.main.url(forResource:withExtension:) — the latter is
         // unreliable for an EXTENSIONLESS executable dropped into Resources by
         // the packaging script (it returned nil, so first-run install silently
-        // no-op'd). resourceURL/a2fa-daemon is deterministic.
+        // no-op'd). resourceURL/ssh2fa-daemon is deterministic.
         guard let res = Bundle.main.resourceURL else { return nil }
-        let url = res.appendingPathComponent("a2fa-daemon")
+        let url = res.appendingPathComponent("ssh2fa-daemon")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -179,8 +179,8 @@ final class DaemonProcess {
     /// masters across reboots.
     ///
     /// The LaunchAgent points DIRECTLY at the daemon inside this app bundle
-    /// (`Auto2FA.app/Contents/Resources/a2fa-daemon`) — it is NOT copied to
-    /// `~/.auto2fa`. Two reasons:
+    /// (`SSH2FA.app/Contents/Resources/ssh2fa-daemon`) — it is NOT copied to
+    /// `~/.ssh2fa`. Two reasons:
     ///   1. A code-signed binary that is COPIED to a new path can be refused at
     ///      exec (`OS_REASON_EXEC`) under an Apple-Development cert — i.e. the
     ///      free, un-notarized distribution build. Running it in place from the
@@ -196,11 +196,11 @@ final class DaemonProcess {
     func installBundledDaemonIfNeeded() {
         let fm = FileManager.default
         guard let bundled = DaemonProcess.bundledDaemonURL(), fm.fileExists(atPath: bundled.path) else {
-            NSLog("[Auto2FA] no bundled daemon (dev build) — skipping first-run install")
+            NSLog("[SSH2FA] no bundled daemon (dev build) — skipping first-run install")
             return
         }
         let home = NSHomeDirectory()
-        let autoDir = home + "/.auto2fa"
+        let autoDir = home + "/.ssh2fa"
         let marker = autoDir + "/.daemon-bundle-version"
         // Marker = "<app build>@<bundle daemon path>". A change in either (app
         // updated, or app moved) means launchd should kickstart to pick up the
@@ -219,7 +219,7 @@ final class DaemonProcess {
         installOrRefreshLaunchAgent(daemonPath: bundled.path, daemonWasUpdated: daemonChanged)
     }
 
-    /// Write `~/Library/LaunchAgents/com.auto2fa.daemon.plist` with this user's
+    /// Write `~/Library/LaunchAgents/com.ssh2fa.daemon.plist` with this user's
     /// paths and (re)load it. Writes only when the on-disk plist is missing or
     /// differs, so a working install isn't churned. When the daemon binary was
     /// just updated, kickstart the service so the new binary runs (launchd
@@ -227,7 +227,7 @@ final class DaemonProcess {
     private func installOrRefreshLaunchAgent(daemonPath: String, daemonWasUpdated: Bool) {
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        let label = "com.auto2fa.daemon"
+        let label = "com.ssh2fa.daemon"
         let agentsDir = home + "/Library/LaunchAgents"
         let plistPath = agentsDir + "/\(label).plist"
 
@@ -244,8 +244,8 @@ final class DaemonProcess {
             // Restart on crash but NOT after a clean exit (a graceful SIGTERM
             // tears down masters on purpose).
             "KeepAlive": ["SuccessfulExit": false],
-            "StandardOutPath": "/tmp/auto2fa_daemon.log",
-            "StandardErrorPath": "/tmp/auto2fa_daemon.log",
+            "StandardOutPath": "/tmp/ssh2fa_daemon.log",
+            "StandardErrorPath": "/tmp/ssh2fa_daemon.log",
             "ProcessType": "Background",
             "ThrottleInterval": 10,
             "ExitTimeOut": 30,
@@ -255,7 +255,7 @@ final class DaemonProcess {
         guard let data = try? PropertyListSerialization.data(
             fromPropertyList: plist, format: .xml, options: 0
         ) else {
-            NSLog("[Auto2FA] could not serialize LaunchAgent plist")
+            NSLog("[SSH2FA] could not serialize LaunchAgent plist")
             return
         }
 
@@ -265,9 +265,9 @@ final class DaemonProcess {
         if plistChanged {
             do {
                 try data.write(to: URL(fileURLWithPath: plistPath))
-                NSLog("[Auto2FA] wrote LaunchAgent %@", plistPath)
+                NSLog("[SSH2FA] wrote LaunchAgent %@", plistPath)
             } catch {
-                NSLog("[Auto2FA] LaunchAgent write failed: %@", error.localizedDescription)
+                NSLog("[SSH2FA] LaunchAgent write failed: %@", error.localizedDescription)
                 return
             }
         }
@@ -293,7 +293,7 @@ final class DaemonProcess {
                 if attempt < 5 { Thread.sleep(forTimeInterval: 0.5) }
             }
             if !loaded {
-                NSLog("[Auto2FA] LaunchAgent bootstrap did not succeed after retries — the daemon may need a manual relaunch")
+                NSLog("[SSH2FA] LaunchAgent bootstrap did not succeed after retries — the daemon may need a manual relaunch")
             }
         } else if daemonWasUpdated {
             DaemonProcess.runLaunchctl(["kickstart", "-k", target])
@@ -302,13 +302,13 @@ final class DaemonProcess {
 
     /// Fully tear down the install: unload + remove the LaunchAgent (the daemon
     /// exits, closing its SSH masters), delete every Keychain credential under
-    /// the "auto2fa" service, remove ~/.auto2fa, and — if `purgeConfig` —
+    /// the "auto2fa" service, remove ~/.ssh2fa, and — if `purgeConfig` —
     /// remove passwords.json + tunnels.json. The .app itself is left for the
     /// user to drag to the Trash (a running app can't delete its own bundle).
     func performUninstall(purgeConfig: Bool) {
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        let label = "com.auto2fa.daemon"
+        let label = "com.ssh2fa.daemon"
         let uid = getuid()
 
         // 1. Unload + remove the LaunchAgent.
@@ -317,7 +317,7 @@ final class DaemonProcess {
         try? fm.removeItem(atPath: plist)
 
         // SIGTERM any daemon still running so its masters close cleanly.
-        DaemonProcess.runProcess("/usr/bin/pkill", ["-TERM", "-x", "a2fa-daemon"])
+        DaemonProcess.runProcess("/usr/bin/pkill", ["-TERM", "-x", "ssh2fa-daemon"])
 
         // 2. Delete every Keychain credential (service "auto2fa"). Each call
         //    removes one; loop until none remain.
@@ -327,10 +327,10 @@ final class DaemonProcess {
             deleted += 1
             if deleted > 1000 { break } // safety
         }
-        NSLog("[Auto2FA] uninstall: removed %d Keychain credential(s)", deleted)
+        NSLog("[SSH2FA] uninstall: removed %d Keychain credential(s)", deleted)
 
-        // 3. ~/.auto2fa (socket, marker, legacy daemon copy).
-        try? fm.removeItem(atPath: home + "/.auto2fa")
+        // 3. ~/.ssh2fa (socket, marker, legacy daemon copy).
+        try? fm.removeItem(atPath: home + "/.ssh2fa")
 
         // 4. Optional config.
         if purgeConfig {
@@ -341,7 +341,7 @@ final class DaemonProcess {
                 try? fm.removeItem(atPath: dir + "/" + f)
             }
         }
-        NSLog("[Auto2FA] uninstall complete (purgeConfig=%@)", purgeConfig ? "yes" : "no")
+        NSLog("[SSH2FA] uninstall complete (purgeConfig=%@)", purgeConfig ? "yes" : "no")
     }
 
     /// Run an arbitrary tool, returning its exit code (best-effort).
@@ -367,7 +367,7 @@ final class DaemonProcess {
             p.waitUntilExit()
             return p.terminationStatus
         } catch {
-            NSLog("[Auto2FA] launchctl %@ failed: %@", args.joined(separator: " "), error.localizedDescription)
+            NSLog("[SSH2FA] launchctl %@ failed: %@", args.joined(separator: " "), error.localizedDescription)
             return -1
         }
     }
@@ -384,7 +384,7 @@ final class DaemonProcess {
 
     func ensureRunning() async -> SpawnResult {
         if DaemonProcess.socketResponds() {
-            NSLog("[Auto2FA] daemon already running; not spawning")
+            NSLog("[SSH2FA] daemon already running; not spawning")
             return .alreadyRunning
         }
 
@@ -398,14 +398,14 @@ final class DaemonProcess {
         // teardown/relogin loop. Defer to launchd; the connection watcher +
         // poll fallback reconnect on their own once it's responsive again.
         if DaemonProcess.launchAgentInstalled() {
-            NSLog("[Auto2FA] socket not responding but a LaunchAgent manages the daemon — deferring to launchd, not spawning a duplicate")
+            NSLog("[SSH2FA] socket not responding but a LaunchAgent manages the daemon — deferring to launchd, not spawning a duplicate")
             return .alreadyRunning
         }
 
         guard let binary = DaemonProcess.discoverDaemonBinary() else {
-            let msg = "a2fa-daemon binary not found. Install it to " +
-                      "~/.auto2fa/a2fa-daemon (or build auto2fa-rs in release)."
-            NSLog("[Auto2FA] %@", msg)
+            let msg = "ssh2fa-daemon binary not found. Install it to " +
+                      "~/.ssh2fa/ssh2fa-daemon (or build auto2fa-rs in release)."
+            NSLog("[SSH2FA] %@", msg)
             return .failed(reason: msg)
         }
 
@@ -422,10 +422,10 @@ final class DaemonProcess {
         }
         p.environment = env
 
-        // The Rust daemon writes its own log to /tmp/auto2fa_daemon.log; we
+        // The Rust daemon writes its own log to /tmp/ssh2fa_daemon.log; we
         // capture any stdout/stderr (the "listening on …" line, panics) to a
         // separate file so a spawn that dies before logging is still debuggable.
-        let logURL = URL(fileURLWithPath: "/tmp/auto2fa-daemon-mac.log")
+        let logURL = URL(fileURLWithPath: "/tmp/ssh2fa-daemon-mac.log")
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
@@ -436,7 +436,7 @@ final class DaemonProcess {
         self.logFileHandle = nil
         if let handle = try? FileHandle(forWritingTo: logURL) {
             _ = try? handle.seekToEnd()
-            handle.write("\n--- a2fa-daemon spawn at \(Date()) ---\n".data(using: .utf8)!)
+            handle.write("\n--- ssh2fa-daemon spawn at \(Date()) ---\n".data(using: .utf8)!)
             p.standardOutput = handle
             p.standardError = handle
             self.logFileHandle = handle
@@ -445,7 +445,7 @@ final class DaemonProcess {
         do {
             try p.run()
             self.ownedProcess = p
-            NSLog("[Auto2FA] spawned a2fa-daemon PID=\(p.processIdentifier) from \(binary)")
+            NSLog("[SSH2FA] spawned ssh2fa-daemon PID=\(p.processIdentifier) from \(binary)")
 
             // Wait up to 10s for the socket to appear and respond. The Rust
             // daemon starts in milliseconds (no interpreter warmup), but it
@@ -457,9 +457,9 @@ final class DaemonProcess {
                     return .spawned(pid: p.processIdentifier)
                 }
             }
-            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 10s. See /tmp/auto2fa-daemon-mac.log.")
+            return .failed(reason: "Daemon spawned (PID \(p.processIdentifier)) but didn't open the socket within 10s. See /tmp/ssh2fa-daemon-mac.log.")
         } catch {
-            return .failed(reason: "Could not launch a2fa-daemon: \(error.localizedDescription)")
+            return .failed(reason: "Could not launch ssh2fa-daemon: \(error.localizedDescription)")
         }
     }
 
@@ -469,7 +469,7 @@ final class DaemonProcess {
     /// Called from NSApplication.willTerminateNotification on the main thread.
     func terminateOwnedDaemon() {
         guard let p = ownedProcess, p.isRunning else { return }
-        NSLog("[Auto2FA] sending SIGTERM to a2fa-daemon PID=\(p.processIdentifier)")
+        NSLog("[SSH2FA] sending SIGTERM to ssh2fa-daemon PID=\(p.processIdentifier)")
         p.terminate()
         // Don't wait here. The Rust daemon's SIGTERM handler tears down its
         // masters + tunnels and removes the socket. If macOS SIGKILLs us

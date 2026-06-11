@@ -46,13 +46,13 @@ Both are **off by default** (no behavior change unless the user opts in).
 ## Feature 1 — Touch ID lock
 
 ### What it gates
-The **Dashboard window** (`WindowGroup "Auto2FA"`) and the **Logs window**
+The **Dashboard window** (`WindowGroup "SSH2FA"`) and the **Logs window**
 (`WindowGroup id: "logs"`). These are the private surfaces: host list, usernames,
 tunnel configs, the live rotating TOTP code chip (`TOTPCodeChip`), and log lines
 that can contain host names. The **menu-bar status item stays open** (aggregate
 counts only).
 
-### Component: `BiometricLock` (new `Auto2FA/BiometricLock.swift`)
+### Component: `BiometricLock` (new `SSH2FA/BiometricLock.swift`)
 `@MainActor final class BiometricLock: ObservableObject`
 
 State:
@@ -65,7 +65,7 @@ API:
   Settings toggle to warn if neither biometrics nor a password are available
   (rare, but e.g. no password set).
 - `func authenticate() async -> Bool` — creates a **fresh** `LAContext`, calls
-  `evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Auto2FA")`
+  `evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock SSH2FA")`
   (bridged to async via `withCheckedContinuation`). On success sets
   `lastSuccessfulAuth = Date()` and returns true.
 - `func markLocked()` — sets `lastSuccessfulAuth = nil` (forces a prompt next
@@ -117,7 +117,7 @@ the grace window).
 
 ## Feature 2 — free iCloud-Drive preference sync
 
-### Component: `PreferenceSync` (new `Auto2FA/PreferenceSync.swift`)
+### Component: `PreferenceSync` (new `SSH2FA/PreferenceSync.swift`)
 `@MainActor final class PreferenceSync`
 
 - `static let syncedKeys: [String]` — **allowlist**: `notchEnabled`,
@@ -126,7 +126,7 @@ the grace window).
   `welcomeShown` (device-local) and anything secret.
 - reads `enabled` from `SettingsKey.syncPrefsViaICloud` (default `false`).
 - iCloud Drive path (constructed manually, no entitlement):
-  `NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/Auto2FA/settings.json"`.
+  `NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/SSH2FA/settings.json"`.
 - `func iCloudAvailable() -> Bool` — the `com~apple~CloudDocs` dir exists iff
   iCloud Drive is on.
 
@@ -195,7 +195,7 @@ Operations (all file I/O via `NSFileCoordinator`, best-effort, never crash):
 
 The app currently has **no Swift test target** (all tests are Rust). Add a
 lightweight `Auto2FATests` XCTest target via `auto2fa-mac/project.yml`
-(`@testable import Auto2FA`). Cover the two pure cores (no `LAContext` / no real
+(`@testable import SSH2FA`). Cover the two pure cores (no `LAContext` / no real
 iCloud needed):
 
 - `shouldChallenge`: disabled → false; `lastAuth == nil` → true; within grace →
@@ -208,10 +208,10 @@ UI wiring (LockGate over the windows, Settings toggles) verified via
 `xcodebuild` BUILD SUCCEEDED + manual run.
 
 ## Files touched
-- New: `Auto2FA/BiometricLock.swift`, `Auto2FA/PreferenceSync.swift`,
+- New: `SSH2FA/BiometricLock.swift`, `SSH2FA/PreferenceSync.swift`,
   `Auto2FATests/…` test files.
-- Edit: `Auto2FA/Settings.swift` (3 keys + 2 sections/toggles),
-  `Auto2FA/Auto2FAApp.swift` (own the two shared objects; wrap both WindowGroups
+- Edit: `SSH2FA/Settings.swift` (3 keys + 2 sections/toggles),
+  `SSH2FA/Auto2FAApp.swift` (own the two shared objects; wrap both WindowGroups
   in `LockGate`; wire sync triggers), `auto2fa-mac/project.yml` (add test target).
 
 ## Security note (for SECURITY.md follow-up)

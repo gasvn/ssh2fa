@@ -34,7 +34,7 @@ final class BiometricLock: ObservableObject {
         let ctx = LAContext()
         let ok: Bool = await withCheckedContinuation { cont in
             ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                               localizedReason: "Unlock Auto2FA") { success, _ in
+                               localizedReason: "Unlock SSH2FA") { success, _ in
                 cont.resume(returning: success)
             }
         }
@@ -95,7 +95,7 @@ struct LockedView: View {
         VStack(spacing: 16) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 40)).foregroundStyle(.secondary)
-            Text("Auto2FA is locked").font(.title3)
+            Text("SSH2FA is locked").font(.title3)
             Button(authing ? "Authenticating…" : "Unlock", action: unlock)
                 .controlSize(.large)
                 .disabled(authing)

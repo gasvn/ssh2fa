@@ -1,7 +1,7 @@
 //! Unix-socket RPC client.
 //!
 //! Mirrors the Python `_rpc` helper in `cli.py`:
-//! - Connects to `AUTO2FA_SOCK` or `~/.auto2fa/auto2fa.sock`.
+//! - Connects to `AUTO2FA_SOCK` or `~/.ssh2fa/ssh2fa.sock`.
 //! - Sets a 30-second read/write timeout.
 //! - Sends `{"id","method","params"}\n`, reads one newline-terminated line.
 //! - Returns the `result` value on success, or a friendly `anyhow::Error`
@@ -26,7 +26,7 @@ pub fn socket_path() -> PathBuf {
         return PathBuf::from(v);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".auto2fa").join("auto2fa.sock")
+    PathBuf::from(home).join(".ssh2fa").join("ssh2fa.sock")
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
-        assert!(p.to_string_lossy().contains(".auto2fa/auto2fa.sock"));
+        assert!(p.to_string_lossy().contains(".ssh2fa/ssh2fa.sock"));
     }
 
     #[test]

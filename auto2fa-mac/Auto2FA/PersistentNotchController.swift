@@ -87,7 +87,7 @@ final class PersistentNotchController {
         let info = DynamicNotchInfo(
             icon: .init(systemName: icon, color: tint),
             title: LocalizedStringKey(stringLiteral: title),
-            description: LocalizedStringKey(stringLiteral: "Auto2FA")
+            description: LocalizedStringKey(stringLiteral: "SSH2FA")
         )
         let prev = current
         current = info

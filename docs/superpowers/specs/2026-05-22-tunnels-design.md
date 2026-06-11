@@ -1,11 +1,11 @@
-# Auto2FA Two-Layer Port Forward (Tunnels) — Design
+# SSH2FA Two-Layer Port Forward (Tunnels) — Design
 
 **Date:** 2026-05-22
 **Status:** Approved for implementation planning
 
 ## 1. Problem
 
-Auto2FA today manages SSH master connections to login hosts (e.g. `k1`, `k2`, `k8`) and exposes them via a TUI dashboard. Users frequently need a second-layer port forward to a SLURM compute node, e.g.:
+SSH2FA today manages SSH master connections to login hosts (e.g. `k1`, `k2`, `k8`) and exposes them via a TUI dashboard. Users frequently need a second-layer port forward to a SLURM compute node, e.g.:
 
 ```
 ssh -J shgao@k8 -L 8090:localhost:8090 shgao@holygpu8a11103.rc.fas.harvard.edu
@@ -178,7 +178,7 @@ No other changes to existing logic. The connection pool, heartbeat, and rotation
 ### 6.1 Main dashboard
 
 ```
-╭─ Auto2FA ──────────────────────────────────────────────────────╮
+╭─ SSH2FA ──────────────────────────────────────────────────────╮
 │ HOSTS                                                          │
 │   Host       Status         Pool   FS    Last Message          │
 │ ▶ k8         ● Connected    0/2    —     Ready                 │

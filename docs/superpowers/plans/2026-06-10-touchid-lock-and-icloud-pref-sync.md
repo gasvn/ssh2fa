@@ -12,8 +12,8 @@
 
 **Conventions for every build/test command below** (run from repo root `/Users/shgao/logs/auto2fa_dev`):
 - Regenerate project after editing `project.yml`: `cd auto2fa-mac && xcodegen generate && cd ..`
-- Build: `xcodebuild -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"`
-- Test: `xcodebuild test -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "error:|Test Suite|passed|failed"`
+- Build: `xcodebuild -project auto2fa-mac/SSH2FA.xcodeproj -scheme SSH2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"`
+- Test: `xcodebuild test -project auto2fa-mac/SSH2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "error:|Test Suite|passed|failed"`
 - SourceKit cross-file "Cannot find type" / "No such module" diagnostics are FALSE POSITIVES; `BUILD SUCCEEDED` is the gate.
 
 ---
@@ -21,13 +21,13 @@
 ### Task 1: Pure cores + hostless test target (TDD)
 
 **Files:**
-- Create: `auto2fa-mac/Auto2FA/SyncCore.swift`
+- Create: `auto2fa-mac/SSH2FA/SyncCore.swift`
 - Create: `auto2fa-mac/Auto2FATests/SyncCoreTests.swift`
 - Modify: `auto2fa-mac/project.yml`
 
 - [ ] **Step 1: Add the test target + scheme to `project.yml`**
 
-Append a `Auto2FATests` target under the existing `targets:` map (after the `Auto2FA:` target block, keeping `Auto2FA:` unchanged), and add a top-level `schemes:` block at the end of the file:
+Append a `Auto2FATests` target under the existing `targets:` map (after the `SSH2FA:` target block, keeping `SSH2FA:` unchanged), and add a top-level `schemes:` block at the end of the file:
 
 ```yaml
   Auto2FATests:
@@ -38,11 +38,11 @@ Append a `Auto2FATests` target under the existing `targets:` map (after the `Aut
       # app host) so tests run headlessly — the app never launches, so its
       # daemon-install / spawn side-effects never fire during `xcodebuild test`.
       - path: Auto2FATests
-      - path: Auto2FA/SyncCore.swift
+      - path: SSH2FA/SyncCore.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.auto2fa.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ssh2fa.tests
 
 schemes:
   Auto2FATests:
@@ -54,7 +54,7 @@ schemes:
         - Auto2FATests
 ```
 
-- [ ] **Step 2: Create `Auto2FA/SyncCore.swift` as a stub (so the test target compiles a file but the symbols are missing → RED)**
+- [ ] **Step 2: Create `SSH2FA/SyncCore.swift` as a stub (so the test target compiles a file but the symbols are missing → RED)**
 
 ```swift
 import Foundation
@@ -67,7 +67,7 @@ import Foundation
 import XCTest
 
 // LockCore / SyncCore / SyncPayload are compiled into THIS test bundle via
-// project.yml (sources include Auto2FA/SyncCore.swift) — same module, no import.
+// project.yml (sources include SSH2FA/SyncCore.swift) — same module, no import.
 final class SyncCoreTests: XCTestCase {
     // MARK: LockCore.shouldChallenge
     func testLockDisabledNeverChallenges() {
@@ -125,11 +125,11 @@ final class SyncCoreTests: XCTestCase {
 Run:
 ```bash
 cd auto2fa-mac && xcodegen generate && cd ..
-xcodebuild test -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "error:|Test Suite|passed|failed"
+xcodebuild test -project auto2fa-mac/SSH2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "error:|Test Suite|passed|failed"
 ```
 Expected: compile errors like "cannot find 'LockCore' in scope" (RED).
 
-- [ ] **Step 5: Implement `Auto2FA/SyncCore.swift` (replace the stub)**
+- [ ] **Step 5: Implement `SSH2FA/SyncCore.swift` (replace the stub)**
 
 ```swift
 import Foundation
@@ -170,14 +170,14 @@ enum SyncCore {
 
 Run:
 ```bash
-xcodebuild test -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "Test Suite|passed|failed"
+xcodebuild test -project auto2fa-mac/SSH2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "Test Suite|passed|failed"
 ```
 Expected: "Test Suite 'SyncCoreTests' passed", 9 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add auto2fa-mac/project.yml auto2fa-mac/Auto2FA/SyncCore.swift auto2fa-mac/Auto2FATests/SyncCoreTests.swift
+git add auto2fa-mac/project.yml auto2fa-mac/SSH2FA/SyncCore.swift auto2fa-mac/Auto2FATests/SyncCoreTests.swift
 git commit -m "feat(ui): pure cores for Touch ID gate + pref-sync reconcile, with hostless test target"
 ```
 
@@ -186,10 +186,10 @@ git commit -m "feat(ui): pure cores for Touch ID gate + pref-sync reconcile, wit
 ### Task 2: `BiometricLock` + `LockGate` + Settings toggle (compiles, not yet wired to windows)
 
 **Files:**
-- Create: `auto2fa-mac/Auto2FA/BiometricLock.swift`
-- Modify: `auto2fa-mac/Auto2FA/Settings.swift` (SettingsKey + @AppStorage + Privacy section)
+- Create: `auto2fa-mac/SSH2FA/BiometricLock.swift`
+- Modify: `auto2fa-mac/SSH2FA/Settings.swift` (SettingsKey + @AppStorage + Privacy section)
 
-- [ ] **Step 1: Create `Auto2FA/BiometricLock.swift`**
+- [ ] **Step 1: Create `SSH2FA/BiometricLock.swift`**
 
 ```swift
 import Foundation
@@ -228,7 +228,7 @@ final class BiometricLock: ObservableObject {
         let ctx = LAContext()
         let ok: Bool = await withCheckedContinuation { cont in
             ctx.evaluatePolicy(.deviceOwnerAuthentication,
-                               localizedReason: "Unlock Auto2FA") { success, _ in
+                               localizedReason: "Unlock SSH2FA") { success, _ in
                 cont.resume(returning: success)
             }
         }
@@ -289,7 +289,7 @@ struct LockedView: View {
         VStack(spacing: 16) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 40)).foregroundStyle(.secondary)
-            Text("Auto2FA is locked").font(.title3)
+            Text("SSH2FA is locked").font(.title3)
             Button(authing ? "Authenticating…" : "Unlock", action: unlock)
                 .controlSize(.large)
                 .disabled(authing)
@@ -331,14 +331,14 @@ In the `Form`, immediately AFTER the `} header: { Text("Daemon") }` section's cl
 
 Run:
 ```bash
-xcodebuild -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
+xcodebuild -project auto2fa-mac/SSH2FA.xcodeproj -scheme SSH2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
 ```
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add auto2fa-mac/Auto2FA/BiometricLock.swift auto2fa-mac/Auto2FA/Settings.swift
+git add auto2fa-mac/SSH2FA/BiometricLock.swift auto2fa-mac/SSH2FA/Settings.swift
 git commit -m "feat(ui): Touch ID lock — BiometricLock + LockGate + Privacy setting"
 ```
 
@@ -347,7 +347,7 @@ git commit -m "feat(ui): Touch ID lock — BiometricLock + LockGate + Privacy se
 ### Task 3: Wire `LockGate` around the Dashboard + Logs windows
 
 **Files:**
-- Modify: `auto2fa-mac/Auto2FA/Auto2FAApp.swift`
+- Modify: `auto2fa-mac/SSH2FA/Auto2FAApp.swift`
 
 - [ ] **Step 1: Own a shared `BiometricLock`**
 
@@ -358,10 +358,10 @@ After `@StateObject private var menuBar = MenuBarController()` add:
 
 - [ ] **Step 2: Wrap the Dashboard window content in `LockGate`**
 
-Replace the `WindowGroup("Auto2FA") { ... }` body so the gate wraps `ContentView`, while the `.onAppear` / `.task` (daemon bootstrap, menu-bar install) stay on the OUTER view so they run even while the window is locked:
+Replace the `WindowGroup("SSH2FA") { ... }` body so the gate wraps `ContentView`, while the `.onAppear` / `.task` (daemon bootstrap, menu-bar install) stay on the OUTER view so they run even while the window is locked:
 
 ```swift
-        WindowGroup("Auto2FA") {
+        WindowGroup("SSH2FA") {
             LockGate {
                 ContentView()
                     .environmentObject(appState)
@@ -382,14 +382,14 @@ Replace the `WindowGroup("Auto2FA") { ... }` body so the gate wraps `ContentView
                     let result = await DaemonProcess.shared.ensureRunning()
                     switch result {
                     case .alreadyRunning:
-                        NSLog("[Auto2FA] daemon was already running")
+                        NSLog("[SSH2FA] daemon was already running")
                     case .spawned(let pid):
-                        NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
+                        NSLog("[SSH2FA] spawned daemon, PID=\(pid)")
                     case .failed(let reason):
                         appState.connectionError = reason
                     }
                 } else {
-                    NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
+                    NSLog("[SSH2FA] spawnDaemonOnLaunch=off; assuming external daemon")
                 }
                 await appState.bootstrap()
             }
@@ -402,9 +402,9 @@ Replace the `WindowGroup("Auto2FA") { ... }` body so the gate wraps `ContentView
 
 - [ ] **Step 3: Wrap the Logs window content in `LockGate`**
 
-Replace the `WindowGroup("Auto2FA Logs", id: "logs") { ... }` block with:
+Replace the `WindowGroup("SSH2FA Logs", id: "logs") { ... }` block with:
 ```swift
-        WindowGroup("Auto2FA Logs", id: "logs") {
+        WindowGroup("SSH2FA Logs", id: "logs") {
             LockGate {
                 LogViewerView()
                     .environmentObject(appState)
@@ -418,14 +418,14 @@ Replace the `WindowGroup("Auto2FA Logs", id: "logs") { ... }` block with:
 
 Run:
 ```bash
-xcodebuild -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
+xcodebuild -project auto2fa-mac/SSH2FA.xcodeproj -scheme SSH2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
 ```
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add auto2fa-mac/Auto2FA/Auto2FAApp.swift
+git add auto2fa-mac/SSH2FA/Auto2FAApp.swift
 git commit -m "feat(ui): gate dashboard + logs windows behind Touch ID LockGate"
 ```
 
@@ -434,11 +434,11 @@ git commit -m "feat(ui): gate dashboard + logs windows behind Touch ID LockGate"
 ### Task 4: `PreferenceSync` + Sync setting + app wiring
 
 **Files:**
-- Create: `auto2fa-mac/Auto2FA/PreferenceSync.swift`
-- Modify: `auto2fa-mac/Auto2FA/Settings.swift` (SettingsKey + @AppStorage + Sync section + availability helper)
-- Modify: `auto2fa-mac/Auto2FA/Auto2FAApp.swift` (own + start it)
+- Create: `auto2fa-mac/SSH2FA/PreferenceSync.swift`
+- Modify: `auto2fa-mac/SSH2FA/Settings.swift` (SettingsKey + @AppStorage + Sync section + availability helper)
+- Modify: `auto2fa-mac/SSH2FA/Auto2FAApp.swift` (own + start it)
 
-- [ ] **Step 1: Create `Auto2FA/PreferenceSync.swift`**
+- [ ] **Step 1: Create `SSH2FA/PreferenceSync.swift`**
 
 ```swift
 import Foundation
@@ -471,7 +471,7 @@ final class PreferenceSync {
     var enabled: Bool { defaults.bool(forKey: SettingsKey.syncPrefsViaICloud) }
 
     static var iCloudDir: String {
-        NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/Auto2FA"
+        NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/SSH2FA"
     }
     static var fileURL: URL { URL(fileURLWithPath: iCloudDir + "/settings.json") }
 
@@ -645,14 +645,14 @@ In the Dashboard window's outer `.onAppear` (from Task 3 Step 2), add `installPr
 
 Run:
 ```bash
-xcodebuild -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
+xcodebuild -project auto2fa-mac/SSH2FA.xcodeproj -scheme SSH2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
 ```
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add auto2fa-mac/Auto2FA/PreferenceSync.swift auto2fa-mac/Auto2FA/Settings.swift auto2fa-mac/Auto2FA/Auto2FAApp.swift
+git add auto2fa-mac/SSH2FA/PreferenceSync.swift auto2fa-mac/SSH2FA/Settings.swift auto2fa-mac/SSH2FA/Auto2FAApp.swift
 git commit -m "feat(ui): free iCloud-Drive preference sync (opt-in, prefs only)"
 ```
 
@@ -665,14 +665,14 @@ git commit -m "feat(ui): free iCloud-Drive preference sync (opt-in, prefs only)"
 - [ ] **Step 1: Run the logic tests → expect PASS**
 
 ```bash
-xcodebuild test -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "Test Suite|passed|failed"
+xcodebuild test -project auto2fa-mac/SSH2FA.xcodeproj -scheme Auto2FATests -destination 'platform=macOS' 2>&1 | grep -E "Test Suite|passed|failed"
 ```
 Expected: SyncCoreTests passed, 9 tests, 0 failures.
 
 - [ ] **Step 2: Full release build → expect SUCCESS**
 
 ```bash
-xcodebuild -project auto2fa-mac/Auto2FA.xcodeproj -scheme Auto2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
+xcodebuild -project auto2fa-mac/SSH2FA.xcodeproj -scheme SSH2FA -configuration Release -derivedDataPath /tmp/a2fa_dd build 2>&1 | grep -E "error:|BUILD"
 ```
 Expected: `** BUILD SUCCEEDED **`.
 
@@ -685,10 +685,10 @@ git checkout main -q && git merge --ff-only rust-rewrite -q && git push origin m
 
 - [ ] **Step 4: (Optional, operator) Deploy + manual smoke**
 
-Rebuild + deploy the packaged app (`auto2fa-mac/package-app.sh` → replace `/Applications/Auto2FA.app`), then manually verify:
+Rebuild + deploy the packaged app (`auto2fa-mac/package-app.sh` → replace `/Applications/SSH2FA.app`), then manually verify:
 - Settings → Privacy & Security → enable "Require Touch ID" → close + reopen the dashboard → Touch ID prompt appears; cancel → LockedView with Unlock; authenticate → content.
 - Reopen within ~60s → no prompt (grace). After ~60s → prompt again.
-- Settings → Sync → enable iCloud sync (with iCloud Drive on) → confirm `~/Library/Mobile Documents/com~apple~CloudDocs/Auto2FA/settings.json` appears and toggling a pref updates its `updatedAt`.
+- Settings → Sync → enable iCloud sync (with iCloud Drive on) → confirm `~/Library/Mobile Documents/com~apple~CloudDocs/SSH2FA/settings.json` appears and toggling a pref updates its `updatedAt`.
 
 ---
 

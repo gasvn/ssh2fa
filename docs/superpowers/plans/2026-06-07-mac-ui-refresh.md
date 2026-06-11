@@ -4,24 +4,24 @@
 > compile gate (no unit tests — this is presentation-only SwiftUI). Preserve ALL behavior
 > listed per task. Design spec: `docs/superpowers/specs/2026-06-07-mac-ui-refresh-design.md`.
 
-**Goal:** Native-minimal visual refresh of the Auto2FA window dashboard (Hosts/Tunnels),
+**Goal:** Native-minimal visual refresh of the SSH2FA window dashboard (Hosts/Tunnels),
 zero functionality loss.
 
 **Build/verify (run from `auto2fa-mac/`):**
-`xcodebuild -project Auto2FA.xcodeproj -scheme Auto2FA -configuration Debug -derivedDataPath build build`
+`xcodebuild -project SSH2FA.xcodeproj -scheme SSH2FA -configuration Debug -derivedDataPath build build`
 → must print `** BUILD SUCCEEDED **`.
 
 **Tech:** SwiftUI, macOS 14+, SF Symbols, system materials. App dir:
-`/Users/shgao/logs/auto2fa_dev/auto2fa-mac/Auto2FA`.
+`/Users/shgao/logs/auto2fa_dev/auto2fa-mac/SSH2FA`.
 
 ---
 
 ### Task UI-1: Design tokens + shared status components
 
 **Files:**
-- Create: `Auto2FA/DesignTokens.swift`
-- Create: `Auto2FA/Views/Components/StatusDot.swift`
-- Create: `Auto2FA/Views/Components/StatusBadge.swift`
+- Create: `SSH2FA/DesignTokens.swift`
+- Create: `SSH2FA/Views/Components/StatusDot.swift`
+- Create: `SSH2FA/Views/Components/StatusBadge.swift`
 
 **Do:**
 - `DesignTokens.swift`: `enum Spacing { static let xs=4; s=8; m=12; l=16 }` (CGFloat);
@@ -45,8 +45,8 @@ until UI-2/UI-3 swap to `StatusDot`.
 ### Task UI-2: HostRow + HostsView refactor
 
 **Files:**
-- Create: `Auto2FA/Views/Components/HostRow.swift`
-- Modify: `Auto2FA/Views/HostsView.swift`
+- Create: `SSH2FA/Views/Components/HostRow.swift`
+- Modify: `SSH2FA/Views/HostsView.swift`
 
 **Do:** Replace the `Table` with a `List` (`.plain` or `.inset`) of `HostRow`. `HostRow`
 is the two-line layout from the spec (status badge · alias · hostname · pool pips · mount ·
@@ -69,8 +69,8 @@ Restyle the empty state with a shared placeholder.
 ### Task UI-3: TunnelRow + TunnelsView refactor (largest — preserve everything)
 
 **Files:**
-- Create: `Auto2FA/Views/Components/TunnelRow.swift`
-- Modify: `Auto2FA/Views/TunnelsView.swift`
+- Create: `SSH2FA/Views/Components/TunnelRow.swift`
+- Modify: `SSH2FA/Views/TunnelsView.swift`
 
 **Do:** Replace the `Table` with a `List(selection:)` of `TunnelRow`. **Multi-select must
 work** (drives the batch toolbar). `TunnelRow` is the two-line layout from the spec
@@ -99,8 +99,8 @@ shortcut/menu item was dropped (compare against the PRESERVE list).
 ### Task UI-4: ContentView shell + sheet normalization
 
 **Files:**
-- Modify: `Auto2FA/ContentView.swift`
-- Modify (light pass): `Auto2FA/Views/NewTunnelSheet.swift`, `AddHostSheet.swift`,
+- Modify: `SSH2FA/ContentView.swift`
+- Modify (light pass): `SSH2FA/Views/NewTunnelSheet.swift`, `AddHostSheet.swift`,
   `NodePickerSheet.swift`, `TunnelDetailsPopover.swift`, `CustomNodeSheet.swift`,
   `WelcomeSheet.swift`
 

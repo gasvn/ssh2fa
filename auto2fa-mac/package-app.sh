@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# package-app.sh — build a distributable Auto2FA.app + Auto2FA.dmg.
+# package-app.sh — build a distributable SSH2FA.app + SSH2FA.dmg.
 #
 # Pipeline:
 #   1. build the universal (arm64 + x86_64 if installed) Rust daemon
 #   2. xcodebuild the Release app
-#   3. embed the daemon in Auto2FA.app/Contents/Resources
+#   3. embed the daemon in SSH2FA.app/Contents/Resources
 #   4. codesign the embedded daemon, then the .app (hardened runtime +
 #      entitlements), preferring a Developer ID Application cert
-#   5. build dist/Auto2FA.dmg
+#   5. build dist/SSH2FA.dmg
 #   6. (optional) notarize + staple the app and the dmg
 #
 # Identity selection (same policy as auto2fa-rs/build-release.sh):
@@ -27,7 +27,8 @@ REPO_ROOT="$(cd .. && pwd)"
 RS_DIR="$REPO_ROOT/auto2fa-rs"
 DIST="$(pwd)/dist"
 DD="$(pwd)/.package_dd"                     # xcode derived data (scratch)
-APP_NAME="Auto2FA"
+PROJECT_NAME="Auto2FA"                     # .xcodeproj + scheme name (internal codename)
+APP_NAME="SSH2FA"                          # product .app / .dmg / volume name
 DAEMON_IDENTIFIER="com.auto2fa.daemon"
 ENTITLEMENTS="$(pwd)/Auto2FA.entitlements"
 ARM_TARGET="aarch64-apple-darwin"
@@ -39,15 +40,15 @@ rm -rf "$DIST" "$DD"; mkdir -p "$DIST"
 # ── Step 1: universal daemon ──────────────────────────────────────────────────
 echo "→ building a2fa-daemon (release)"
 ( cd "$RS_DIR" && cargo build --release --target "$ARM_TARGET" -p a2fa-daemon )
-DAEMON_UNIVERSAL="$DIST/a2fa-daemon"
+DAEMON_UNIVERSAL="$DIST/ssh2fa-daemon"
 if rustup target list --installed 2>/dev/null | grep -q "^$X86_TARGET"; then
   ( cd "$RS_DIR" && cargo build --release --target "$X86_TARGET" -p a2fa-daemon )
   lipo -create -output "$DAEMON_UNIVERSAL" \
-    "$RS_DIR/target/$ARM_TARGET/release/a2fa-daemon" \
-    "$RS_DIR/target/$X86_TARGET/release/a2fa-daemon"
+    "$RS_DIR/target/$ARM_TARGET/release/ssh2fa-daemon" \
+    "$RS_DIR/target/$X86_TARGET/release/ssh2fa-daemon"
   echo "  universal daemon (arm64 + x86_64)"
 else
-  cp "$RS_DIR/target/$ARM_TARGET/release/a2fa-daemon" "$DAEMON_UNIVERSAL"
+  cp "$RS_DIR/target/$ARM_TARGET/release/ssh2fa-daemon" "$DAEMON_UNIVERSAL"
   echo "  NOTE: x86_64-apple-darwin not installed — arm64-only daemon."
   echo "        run 'rustup target add x86_64-apple-darwin' for a universal build."
 fi
@@ -66,7 +67,7 @@ echo "→ xcodebuild Release (universal)"
 # ARCHS + ONLY_ACTIVE_ARCH=NO so the app binary is universal too (xcodebuild
 # defaults to the active arch only). Daemon universality alone isn't enough —
 # an arm64-only app won't launch on Intel.
-xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" \
+xcodebuild -project "$PROJECT_NAME.xcodeproj" -scheme "$PROJECT_NAME" \
   -configuration Release -derivedDataPath "$DD" \
   ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO \
   CODE_SIGNING_ALLOWED=NO build >/dev/null
@@ -78,8 +79,8 @@ STAGE_APP="$DIST/$APP_NAME.app"
 cp -R "$APP" "$STAGE_APP"
 
 # ── Step 3: embed the daemon ──────────────────────────────────────────────────
-cp "$DAEMON_UNIVERSAL" "$STAGE_APP/Contents/Resources/a2fa-daemon"
-chmod +x "$STAGE_APP/Contents/Resources/a2fa-daemon"
+cp "$DAEMON_UNIVERSAL" "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
+chmod +x "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
 echo "→ embedded daemon in $APP_NAME.app/Contents/Resources"
 
 # ── Step 4: choose identity + sign ────────────────────────────────────────────
@@ -103,7 +104,7 @@ SIGN_EXTRA=( --options runtime --timestamp )
 # Sign inside-out: the embedded daemon first (pinned identifier → stable
 # Keychain ACL), then the app bundle with entitlements.
 codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" "${SIGN_EXTRA[@]}" \
-  "$STAGE_APP/Contents/Resources/a2fa-daemon"
+  "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
 echo "  signed embedded daemon"
 
 APP_SIGN_EXTRA=( "${SIGN_EXTRA[@]}" )
@@ -147,7 +148,7 @@ fi
 echo ""; echo "dist/:"; ls -lh "$DIST/" | grep -v '^total'
 echo ""; echo "Identity: $SIGN_ID | developer-id: $IS_DEVELOPER_ID | notarize: ${AUTO2FA_NOTARIZE:-0}"
 
-# Homebrew cask sha256 — paste into Casks/auto2fa.rb when cutting a release.
-echo ""; echo "DMG sha256 (for Casks/auto2fa.rb):"
+# Homebrew cask sha256 — paste into Casks/ssh2fa.rb when cutting a release.
+echo ""; echo "DMG sha256 (for Casks/ssh2fa.rb):"
 shasum -a 256 "$DMG" | awk '{print "  "$1}'
 rm -rf "$DD"

@@ -3,9 +3,9 @@
 # artifacts for the auto2fa Rust binaries.
 #
 # Output (dist/):
-#   auto2fa-daemon   ← from a2fa-daemon   (signed, identifier com.auto2fa.daemon)
-#   auto2fa          ← from a2fa-cli
-#   auto2fa-tui      ← from a2fa-tui
+#   ssh2fa-daemon   ← from a2fa-daemon   (signed, identifier com.ssh2fa.daemon)
+#   ssh2fa           ← from a2fa-cli
+#   ssh2fa-tui      ← from a2fa-tui
 #   auto2fa-rs-<arch>.zip  ← zipped binaries for distribution
 #
 # Build profile: release (see Cargo.toml [profile.release] — LTO + strip +
@@ -16,7 +16,7 @@
 #   * The daemon reads SSH passwords / OTP secrets from the macOS Keychain. macOS
 #     pins Keychain access to the binary's DESIGNATED REQUIREMENT (identifier +
 #     signing cert). We sign the daemon with a PINNED identifier
-#     (com.auto2fa.daemon) + a STABLE cert so an "Always Allow" grant persists
+#     (com.ssh2fa.daemon) + a STABLE cert so an "Always Allow" grant persists
 #     across rebuilds. An ad-hoc signature (or a filename-derived identifier)
 #     changes every build → re-prompt storm.
 #   * --options runtime (hardened runtime) is required for notarization.
@@ -40,7 +40,7 @@ DAEMON_IDENTIFIER="com.auto2fa.daemon"
 ARM_TARGET="aarch64-apple-darwin"
 X86_TARGET="x86_64-apple-darwin"
 # Pairs: <cargo binary name>:<dist output name>
-BINS="a2fa-daemon:auto2fa-daemon a2fa-cli:auto2fa a2fa-tui:auto2fa-tui"
+BINS="a2fa-daemon:ssh2fa-daemon a2fa-cli:ssh2fa a2fa-tui:ssh2fa-tui"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 rm -rf "$DIST"; mkdir -p "$DIST"
@@ -98,7 +98,7 @@ for pair in $BINS; do
   dist_name="${pair##*:}"; bin="$DIST/$dist_name"
   extra=( --options runtime --timestamp )
   [ "$SIGN_ID" = "-" ] && extra=()   # ad-hoc: no runtime/timestamp
-  if [ "$dist_name" = "auto2fa-daemon" ]; then
+  if [ "$dist_name" = "ssh2fa-daemon" ]; then
     codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" "${extra[@]}" "$bin" \
       && echo "  signed $dist_name (identifier=$DAEMON_IDENTIFIER)" || echo "  WARN: sign $dist_name failed"
   else
@@ -110,8 +110,8 @@ done
 
 # ── Step 5: package ───────────────────────────────────────────────────────────
 ARCH_TAG=$([ "$HAVE_X86" -eq 1 ] && echo "universal" || echo "arm64")
-ZIP="$DIST/auto2fa-rs-$ARCH_TAG.zip"
-( cd "$DIST" && zip -q -j "$ZIP" auto2fa-daemon auto2fa auto2fa-tui )
+ZIP="$DIST/ssh2fa-rs-$ARCH_TAG.zip"
+( cd "$DIST" && zip -q -j "$ZIP" ssh2fa-daemon ssh2fa ssh2fa-tui )
 echo "→ packaged $ZIP"
 
 # ── Step 6: notarize (optional; Developer ID only) ────────────────────────────

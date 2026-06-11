@@ -1,6 +1,6 @@
-# Releasing Auto2FA
+# Releasing SSH2FA
 
-This is the end-to-end recipe to ship a signed, notarized `Auto2FA.dmg` that
+This is the end-to-end recipe to ship a signed, notarized `SSH2FA.dmg` that
 runs on any Mac (not just the build machine).
 
 ## TL;DR
@@ -10,8 +10,8 @@ runs on any Mac (not just the build machine).
 # and store notarization credentials (see "Apple account setup" below).
 
 cd auto2fa-mac
-AUTO2FA_NOTARIZE=1 AUTO2FA_NOTARY_PROFILE=auto2fa-notary ./package-app.sh
-# → dist/Auto2FA.dmg   (signed, notarized, stapled, universal)
+AUTO2FA_NOTARIZE=1 AUTO2FA_NOTARY_PROFILE=ssh2fa-notary ./package-app.sh
+# → dist/SSH2FA.dmg   (signed, notarized, stapled, universal)
 ```
 
 Without an Apple Developer ID the script still builds a working **local**
@@ -24,14 +24,14 @@ Gatekeeper will block it on others.
 1. Builds the **universal** (`arm64` + `x86_64`) Rust daemon via `lipo`
    (falls back to arm64-only if the x86_64 target isn't installed).
 2. `xcodebuild`s the Release app.
-3. Copies `a2fa-daemon` into `Auto2FA.app/Contents/Resources/` (the app's
-   first-run installer copies it to `~/.auto2fa/` and registers the
+3. Copies `ssh2fa-daemon` into `SSH2FA.app/Contents/Resources/` (the app's
+   first-run installer copies it to `~/.ssh2fa/` and registers the
    LaunchAgent).
-4. Signs the embedded daemon (pinned identifier `com.auto2fa.daemon`) then the
+4. Signs the embedded daemon (pinned identifier `com.ssh2fa.daemon`) then the
    `.app`, with **hardened runtime** + the entitlements in
-   `auto2fa-mac/Auto2FA.entitlements`. Prefers a **Developer ID Application**
+   `auto2fa-mac/SSH2FA.entitlements`. Prefers a **Developer ID Application**
    cert; falls back to **Apple Development** (local only).
-5. Builds `dist/Auto2FA.dmg`.
+5. Builds `dist/SSH2FA.dmg`.
 6. If `AUTO2FA_NOTARIZE=1` **and** a Developer ID cert is present: submits the
    DMG to Apple's notary service, waits, and **staples** the ticket to both the
    app and the DMG.
@@ -52,7 +52,7 @@ it cannot be done without them.
    & Security → App-Specific Passwords) and store notarization credentials in a
    keychain profile:
    ```sh
-   xcrun notarytool store-credentials auto2fa-notary \
+   xcrun notarytool store-credentials ssh2fa-notary \
      --apple-id "you@example.com" \
      --team-id   "YOURTEAMID" \
      --password  "abcd-efgh-ijkl-mnop"   # the app-specific password
@@ -80,18 +80,18 @@ Silicon, skip this — the script produces an arm64-only daemon and says so.
 The app's **Check for Updates** (Settings → About) compares this build's
 version to the latest GitHub release tag. To make it work:
 
-1. Bump the version in `auto2fa-mac/Auto2FA/Resources/Info.plist`
+1. Bump the version in `auto2fa-mac/SSH2FA/Resources/Info.plist`
    (`CFBundleShortVersionString` + `CFBundleVersion`) and
    `MARKETING_VERSION` in the xcodeproj.
 2. `git tag vX.Y.Z && git push --tags`.
-3. Create a GitHub Release for that tag and attach `dist/Auto2FA.dmg`.
+3. Create a GitHub Release for that tag and attach `dist/SSH2FA.dmg`.
 
 Tags may be `vX.Y.Z` or `X.Y.Z`; the checker strips a leading `v`.
 
 ## Project landing page (GitHub Pages)
 
 A one-page site lives at [`docs/index.html`](index.html). To publish it at
-`https://gasvn.github.io/auto2fa/`:
+`https://gasvn.github.io/ssh2fa/`:
 
 1. Repo **Settings → Pages**.
 2. **Source: Deploy from a branch → `main` → `/docs`** → Save.
@@ -102,12 +102,12 @@ links to them.
 
 ## Homebrew cask
 
-A cask lives at [`Casks/auto2fa.rb`](../Casks/auto2fa.rb) — but this repo isn't a
+A cask lives at [`Casks/ssh2fa.rb`](../Casks/ssh2fa.rb) — but this repo isn't a
 tap (a tap repo must be named `homebrew-*`). To let people
 `brew install --cask`:
 
 1. **One time:** create a public repo `gasvn/homebrew-tap` and copy
-   `Casks/auto2fa.rb` into its `Casks/` directory.
+   `Casks/ssh2fa.rb` into its `Casks/` directory.
 2. **Each release:** after `package-app.sh`, paste the printed **DMG sha256**
    and bump `version` in the cask, then push it to the tap.
 
@@ -115,14 +115,14 @@ Then users install with:
 
 ```sh
 brew tap gasvn/tap
-brew install --cask auto2fa          # or: brew install --cask gasvn/tap/auto2fa
-brew uninstall --zap --cask auto2fa  # full removal incl. Keychain creds
+brew install --cask ssh2fa          # or: brew install --cask gasvn/tap/ssh2fa
+brew uninstall --zap --cask ssh2fa  # full removal incl. Keychain creds
 ```
 
 The cask quits the app + unloads the LaunchAgent on uninstall; `--zap` also
-trashes `~/.auto2fa`, the LaunchAgent plist, prefs, and every Keychain
+trashes `~/.ssh2fa`, the LaunchAgent plist, prefs, and every Keychain
 credential under the `auto2fa` service. Validate edits with
-`brew style ./Casks/auto2fa.rb` (and `brew audit --cask` once a release exists).
+`brew style ./Casks/ssh2fa.rb` (and `brew audit --cask` once a release exists).
 
 ## Future: Sparkle auto-update
 
@@ -142,12 +142,12 @@ a first release.
   first launch after a rotation can stall in `xpcproxy`/`amfid` for 1–3 minutes
   while macOS re-validates — don't panic-kill it.
 - Deploying the daemon by hand to a dev machine: build → codesign → `mv` to
-  `~/.auto2fa/a2fa-daemon` → `kill -9` the running one (launchd respawns and
+  `~/.ssh2fa/ssh2fa-daemon` → `kill -9` the running one (launchd respawns and
   re-adopts live masters → zero relogin). The packaged app does this install
   itself on first run.
 - **The LaunchAgent runs the daemon IN PLACE from inside the app bundle**
-  (`Auto2FA.app/Contents/Resources/a2fa-daemon`), it is NOT copied to
-  `~/.auto2fa`. This is deliberate: a daemon signed with an *Apple Development*
+  (`SSH2FA.app/Contents/Resources/ssh2fa-daemon`), it is NOT copied to
+  `~/.ssh2fa`. This is deliberate: a daemon signed with an *Apple Development*
   cert (the free, un-notarized build) that is **copied** to a new path is
   refused at exec by the kernel (`launchctl print …` →
   `last exit reason = OS_REASON_EXEC`) even though `codesign -v` passes — an
@@ -155,8 +155,8 @@ a first release.
   updates update the daemon automatically. The first-run installer re-points
   the LaunchAgent on every launch, so moving the app (e.g. into /Applications)
   self-heals. On the clean-machine test, confirm
-  `launchctl print gui/$UID/com.auto2fa.daemon` shows `state = running` after
-  first launch. (If you hand-deploy a daemon to `~/.auto2fa` on a dev machine
+  `launchctl print gui/$UID/com.ssh2fa.daemon` shows `state = running` after
+  first launch. (If you hand-deploy a daemon to `~/.ssh2fa` on a dev machine
   instead, re-sign it **in place** after any copy — never run a copied
   Apple-Development-signed binary.)
 - **Don't exec the deployed daemon from the dev shell to test it** — a binary

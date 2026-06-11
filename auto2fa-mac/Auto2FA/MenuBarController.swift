@@ -18,11 +18,11 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         self.window = window
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.autosaveName = "com.auto2fa.menubar"
+        statusItem.autosaveName = "com.ssh2fa.menubar"
         statusItem.behavior = .removalAllowed
 
         if let button = statusItem.button {
-            button.toolTip = "Auto2FA — left-click to show window, right-click for menu"
+            button.toolTip = "SSH2FA — left-click to show window, right-click for menu"
             // Custom click handler so we get BOTH left and right clicks.
             // We deliberately do NOT set statusItem.menu — if menu is set,
             // macOS swallows clicks and pops the menu, losing left-vs-right
@@ -32,9 +32,9 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             // Initial image with neutral tint; refresh() recolors as state changes.
             renderButton()
-            NSLog("[Auto2FA] MenuBar status item installed")
+            NSLog("[SSH2FA] MenuBar status item installed")
         } else {
-            NSLog("[Auto2FA] MenuBar statusItem.button is nil — system denied a slot")
+            NSLog("[SSH2FA] MenuBar statusItem.button is nil — system denied a slot")
         }
 
         // Refresh the icon tint + count badge once a second. Cheap.
@@ -93,8 +93,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         guard let button = statusItem?.button else { return }
         let tint = aggregateTint()
         var image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
-                            accessibilityDescription: "Auto2FA")
-                ?? NSImage(systemSymbolName: "network", accessibilityDescription: "Auto2FA")
+                            accessibilityDescription: "SSH2FA")
+                ?? NSImage(systemSymbolName: "network", accessibilityDescription: "SSH2FA")
         if let img = image {
             // .palette renders the symbol in our chosen color (and respects
             // dark/light mode automatically because we're working in NSColor).
@@ -133,7 +133,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             if let win = window {
                 win.makeKeyAndOrderFront(nil)
-            } else if let any = NSApp.windows.first(where: { $0.title == "Auto2FA" }) {
+            } else if let any = NSApp.windows.first(where: { $0.title == "SSH2FA" }) {
                 any.makeKeyAndOrderFront(nil)
                 self.window = any
             }
@@ -157,7 +157,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let header = NSMenuItem(title: "Auto2FA", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "SSH2FA", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -238,12 +238,12 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let uninstall = NSMenuItem(title: "Uninstall Auto2FA…",
+        let uninstall = NSMenuItem(title: "Uninstall SSH2FA…",
                                    action: #selector(uninstall(_:)), keyEquivalent: "")
         uninstall.target = self
         menu.addItem(uninstall)
 
-        let quit = NSMenuItem(title: "Quit Auto2FA", action: #selector(quit(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit SSH2FA", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         return menu
@@ -314,7 +314,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if let win = window {
             win.makeKeyAndOrderFront(nil)
-        } else if let any = NSApp.windows.first(where: { $0.title == "Auto2FA" }) {
+        } else if let any = NSApp.windows.first(where: { $0.title == "SSH2FA" }) {
             any.makeKeyAndOrderFront(nil)
             self.window = any
         }
@@ -327,7 +327,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         // that doesn't apply to non-tabbed SwiftUI windows) — silently
         // no-op'd on macOS 14+.
         NSApp.activate(ignoringOtherApps: true)
-        if let win = NSApp.windows.first(where: { $0.title == "Auto2FA Logs" }) {
+        if let win = NSApp.windows.first(where: { $0.title == "SSH2FA Logs" }) {
             win.makeKeyAndOrderFront(nil)
             return
         }
@@ -350,8 +350,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
     @objc private func uninstall(_ sender: Any?) {
         let alert = NSAlert()
-        alert.messageText = "Uninstall Auto2FA?"
-        alert.informativeText = "This stops and removes the background daemon, deletes its LaunchAgent, and removes every credential Auto2FA saved in your Keychain. Afterward, drag Auto2FA.app to the Trash yourself."
+        alert.messageText = "Uninstall SSH2FA?"
+        alert.informativeText = "This stops and removes the background daemon, deletes its LaunchAgent, and removes every credential SSH2FA saved in your Keychain. Afterward, drag SSH2FA.app to the Trash yourself."
         alert.alertStyle = .warning
         let purge = NSButton(checkboxWithTitle: "Also delete my saved hosts & tunnels (passwords.json, tunnels.json)",
                              target: nil, action: nil)
@@ -367,8 +367,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         // Reveal the app so the user can drag it to the Trash, then quit.
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
         let done = NSAlert()
-        done.messageText = "Auto2FA uninstalled"
-        done.informativeText = "The daemon, LaunchAgent and Keychain credentials are removed. Drag Auto2FA.app (now revealed in Finder) to the Trash to finish."
+        done.messageText = "SSH2FA uninstalled"
+        done.informativeText = "The daemon, LaunchAgent and Keychain credentials are removed. Drag SSH2FA.app (now revealed in Finder) to the Trash to finish."
         done.addButton(withTitle: "Quit")
         done.runModal()
         NSApp.terminate(nil)

@@ -121,7 +121,7 @@ struct CommandPalette: View {
             ) {
                 NSApp.activate(ignoringOtherApps: true)
                 // First check if a logs window is already open and focus it.
-                if let w = NSApp.windows.first(where: { $0.title == "Auto2FA Logs" }) {
+                if let w = NSApp.windows.first(where: { $0.title == "SSH2FA Logs" }) {
                     w.makeKeyAndOrderFront(nil)
                     return
                 }

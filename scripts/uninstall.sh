@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# uninstall.sh — fully remove Auto2FA from this Mac.
+# uninstall.sh — fully remove SSH2FA from this Mac.
 #
 # Removes (in order):
 #   1. the LaunchAgent (stops the daemon — it tears down its SSH masters on the
 #      way out)
-#   2. every Keychain credential Auto2FA stored (service "auto2fa")
+#   2. every Keychain credential SSH2FA stored (service "auto2fa")
 #   3. ~/.auto2fa (socket, install marker, any legacy daemon copy)
 #   4. (only with --purge-config) ~/.ssh/passwords.json + tunnels.json — your
 #      saved host metadata + tunnel definitions
 #
-# It does NOT delete /Applications/Auto2FA.app — drag that to the Trash
+# It does NOT delete /Applications/SSH2FA.app — drag that to the Trash
 # yourself (a running app can't reliably delete its own bundle).
 #
 # Usage:
@@ -33,7 +33,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SSH_DIR="${SSH_CONFIG_PATH:-$HOME/.ssh}"
 SSH_DIR="${SSH_DIR%/}"
 
-echo "This will remove Auto2FA's daemon, LaunchAgent, and Keychain credentials."
+echo "This will remove SSH2FA's daemon, LaunchAgent, and Keychain credentials."
 [ "$PURGE_CONFIG" -eq 1 ] && echo "It will ALSO delete $SSH_DIR/passwords.json and tunnels.json."
 if [ "$ASSUME_YES" -ne 1 ]; then
   printf "Continue? [y/N] "
@@ -51,7 +51,7 @@ if [ -f "$PLIST" ]; then
   echo "• removed $PLIST"
 fi
 # Belt-and-braces: SIGTERM any daemon still running so masters close cleanly.
-pkill -TERM -x a2fa-daemon 2>/dev/null || true
+pkill -TERM -x ssh2fa-daemon 2>/dev/null || true
 
 # 2. Delete every Keychain credential under service "auto2fa".
 n=0
@@ -76,5 +76,5 @@ else
 fi
 
 echo ""
-echo "Done. Finally, drag Auto2FA.app to the Trash:"
-echo "  open /Applications  # then move Auto2FA.app to the Trash"
+echo "Done. Finally, drag SSH2FA.app to the Trash:"
+echo "  open /Applications  # then move SSH2FA.app to the Trash"

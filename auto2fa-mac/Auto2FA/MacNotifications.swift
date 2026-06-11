@@ -67,7 +67,7 @@ enum MacNotifications {
                                         content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req) { err in
             if let err {
-                NSLog("[Auto2FA] notification post failed: \(err.localizedDescription)")
+                NSLog("[SSH2FA] notification post failed: \(err.localizedDescription)")
             }
         }
     }
@@ -131,7 +131,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 // Bring main window forward + signal TunnelsView to open
                 // the details popover for this tunnel.
                 NSApp.activate(ignoringOtherApps: true)
-                if let w = NSApp.windows.first(where: { $0.title == "Auto2FA" }) {
+                if let w = NSApp.windows.first(where: { $0.title == "SSH2FA" }) {
                     w.makeKeyAndOrderFront(nil)
                 }
                 NotificationCenter.default.post(

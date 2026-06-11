@@ -1,4 +1,4 @@
-# Auto2FA macOS App — Native-Minimal UI Refresh (Design)
+# SSH2FA macOS App — Native-Minimal UI Refresh (Design)
 
 **Date:** 2026-06-07
 **Scope:** Visual/UX refresh of the existing menu-bar app's **window dashboard**, plus
@@ -30,7 +30,7 @@ any behavior, keyboard shortcuts, or functionality**.
 
 ## Components & files
 
-### New: `Auto2FA/DesignTokens.swift`
+### New: `SSH2FA/DesignTokens.swift`
 A single source of truth (plain `enum` namespaces, no runtime cost):
 - `Spacing`: `xs=4, s=8, m=12, l=16`.
 - `StatusColor`: maps a semantic state → Color. `connected/alive → green`,
@@ -39,7 +39,7 @@ A single source of truth (plain `enum` namespaces, no runtime cost):
 - Small view modifiers: `.sectionHeaderStyle()`, `.cardSurface()` (neutral material +
   corner radius), consistent `.dashboardRow()` padding.
 
-### New: `Auto2FA/Views/Components/StatusDot.swift`
+### New: `SSH2FA/Views/Components/StatusDot.swift`
 `StatusDot(state:)` — the single status glyph used everywhere:
 - filled circle in the status color; **pulsing animation only for connecting/starting**
   (reuse the existing pulse from the current `PulsingDot`); `⚠`-style treatment for
@@ -47,11 +47,11 @@ A single source of truth (plain `enum` namespaces, no runtime cost):
   is an attention state, plain `circle.fill` otherwise. Replaces the two divergent
   implementations in HostsView and TunnelsView.
 
-### New: `Auto2FA/Views/Components/StatusBadge.swift`
+### New: `SSH2FA/Views/Components/StatusBadge.swift`
 `StatusBadge(state:, text:)` — `StatusDot` + a friendly label in the status color, used in
 both row types for the leading status cell. Keeps host/tunnel status presentation identical.
 
-### New: `Auto2FA/Views/Components/HostRow.swift`
+### New: `SSH2FA/Views/Components/HostRow.swift`
 Custom two-line host row (replaces the HostsView `Table` row):
 - **Line 1:** `StatusDot` · alias (mono, primary) · resolved hostname (secondary, truncates)
   · pool pips (`●●` filled = ready slots, hollow = not) · mount indicator
@@ -61,7 +61,7 @@ Custom two-line host row (replaces the HostsView `Table` row):
   tooltip = raw `lastMsg`).
 - Change-highlight (reuse `ChangeHighlight`) on status change.
 
-### New: `Auto2FA/Views/Components/TunnelRow.swift`
+### New: `SSH2FA/Views/Components/TunnelRow.swift`
 Custom two-line tunnel row (replaces the TunnelsView `Table` row):
 - **Line 1:** `StatusDot` · name (mono, primary) + inline glyphs `⚡`(autoStart),
   `terminal`(postConnectCmd) · `:local→:remote` (secondary mono) · node (secondary,
@@ -72,14 +72,14 @@ Custom two-line tunnel row (replaces the TunnelsView `Table` row):
   `<n> fails` (shown in red/orange only when `failCount > 0`) · tags as small capsules.
 - Change-highlight on status change.
 
-### Modify: `Auto2FA/Views/HostsView.swift`
+### Modify: `SSH2FA/Views/HostsView.swift`
 - Replace `Table` with a `List` of `HostRow` (or `LazyVStack` inside a `ScrollView` if List
   styling fights the design — prefer `List` with `.plain`/`.inset` style for native feel).
 - Restyle the empty state with the shared placeholder treatment.
 - **Preserve:** all four actions (play/stop, mount/eject, rotate, terminal), disabled-state
   logic, in-flight spinners, pool/mount indicators, last-message tooltip.
 
-### Modify: `Auto2FA/Views/TunnelsView.swift`
+### Modify: `SSH2FA/Views/TunnelsView.swift`
 - Replace `Table` with a `List(selection:)` of `TunnelRow` — **multi-select must be
   preserved** (the batch start/stop toolbar depends on it).
 - Restyle filter bar + tag chips with tokens; restyle empty state.
@@ -91,7 +91,7 @@ Custom two-line tunnel row (replaces the TunnelsView `Table` row):
   jump-host menu with host-readiness dots, autostart/post-connect glyphs, alive-since
   subtext, change highlight.
 
-### Modify: `Auto2FA/ContentView.swift`
+### Modify: `SSH2FA/ContentView.swift`
 - Section headers (HOSTS/TUNNELS): unified `.sectionHeaderStyle()` with a live count
   (e.g. `HOSTS · 4`) and a subtle divider.
 - Restyle the error banner and undo snackbar to consistent tokens (material, corner radius,
@@ -121,7 +121,7 @@ all daemon wiring. No new daemon capabilities are required.
 
 ## Validation
 
-- `xcodebuild -project Auto2FA.xcodeproj -scheme Auto2FA -configuration Debug build` must
+- `xcodebuild -project SSH2FA.xcodeproj -scheme SSH2FA -configuration Debug build` must
   succeed after each task.
 - Because changes are presentation-only, the Rust workspace tests are unaffected and the
   live daemon is untouched.

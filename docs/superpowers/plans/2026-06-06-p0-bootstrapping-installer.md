@@ -4,7 +4,7 @@
 
 **Goal:** One command on a fresh clone (`python3 install.py`) produces a fully self-contained, login-auto-starting auto2fa install on any Mac, with zero manual path editing, idempotently.
 
-**Architecture:** A thin stdlib-only `install.py` at the repo root creates a dedicated `.venv`, `pip install -e .`s the package, then hands off to a new `auto2fa install` subcommand. The real logic lives in `auto2fa/installer.py` (detect paths → write the two `~/.auto2fa` pointer files the Mac app reads → render+load the LaunchAgent via a per-OS dispatch seam). Non-macOS writes pointers and skips service load without failing (P3 fills the seam).
+**Architecture:** A thin stdlib-only `install.py` at the repo root creates a dedicated `.venv`, `pip install -e .`s the package, then hands off to a new `auto2fa install` subcommand. The real logic lives in `auto2fa/installer.py` (detect paths → write the two `~/.ssh2fa` pointer files the Mac app reads → render+load the LaunchAgent via a per-OS dispatch seam). Non-macOS writes pointers and skips service load without failing (P3 fills the seam).
 
 **Tech Stack:** Python 3.13 (project venv), stdlib only for the installer (`venv`, `subprocess`, `platform`, `xml`), `launchctl`, pytest/unittest.
 
@@ -18,7 +18,7 @@
 - Create: `install.py` (repo root) — stdlib bootstrap (venv + pip + hand-off).
 - Modify: `auto2fa/cli.py` — add the `install` subcommand.
 - Create: `tests/test_installer.py` — unit tests for the installer.
-- Delete: `LaunchAgents/com.auto2fa.daemon.plist` — stale template; installer is now the source of truth.
+- Delete: `LaunchAgents/com.ssh2fa.daemon.plist` — stale template; installer is now the source of truth.
 - Modify: `README.md` — installation section points at `python3 install.py`.
 
 All installer artifact-generation functions take an injectable `_run=subprocess.run` and resolve `platform.system()` at call time, so tests can mock `launchctl` and the OS without spawning anything.
@@ -53,10 +53,10 @@ class TestDetect(unittest.TestCase):
         self.assertEqual(p.repo_dir, repo)
         self.assertEqual(p.venv_dir, os.path.join(repo, ".venv"))
         self.assertEqual(p.python_bin, os.path.join(repo, ".venv", "bin", "python"))
-        self.assertEqual(p.daemon_bin, os.path.join(repo, ".venv", "bin", "auto2fa-daemon"))
-        self.assertEqual(p.config_dir, os.path.expanduser("~/.auto2fa"))
+        self.assertEqual(p.daemon_bin, os.path.join(repo, ".venv", "bin", "ssh2fa-daemon"))
+        self.assertEqual(p.config_dir, os.path.expanduser("~/.ssh2fa"))
         self.assertTrue(p.plist_path.endswith(
-            "Library/LaunchAgents/com.auto2fa.daemon.plist"))
+            "Library/LaunchAgents/com.ssh2fa.daemon.plist"))
         # ssh_config is whatever credentials.config_dir() resolves to (abs path)
         self.assertTrue(os.path.isabs(p.ssh_config))
 
@@ -79,9 +79,9 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'auto2fa.installer'` (
 Generates this machine's deployment artifacts from the live environment so a
 fresh clone needs zero manual path editing:
 
-  - ~/.auto2fa/project-dir.txt   (repo path; read by the Mac app)
-  - ~/.auto2fa/python-path.txt   (venv interpreter; read by the Mac app)
-  - ~/Library/LaunchAgents/com.auto2fa.daemon.plist  (macOS service)
+  - ~/.ssh2fa/project-dir.txt   (repo path; read by the Mac app)
+  - ~/.ssh2fa/python-path.txt   (venv interpreter; read by the Mac app)
+  - ~/Library/LaunchAgents/com.ssh2fa.daemon.plist  (macOS service)
 
 Invoked as `auto2fa install` after install.py has created the venv and
 pip-installed the package. The artifact logic is per-OS dispatched so P3 can
@@ -98,7 +98,7 @@ from dataclasses import dataclass
 
 from . import credentials
 
-LAUNCHD_LABEL = "com.auto2fa.daemon"
+LAUNCHD_LABEL = "com.ssh2fa.daemon"
 
 
 class InstallError(Exception):
@@ -112,9 +112,9 @@ class InstallPaths:
     venv_bin: str
     python_bin: str
     daemon_bin: str
-    config_dir: str    # ~/.auto2fa
+    config_dir: str    # ~/.ssh2fa
     ssh_config: str    # where passwords.json/tunnels.json live (~/.ssh by default)
-    plist_path: str    # ~/Library/LaunchAgents/com.auto2fa.daemon.plist
+    plist_path: str    # ~/Library/LaunchAgents/com.ssh2fa.daemon.plist
 
 
 def detect() -> InstallPaths:
@@ -128,8 +128,8 @@ def detect() -> InstallPaths:
         venv_dir=venv_dir,
         venv_bin=venv_bin,
         python_bin=os.path.join(venv_bin, "python"),
-        daemon_bin=os.path.join(venv_bin, "auto2fa-daemon"),
-        config_dir=os.path.expanduser("~/.auto2fa"),
+        daemon_bin=os.path.join(venv_bin, "ssh2fa-daemon"),
+        config_dir=os.path.expanduser("~/.ssh2fa"),
         ssh_config=credentials.config_dir(),
         plist_path=os.path.expanduser(
             f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist"),
@@ -170,20 +170,20 @@ class TestRenderPlist(unittest.TestCase):
             venv_dir="/Users/x/auto2fa_dev/.venv",
             venv_bin="/Users/x/auto2fa_dev/.venv/bin",
             python_bin="/Users/x/auto2fa_dev/.venv/bin/python",
-            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon",
-            config_dir="/Users/x/.auto2fa",
+            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/ssh2fa-daemon",
+            config_dir="/Users/x/.ssh2fa",
             ssh_config="/Users/x/.ssh",
-            plist_path="/Users/x/Library/LaunchAgents/com.auto2fa.daemon.plist",
+            plist_path="/Users/x/Library/LaunchAgents/com.ssh2fa.daemon.plist",
         )
 
     def test_plist_is_valid_xml_with_detected_paths(self):
         xmlstr = installer.render_plist(self._paths())
         # Parses as XML (catches an unescaped/broken template)
         xml.dom.minidom.parseString(xmlstr)
-        self.assertIn("/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon", xmlstr)
+        self.assertIn("/Users/x/auto2fa_dev/.venv/bin/ssh2fa-daemon", xmlstr)
         self.assertIn("<string>/Users/x/auto2fa_dev</string>", xmlstr)   # WorkingDirectory
         self.assertIn("/Users/x/.ssh", xmlstr)                           # SSH_CONFIG_PATH
-        self.assertIn("com.auto2fa.daemon", xmlstr)
+        self.assertIn("com.ssh2fa.daemon", xmlstr)
         self.assertIn("/Users/x/auto2fa_dev/.venv/bin:", xmlstr)         # PATH prefix
 ```
 
@@ -224,9 +224,9 @@ _PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
         <string>{ssh_config}</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/auto2fa_daemon.log</string>
+    <string>/tmp/ssh2fa_daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/auto2fa_daemon.log</string>
+    <string>/tmp/ssh2fa_daemon.log</string>
     <key>ProcessType</key>
     <string>Background</string>
     <key>ThrottleInterval</key>
@@ -240,7 +240,7 @@ _PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 def render_plist(paths: "InstallPaths") -> str:
     """Render the LaunchAgent plist for this machine. The daemon is launched
-    via the venv's auto2fa-daemon console script (a concrete interpreter, never
+    via the venv's ssh2fa-daemon console script (a concrete interpreter, never
     a login shell) and SSH_CONFIG_PATH is pinned to the resolved config dir."""
     return _PLIST_TEMPLATE.format(
         label=LAUNCHD_LABEL,
@@ -286,8 +286,8 @@ class TestWritePointers(unittest.TestCase):
             venv_dir="/Users/x/auto2fa_dev/.venv",
             venv_bin="/Users/x/auto2fa_dev/.venv/bin",
             python_bin="/Users/x/auto2fa_dev/.venv/bin/python",
-            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/auto2fa-daemon",
-            config_dir=os.path.join(tmp, ".auto2fa"),
+            daemon_bin="/Users/x/auto2fa_dev/.venv/bin/ssh2fa-daemon",
+            config_dir=os.path.join(tmp, ".ssh2fa"),
             ssh_config="/Users/x/.ssh",
             plist_path="/ignored",
         )
@@ -359,9 +359,9 @@ class TestRenderServiceDispatch(unittest.TestCase):
     def _paths(self, tmp):
         return installer.InstallPaths(
             repo_dir="/r", venv_dir="/r/.venv", venv_bin="/r/.venv/bin",
-            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/auto2fa-daemon",
-            config_dir=os.path.join(tmp, ".auto2fa"), ssh_config="/s",
-            plist_path=os.path.join(tmp, "com.auto2fa.daemon.plist"),
+            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/ssh2fa-daemon",
+            config_dir=os.path.join(tmp, ".ssh2fa"), ssh_config="/s",
+            plist_path=os.path.join(tmp, "com.ssh2fa.daemon.plist"),
         )
 
     def test_non_macos_writes_no_plist_and_does_not_call_launchctl(self):
@@ -428,9 +428,9 @@ class TestInstallLaunchAgent(unittest.TestCase):
     def _paths(self, tmp):
         return installer.InstallPaths(
             repo_dir="/r", venv_dir="/r/.venv", venv_bin="/r/.venv/bin",
-            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/auto2fa-daemon",
-            config_dir=os.path.join(tmp, ".auto2fa"), ssh_config="/s",
-            plist_path=os.path.join(tmp, "com.auto2fa.daemon.plist"),
+            python_bin="/r/.venv/bin/python", daemon_bin="/r/.venv/bin/ssh2fa-daemon",
+            config_dir=os.path.join(tmp, ".ssh2fa"), ssh_config="/s",
+            plist_path=os.path.join(tmp, "com.ssh2fa.daemon.plist"),
         )
 
     def test_writes_plist_and_loads_in_bootout_bootstrap_kickstart_order(self):
@@ -570,7 +570,7 @@ def verify(paths: "InstallPaths", *, timeout: float = 10.0) -> str:
             time.sleep(0.3)
         finally:
             s.close()
-    return "daemon socket not responding yet — check /tmp/auto2fa_daemon.log"
+    return "daemon socket not responding yet — check /tmp/ssh2fa_daemon.log"
 
 
 def install() -> int:
@@ -728,7 +728,7 @@ Run with the system Python (no dependencies required):
 
 Creates a dedicated .venv next to this file, installs auto2fa into it, then
 hands off to `auto2fa install` to generate this machine's deployment artifacts
-(LaunchAgent plist + ~/.auto2fa pointer files) and load the daemon at login.
+(LaunchAgent plist + ~/.ssh2fa pointer files) and load the daemon at login.
 Safe to re-run.
 """
 import os
@@ -782,13 +782,13 @@ git commit -m "feat: install.py root bootstrap (venv + pip + hand-off)"
 ### Task 9: Remove stale template, update README, full-suite + manual end-to-end
 
 **Files:**
-- Delete: `LaunchAgents/com.auto2fa.daemon.plist`
+- Delete: `LaunchAgents/com.ssh2fa.daemon.plist`
 - Modify: `README.md` (Installation section)
 
 - [ ] **Step 1: Remove the stale checked-in plist template**
 
 ```bash
-git rm LaunchAgents/com.auto2fa.daemon.plist
+git rm LaunchAgents/com.ssh2fa.daemon.plist
 ```
 
 - [ ] **Step 2: Update README Installation section**
@@ -810,7 +810,7 @@ artifacts. No manual path editing.
 ````
 
 Also update the Daemon-mode row in the "Three frontends" table: change
-`auto-start via LaunchAgents/com.auto2fa.daemon.plist` to
+`auto-start via LaunchAgents/com.ssh2fa.daemon.plist` to
 `auto-start is configured by python3 install.py`.
 
 - [ ] **Step 3: Run the full test suite**
@@ -822,7 +822,7 @@ Expected: PASS (all prior tests + the new `tests/test_installer.py`).
 
 Run: `.venv/bin/auto2fa install`
 Expected output includes:
-- `LaunchAgent installed at /Users/<you>/Library/LaunchAgents/com.auto2fa.daemon.plist and loaded`
+- `LaunchAgent installed at /Users/<you>/Library/LaunchAgents/com.ssh2fa.daemon.plist and loaded`
 - `daemon socket is responding`
 
 Then verify the daemon is up and serving:

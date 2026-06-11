@@ -37,7 +37,7 @@ const BOUNDED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // The base ControlPath is resolved from the user's ssh config via `ssh -G`,
 // exactly like `get_ssh_control_path` in backend.py. This is essential for
 // two reasons:
-//   1. Correctness — Rust must honor a `ControlPath ~/.ssh/cm-auto2fa-%h`
+//   1. Correctness — Rust must honor a `ControlPath ~/.ssh/cm-ssh2fa-%h`
 //      directive (with %h/%n/~ expansion done by ssh itself), not invent its
 //      own path. Ignoring it would orphan the user's configured sockets.
 //   2. Interop / handoff — using the SAME path the Python daemon used lets a
@@ -47,7 +47,7 @@ const BOUNDED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // Resolution (mirrors get_ssh_control_path):
 //   * `ssh -G <host>` → take the `controlpath` value.
 //   * value "none"         → fall back to ~/.ssh/cm-<host>
-//   * no controlpath / err → fall back to ~/.ssh/cm-auto2fa-<host>
+//   * no controlpath / err → fall back to ~/.ssh/cm-ssh2fa-<host>
 // The result is cached per host (ssh -G is cheap but not free, and the path is
 // stable for the lifetime of the daemon).
 
@@ -78,7 +78,7 @@ fn control_base_from_ssh_g(host: &str, value: Option<&str>) -> PathBuf {
             dirs_home().join(".ssh").join(format!("cm-{host}"))
         }
         Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => dirs_home().join(".ssh").join(format!("cm-auto2fa-{host}")),
+        _ => dirs_home().join(".ssh").join(format!("cm-ssh2fa-{host}")),
     }
 }
 
@@ -164,7 +164,7 @@ fn run_ssh_g(host: &str) -> Option<String> {
 ///
 /// `authoritative` is `true` iff `ssh -G` actually RAN (success — even when it
 /// reports no `ControlPath` directive, which is a legitimate fallback to
-/// `cm-auto2fa-<host>`). It is `false` only when `ssh -G` timed out / failed /
+/// `cm-ssh2fa-<host>`). It is `false` only when `ssh -G` timed out / failed /
 /// couldn't spawn: the returned path is then a GUESS (the same fallback), and
 /// callers that would act destructively on it — the boot stray-master sweep —
 /// MUST treat `false` as "I don't actually know this host's path" and refrain.
@@ -286,7 +286,7 @@ pub fn symlink_target_index(host: &str) -> Option<usize> {
 }
 
 /// Parse the `-<index>` suffix off a pool socket file name. The base may contain
-/// dashes (`cm-auto2fa-...`) and dots, so we split on the LAST dash. Pool slot
+/// dashes (`cm-ssh2fa-...`) and dots, so we split on the LAST dash. Pool slot
 /// suffixes are a SINGLE digit (< POOL_SIZE), so a hostname whose own last
 /// dash-component is numeric (e.g. "…-gpu-01" → "01") is rejected rather than
 /// misread as a slot index.
@@ -593,7 +593,7 @@ fn mux_socket_path(cmd: &str) -> Option<&str> {
 }
 
 /// Strip a trailing `-<digits>` pool-slot suffix from a control path token to
-/// recover the base. `cm-auto2fa-h-0` → `cm-auto2fa-h`; a token with no such
+/// recover the base. `cm-ssh2fa-h-0` → `cm-ssh2fa-h`; a token with no such
 /// suffix (a plain-base master, or a host name ending in `-<digits>` with no
 /// slot) is returned unchanged.
 fn strip_slot_suffix(tok: &str) -> &str {
@@ -657,15 +657,15 @@ pub fn sweep_duplicate_masters(control_path: &Path, host: &str) -> usize {
     killed
 }
 
-/// Boot-time sweep of `cm-auto2fa-*` masters whose ControlPath base is not
+/// Boot-time sweep of `cm-ssh2fa-*` masters whose ControlPath base is not
 /// among `valid_bases` (the resolved bases of every known host). These are
 /// strays from a CHANGED path resolution (ssh-config edits): no per-slot
 /// sweep ever targets the old path again, so they leaked forever — observed
-/// live as 6h-old `cm-auto2fa-b8-*` masters after b8's base became
-/// `cm-auto2fa-boslogin08…`. Only our own `cm-auto2fa-` prefix is touched;
+/// live as 6h-old `cm-ssh2fa-b8-*` masters after b8's base became
+/// `cm-ssh2fa-boslogin08…`. Only our own `cm-ssh2fa-` prefix is touched;
 /// custom user ControlPaths are never swept here.
 pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
-    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", "cm-auto2fa-"], Duration::from_secs(2)) {
+    let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", "cm-ssh2fa-"], Duration::from_secs(2)) {
         Some(o) if o.status.code() == Some(0) => o,
         _ => return 0,
     };
@@ -684,7 +684,7 @@ pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
             .unwrap_or_default();
         // Must be a [mux] master whose socket path is one of OURS.
         let path_tok = match mux_socket_path(&cmd) {
-            Some(p) if p.contains("cm-auto2fa-") => p,
+            Some(p) if p.contains("cm-ssh2fa-") => p,
             _ => continue,
         };
         // NOT a stray if the full token equals a valid base (a plain-base
@@ -781,12 +781,12 @@ mod tests {
     #[test]
     fn mux_socket_path_extracts_master_only() {
         assert_eq!(
-            mux_socket_path("ssh: /Users/x/.ssh/cm-auto2fa-b8-0 [mux]"),
-            Some("/Users/x/.ssh/cm-auto2fa-b8-0")
+            mux_socket_path("ssh: /Users/x/.ssh/cm-ssh2fa-b8-0 [mux]"),
+            Some("/Users/x/.ssh/cm-ssh2fa-b8-0")
         );
         // A multiplexed CLIENT (no [mux] proctitle) → None (never a victim).
         assert_eq!(
-            mux_socket_path("ssh -O check -o ControlPath=/Users/x/.ssh/cm-auto2fa-b8-0 b8"),
+            mux_socket_path("ssh -O check -o ControlPath=/Users/x/.ssh/cm-ssh2fa-b8-0 b8"),
             None
         );
         assert_eq!(mux_socket_path("/usr/bin/ssh-agent"), None);
@@ -797,21 +797,21 @@ mod tests {
     /// slot path is NOT a match for host `gpu-01`'s master line.
     #[test]
     fn mux_path_is_exact_not_substring() {
-        let gpu0 = "ssh: /h/.ssh/cm-auto2fa-gpu-0 [mux]";
-        let gpu01_0 = "ssh: /h/.ssh/cm-auto2fa-gpu-01-0 [mux]";
-        assert_eq!(mux_socket_path(gpu0), Some("/h/.ssh/cm-auto2fa-gpu-0"));
-        assert_eq!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-auto2fa-gpu-01-0"));
-        assert_ne!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-auto2fa-gpu-0"));
+        let gpu0 = "ssh: /h/.ssh/cm-ssh2fa-gpu-0 [mux]";
+        let gpu01_0 = "ssh: /h/.ssh/cm-ssh2fa-gpu-01-0 [mux]";
+        assert_eq!(mux_socket_path(gpu0), Some("/h/.ssh/cm-ssh2fa-gpu-0"));
+        assert_eq!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-ssh2fa-gpu-01-0"));
+        assert_ne!(mux_socket_path(gpu01_0), Some("/h/.ssh/cm-ssh2fa-gpu-0"));
     }
 
     #[test]
     fn strip_slot_suffix_cases() {
-        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-b8-0"), "/h/cm-auto2fa-b8");
-        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-b8-1"), "/h/cm-auto2fa-b8");
+        assert_eq!(strip_slot_suffix("/h/cm-ssh2fa-b8-0"), "/h/cm-ssh2fa-b8");
+        assert_eq!(strip_slot_suffix("/h/cm-ssh2fa-b8-1"), "/h/cm-ssh2fa-b8");
         // Host name ending in -<digits>, normal slot suffix stripped once.
-        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-node-01-0"), "/h/cm-auto2fa-node-01");
+        assert_eq!(strip_slot_suffix("/h/cm-ssh2fa-node-01-0"), "/h/cm-ssh2fa-node-01");
         // Plain base (no slot suffix) returned unchanged.
-        assert_eq!(strip_slot_suffix("/h/cm-auto2fa-node-01"), "/h/cm-auto2fa-node");
+        assert_eq!(strip_slot_suffix("/h/cm-ssh2fa-node-01"), "/h/cm-ssh2fa-node");
         // …which is exactly why sweep_stray_masters ALSO checks the full token
         // against valid_bases (covered by the both-arms `||` there).
     }
@@ -828,11 +828,11 @@ mod tests {
     /// must kill nothing (count can only reflect TRUE strays).
     #[test]
     fn sweep_strays_respects_valid_bases() {
-        // Collect the bases of any LIVE cm-auto2fa masters on this machine
+        // Collect the bases of any LIVE cm-ssh2fa masters on this machine
         // and declare them all valid — the sweep must then be a no-op.
         let out = crate::sys::run_cmd_bounded(
             "pgrep",
-            &["-f", "--", "cm-auto2fa-"],
+            &["-f", "--", "cm-ssh2fa-"],
             std::time::Duration::from_secs(2),
         );
         let mut valid: Vec<PathBuf> = Vec::new();
@@ -844,7 +844,7 @@ mod tests {
                     std::time::Duration::from_secs(2),
                 ) {
                     let cmd = String::from_utf8_lossy(&ps.stdout).into_owned();
-                    if let Some(tok) = cmd.split_whitespace().find(|t| t.contains("cm-auto2fa-")) {
+                    if let Some(tok) = cmd.split_whitespace().find(|t| t.contains("cm-ssh2fa-")) {
                         let base = match tok.rfind('-') {
                             Some(i)
                                 if !tok[i + 1..].is_empty()
@@ -870,10 +870,10 @@ mod tests {
 
     #[test]
     fn parse_controlpath_picks_value_case_insensitive() {
-        let out = "user me\nControlPath /home/me/.ssh/cm-auto2fa-host.example-0\nport 22\n";
+        let out = "user me\nControlPath /home/me/.ssh/cm-ssh2fa-host.example-0\nport 22\n";
         assert_eq!(
             parse_ssh_g_controlpath(out).as_deref(),
-            Some("/home/me/.ssh/cm-auto2fa-host.example-0")
+            Some("/home/me/.ssh/cm-ssh2fa-host.example-0")
         );
         // lowercase key (ssh -G normalizes to lowercase)
         let out2 = "controlpath none\n";
@@ -887,20 +887,20 @@ mod tests {
         // explicit "none" → ~/.ssh/cm-<host>
         let none = control_base_from_ssh_g("b8", Some("none"));
         assert!(none.to_string_lossy().ends_with("/.ssh/cm-b8"), "{none:?}");
-        // no controlpath line → ~/.ssh/cm-auto2fa-<host>
+        // no controlpath line → ~/.ssh/cm-ssh2fa-<host>
         let missing = control_base_from_ssh_g("b8", None);
         assert!(
-            missing.to_string_lossy().ends_with("/.ssh/cm-auto2fa-b8"),
+            missing.to_string_lossy().ends_with("/.ssh/cm-ssh2fa-b8"),
             "{missing:?}"
         );
         // concrete value (already %h/~ expanded by ssh) → used verbatim
         let concrete = control_base_from_ssh_g(
             "b8",
-            Some("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu"),
+            Some("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu"),
         );
         assert_eq!(
             concrete,
-            PathBuf::from("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu")
+            PathBuf::from("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu")
         );
     }
 
@@ -945,17 +945,17 @@ mod tests {
     #[test]
     fn parse_trailing_index_handles_dashed_base() {
         assert_eq!(
-            parse_trailing_index("/Users/me/.ssh/cm-auto2fa-boslogin08.rc.fas.harvard.edu-1"),
+            parse_trailing_index("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu-1"),
             Some(1)
         );
-        assert_eq!(parse_trailing_index("cm-auto2fa-k6-0"), Some(0));
+        assert_eq!(parse_trailing_index("cm-ssh2fa-k6-0"), Some(0));
         assert_eq!(parse_trailing_index("no-index-here"), None);
         assert_eq!(parse_trailing_index("plainname"), None);
         // A hostname's OWN numeric dash-component must not be misread as a
         // slot index: multi-digit ("…-gpu-01") and out-of-range ("…-5") are
         // rejected (slots are a single digit < POOL_SIZE).
-        assert_eq!(parse_trailing_index("cm-auto2fa-gpu-01"), None);
-        assert_eq!(parse_trailing_index("cm-auto2fa-node-5"), None);
+        assert_eq!(parse_trailing_index("cm-ssh2fa-gpu-01"), None);
+        assert_eq!(parse_trailing_index("cm-ssh2fa-node-5"), None);
     }
 
     /// `master_check` with a bogus (non-existent) control socket must return

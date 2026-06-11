@@ -6,11 +6,11 @@ import ServiceManagement
 ///
 /// IMPORTANT path caveat: SMAppService remembers the bundle URL at register
 /// time. If you move the .app afterwards, login launch silently breaks until
-/// you re-toggle. For dev builds in build/Build/Products/Debug/Auto2FA.app
+/// you re-toggle. For dev builds in build/Build/Products/Debug/SSH2FA.app
 /// that's fine for testing but fragile — for everyday use, ship the .app to
 /// /Applications first.
 enum LoginItem {
-    /// Whether macOS will start Auto2FA at the user's next login.
+    /// Whether macOS will start SSH2FA at the user's next login.
     static var isEnabled: Bool {
         if #available(macOS 13.0, *) {
             return SMAppService.mainApp.status == .enabled

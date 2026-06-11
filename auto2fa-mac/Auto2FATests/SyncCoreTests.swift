@@ -1,7 +1,7 @@
 import XCTest
 
 // LockCore / SyncCore / SyncPayload are compiled into THIS test bundle via
-// project.yml (sources include Auto2FA/SyncCore.swift) — same module, no import.
+// project.yml (sources include SSH2FA/SyncCore.swift) — same module, no import.
 final class SyncCoreTests: XCTestCase {
     // MARK: LockCore.shouldChallenge
     func testLockDisabledNeverChallenges() {

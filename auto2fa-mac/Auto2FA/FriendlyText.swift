@@ -102,7 +102,7 @@ enum FriendlyText {
             return "Server is rate-limiting too many failed logins — sitting out for a few minutes."
         }
         if lc.contains("daemon unreachable") || lc.contains("not connected") {
-            return "Background helper isn't running — restart Auto2FA to fix."
+            return "Background helper isn't running — restart SSH2FA to fix."
         }
         // Pass-through: caller's message was already user-friendly enough,
         // or we didn't have a translation. Avoid lying about what happened.

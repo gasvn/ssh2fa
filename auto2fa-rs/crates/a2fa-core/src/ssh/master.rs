@@ -338,7 +338,7 @@ pub fn start_master(
     // diagnostics (connection metadata — never the password/OTP, which go over
     // the pty) should not be world-readable. ssh -E appends to the existing
     // file, inheriting these permissions.
-    let log_file = format!("/tmp/auto2fa_ssh_master_{}_{index}.log", state.host);
+    let log_file = format!("/tmp/ssh2fa_ssh_master_{}_{index}.log", state.host);
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let _ = std::fs::OpenOptions::new()

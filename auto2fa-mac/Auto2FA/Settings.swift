@@ -38,7 +38,7 @@ struct SettingsView: View {
         TabView {
             Form {
                 Section {
-                    Toggle("Start Auto2FA at login", isOn: $launchAtLogin)
+                    Toggle("Start SSH2FA at login", isOn: $launchAtLogin)
                         .disabled(!LoginItem.isSupported)
                         .onChange(of: launchAtLogin) { _, on in
                             launchAtLoginError = LoginItem.setEnabled(on)
@@ -57,7 +57,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
-                    Text("For best reliability, drag Auto2FA.app to /Applications first — SMAppService remembers the bundle path at register time, so moving the .app later silently breaks the auto-launch.")
+                    Text("For best reliability, drag SSH2FA.app to /Applications first — SMAppService remembers the bundle path at register time, so moving the .app later silently breaks the auto-launch.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } header: { Text("Launch") }
@@ -99,7 +99,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Start the auto2fa daemon when this app launches", isOn: $spawnDaemonOnLaunch)
-                    Text("Off if you prefer to run the daemon yourself (LaunchAgent, or run a2fa-daemon manually).")
+                    Text("Off if you prefer to run the daemon yourself (LaunchAgent, or run ssh2fa-daemon manually).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Daemon") }
@@ -189,7 +189,7 @@ private struct TroubleshootPane: View {
                 Button("Restart daemon") { model.restartDaemon() }
                 Button("Open daemon log") {
                     NSWorkspace.shared.activateFileViewerSelecting(
-                        [URL(fileURLWithPath: "/tmp/auto2fa_daemon.log")])
+                        [URL(fileURLWithPath: "/tmp/ssh2fa_daemon.log")])
                 }
                 Spacer()
                 Button(copied ? "Copied ✓" : "Copy diagnostics") {
@@ -248,7 +248,7 @@ final class DiagnosticsModel: ObservableObject {
     }
 
     func restartDaemon() {
-        let label = "com.auto2fa.daemon"
+        let label = "com.ssh2fa.daemon"
         let domain = "gui/\(getuid())"
         _ = Self.sh("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(label)"])
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.run() }
@@ -256,7 +256,7 @@ final class DiagnosticsModel: ObservableObject {
 
     /// A plain-text report for bug reports / the clipboard.
     func report() -> String {
-        var s = "Auto2FA diagnostics\n"
+        var s = "SSH2FA diagnostics\n"
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         s += "app \(v) (\(b)) · \(Bundle.main.bundlePath)\n"
@@ -273,7 +273,7 @@ final class DiagnosticsModel: ObservableObject {
     nonisolated static func collect() -> [DiagCheck] {
         var out: [DiagCheck] = []
         let home = NSHomeDirectory()
-        let label = "com.auto2fa.daemon"
+        let label = "com.ssh2fa.daemon"
         let domain = "gui/\(getuid())"
 
         // 1. Daemon running (via launchd).
@@ -293,12 +293,12 @@ final class DiagnosticsModel: ObservableObject {
         }
 
         // 2. Socket responds.
-        if socketResponds(home + "/.auto2fa/auto2fa.sock") {
+        if socketResponds(home + "/.ssh2fa/ssh2fa.sock") {
             out.append(DiagCheck(name: "Daemon socket", status: .ok,
-                                 detail: "Responding at ~/.auto2fa/auto2fa.sock."))
+                                 detail: "Responding at ~/.ssh2fa/ssh2fa.sock."))
         } else {
             out.append(DiagCheck(name: "Daemon socket", status: .fail,
-                                 detail: "No response on ~/.auto2fa/auto2fa.sock.",
+                                 detail: "No response on ~/.ssh2fa/ssh2fa.sock.",
                                  fixHint: "The daemon may be starting (signature validation can take a minute on first launch) — wait, then re-check."))
         }
 
@@ -319,7 +319,7 @@ final class DiagnosticsModel: ObservableObject {
         out.append(DiagCheck(name: "App location",
                              status: inApps ? .ok : .warn,
                              detail: Bundle.main.bundlePath,
-                             fixHint: inApps ? nil : "Move Auto2FA.app to /Applications so the background helper has a stable path."))
+                             fixHint: inApps ? nil : "Move SSH2FA.app to /Applications so the background helper has a stable path."))
 
         // 5. Quarantine (downloaded + un-notarized).
         let quarantined = sh("/usr/bin/xattr", ["-p", "com.apple.quarantine", Bundle.main.bundlePath]).code == 0
@@ -343,7 +343,7 @@ final class DiagnosticsModel: ObservableObject {
         } else {
             out.append(DiagCheck(name: "SSH config", status: .warn,
                                  detail: "No \(cfg).",
-                                 fixHint: "Create ~/.ssh/config with a `Host <alias>` block per machine — Auto2FA refers to hosts by their ssh alias."))
+                                 fixHint: "Create ~/.ssh/config with a `Host <alias>` block per machine — SSH2FA refers to hosts by their ssh alias."))
         }
 
         // 7. sshfs / macFUSE (only needed for the optional mount feature).
@@ -431,7 +431,7 @@ private struct AboutPane: View {
                 .font(.system(size: 64))
                 .foregroundStyle(.tint)
                 .padding(.top, 24)
-            Text("Auto2FA")
+            Text("SSH2FA")
                 .font(.title.weight(.semibold))
             Text(versionString)
                 .font(.caption)
@@ -440,8 +440,8 @@ private struct AboutPane: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
-            Link("github.com/gasvn/auto2fa",
-                 destination: URL(string: "https://github.com/gasvn/auto2fa")!)
+            Link("github.com/gasvn/ssh2fa",
+                 destination: URL(string: "https://github.com/gasvn/ssh2fa")!)
                 .font(.callout)
 
             // ---- Update check ----
@@ -504,9 +504,9 @@ final class UpdateChecker: ObservableObject {
     @Published var result: Result = .idle
 
     private static let releasesAPI =
-        URL(string: "https://api.github.com/repos/gasvn/auto2fa/releases/latest")!
+        URL(string: "https://api.github.com/repos/gasvn/ssh2fa/releases/latest")!
     static let releasesPage =
-        URL(string: "https://github.com/gasvn/auto2fa/releases")!
+        URL(string: "https://github.com/gasvn/ssh2fa/releases")!
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"

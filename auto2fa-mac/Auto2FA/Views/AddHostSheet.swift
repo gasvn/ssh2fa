@@ -3,7 +3,7 @@ import SwiftUI
 /// Two-step wizard for registering a new SSH host with credentials + OTP
 /// secret. Step 1: connection info (hostname, user, password, otpauth URL).
 /// Step 2: confirmation + auto-connect toggle. Daemon persists to
-/// `~/.auto2fa/passwords.json` (via SSH_CONFIG_PATH env) and spins up a
+/// `~/.ssh2fa/passwords.json` (via SSH_CONFIG_PATH env) and spins up a
 /// manager immediately.
 ///
 /// The auth flow we ask the user to feed in:

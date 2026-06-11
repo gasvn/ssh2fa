@@ -8,7 +8,7 @@ name = "a2fa_daemon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "a2fa-daemon"
+name = "ssh2fa-daemon"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,6 +1,6 @@
-# Auto2FA — Native macOS Frontend
+# SSH2FA — Native macOS Frontend
 
-SwiftUI + AppKit frontend for [Auto2FA](../README.md), talking to the Python
+SwiftUI + AppKit frontend for [SSH2FA](../README.md), talking to the Python
 daemon over a Unix domain socket.
 
 ## Status
@@ -17,7 +17,7 @@ daemon over a Unix domain socket.
 - `NotchPresenter` wrapper around [DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit)
   — pushes a notch toast on tunnel state transitions. Falls back
   automatically to a floating panel on non-notched Macs.
-- `LaunchAgent` template (`../LaunchAgents/com.auto2fa.daemon.plist`)
+- `LaunchAgent` template (`../LaunchAgents/com.ssh2fa.daemon.plist`)
   for auto-starting the daemon on login.
 
 **Not yet implemented** (next sessions):
@@ -36,21 +36,21 @@ daemon over a Unix domain socket.
    pip install -e .
    ```
 
-   This registers the `auto2fa-daemon` entry point. Verify with
-   `auto2fa-daemon --help` (it accepts no args; it just runs).
+   This registers the `ssh2fa-daemon` entry point. Verify with
+   `ssh2fa-daemon --help` (it accepts no args; it just runs).
 
 2. Install the LaunchAgent so the daemon starts on login:
 
    ```bash
-   cp ../LaunchAgents/com.auto2fa.daemon.plist ~/Library/LaunchAgents/
-   # edit the plist if your install location for auto2fa-daemon isn't /usr/local/bin
-   launchctl load ~/Library/LaunchAgents/com.auto2fa.daemon.plist
+   cp ../LaunchAgents/com.ssh2fa.daemon.plist ~/Library/LaunchAgents/
+   # edit the plist if your install location for ssh2fa-daemon isn't /usr/local/bin
+   launchctl load ~/Library/LaunchAgents/com.ssh2fa.daemon.plist
    ```
 
-3. Open `Auto2FA.xcodeproj` in Xcode 15+:
+3. Open `SSH2FA.xcodeproj` in Xcode 15+:
 
    ```bash
-   open Auto2FA.xcodeproj
+   open SSH2FA.xcodeproj
    ```
 
    Add the DynamicNotchKit Swift Package via *File → Add Package
@@ -60,14 +60,14 @@ daemon over a Unix domain socket.
    https://github.com/MrKai77/DynamicNotchKit
    ```
 
-4. Set the run scheme to "Auto2FA" and build & run (⌘R).
+4. Set the run scheme to "SSH2FA" and build & run (⌘R).
 
 ## Project layout
 
 ```
 auto2fa-mac/
-├── Auto2FA.xcodeproj/             # Xcode project (generated on first build)
-└── Auto2FA/
+├── SSH2FA.xcodeproj/             # Xcode project (generated on first build)
+└── SSH2FA/
     ├── Auto2FAApp.swift           # @main; configures menu bar + main window
     ├── MenuBarController.swift    # NSStatusItem and its NSMenu
     ├── NotchPresenter.swift       # DynamicNotchKit toasts for state changes
@@ -85,17 +85,17 @@ auto2fa-mac/
         └── Info.plist
 ```
 
-`Auto2FA.xcodeproj` is intentionally not in the repo — generate it on
+`SSH2FA.xcodeproj` is intentionally not in the repo — generate it on
 first open via `swift package init` then create the Xcode project from
 the package, or hand-create via Xcode → File → New → Project →
-macOS App. The `Auto2FA/` directory is your sources root.
+macOS App. The `SSH2FA/` directory is your sources root.
 
 ## IPC protocol
 
 See [docs/superpowers/specs/2026-05-24-mac-app-design.md](../docs/superpowers/specs/2026-05-24-mac-app-design.md)
 for the full daemon ↔ client protocol. TL;DR:
 
-- Transport: Unix domain socket at `~/.auto2fa/auto2fa.sock`.
+- Transport: Unix domain socket at `~/.ssh2fa/ssh2fa.sock`.
 - Framing: line-delimited JSON.
 - Messages: requests (with `id`/`method`/`params`), responses (`id`/`result|error`),
   events (no id, `event`/`data`).
@@ -103,5 +103,5 @@ for the full daemon ↔ client protocol. TL;DR:
 You can poke the daemon by hand:
 
 ```bash
-echo '{"id":"1","method":"list_tunnels"}' | nc -U ~/.auto2fa/auto2fa.sock
+echo '{"id":"1","method":"list_tunnels"}' | nc -U ~/.ssh2fa/ssh2fa.sock
 ```

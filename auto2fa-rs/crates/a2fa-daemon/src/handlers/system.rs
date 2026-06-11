@@ -109,7 +109,7 @@ impl Drop for WakeRecoverClaim {
 // log_tail
 // ---------------------------------------------------------------------------
 
-/// Return the last `n` lines of `/tmp/auto2fa_daemon.log`.
+/// Return the last `n` lines of `/tmp/ssh2fa_daemon.log`.
 ///
 /// Uses a backwards block-read to stay cheap on large files
 /// (mirrors `_tail_file` in daemon.py).
@@ -124,7 +124,7 @@ pub fn log_tail(_state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         .unwrap_or(200)
         .min(MAX_TAIL_LINES as u64) as usize;
 
-    let path = "/tmp/auto2fa_daemon.log";
+    let path = "/tmp/ssh2fa_daemon.log";
     let lines = tail_file(path, n)?;
     Ok(json!({ "lines": lines }))
 }

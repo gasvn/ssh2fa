@@ -18,7 +18,7 @@ use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
-const LOG_PATH: &str = "/tmp/auto2fa_daemon.log";
+const LOG_PATH: &str = "/tmp/ssh2fa_daemon.log";
 
 /// How many rotated `<log>.<secs>.gz` archives to keep. Older ones are pruned
 /// on each rotation so the archives can't accumulate without bound in /tmp.

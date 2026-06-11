@@ -27,7 +27,7 @@ final class SleepWakeMonitor {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                NSLog("[Auto2FA] system going to sleep")
+                NSLog("[SSH2FA] system going to sleep")
                 self?.onSleep?()
             }
         }
@@ -36,7 +36,7 @@ final class SleepWakeMonitor {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                NSLog("[Auto2FA] system woke from sleep")
+                NSLog("[SSH2FA] system woke from sleep")
                 self?.onWake()
             }
         }

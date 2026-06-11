@@ -2,12 +2,12 @@
 //!
 //! # Purpose
 //! For each READ-ONLY IPC method, send the SAME request to both the running
-//! Python daemon (`~/.auto2fa/auto2fa.sock`) and a freshly-started Rust daemon
+//! Python daemon (`~/.ssh2fa/ssh2fa.sock`) and a freshly-started Rust daemon
 //! on a temp socket, then assert that the responses are *structurally* equal
 //! after normalising legitimately-volatile fields.
 //!
 //! # Requirements
-//! - The Python daemon MUST be running on `~/.auto2fa/auto2fa.sock`.
+//! - The Python daemon MUST be running on `~/.ssh2fa/ssh2fa.sock`.
 //! - The Rust daemon binary MUST be built: `cargo build -p a2fa-daemon`.
 //! - Run with:
 //!   `cargo test --test conformance -- --ignored --nocapture`
@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 // ── Paths ──────────────────────────────────────────────────────────────────
 
 fn python_sock() -> String {
-    std::env::var("HOME").unwrap() + "/.auto2fa/auto2fa.sock"
+    std::env::var("HOME").unwrap() + "/.ssh2fa/ssh2fa.sock"
 }
 
 const RUST_SOCK: &str = "/tmp/a2fa-conf.sock";
@@ -96,7 +96,7 @@ impl RustDaemon {
         let bin = workspace_root
             .join("target")
             .join("debug")
-            .join("a2fa-daemon");
+            .join("ssh2fa-daemon");
 
         let child = Command::new(&bin)
             .env("AUTO2FA_SOCK", RUST_SOCK)
@@ -412,7 +412,7 @@ fn run_harness() {
 // ── Test entry point ────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "requires Python daemon on ~/.auto2fa/auto2fa.sock and built Rust daemon binary"]
+#[ignore = "requires Python daemon on ~/.ssh2fa/ssh2fa.sock and built Rust daemon binary"]
 fn protocol_conformance() {
     run_harness();
 }

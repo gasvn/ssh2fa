@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship `Auto2FA.app` with its own embedded Python daemon so a recipient drags it to `/Applications`, opens it, and it works — no Python, no repo — while the developer's from-source workflow keeps working.
+**Goal:** Ship `SSH2FA.app` with its own embedded Python daemon so a recipient drags it to `/Applications`, opens it, and it works — no Python, no repo — while the developer's from-source workflow keeps working.
 
 **Architecture:** Build the daemon into a self-contained directory with PyInstaller (`--onedir`) and embed it in the app bundle. The app runs in one of two paths: **bundled** (embedded daemon present → register an `SMAppService` agent whose plist lives inside the bundle → launchd starts the daemon at login; the app only connects) or **source** (no embedded daemon → today's spawn-from-`project-dir.txt` path). De-personalize shipped defaults and document the Gatekeeper workaround for ad-hoc-signed distribution.
 
@@ -17,13 +17,13 @@
 ## File Structure
 
 - Create: `packaging/daemon_entry.py` — PyInstaller entry script (`auto2fa.daemon:main`).
-- Create: `packaging/build_daemon.sh` — reproducible PyInstaller build (hidden imports, excludes) → `packaging/dist/auto2fa-daemon/`.
-- Create: `packaging/com.auto2fa.daemon.agent.plist` — the SMAppService agent plist (uses `BundleProgram`), copied into the app at build time.
+- Create: `packaging/build_daemon.sh` — reproducible PyInstaller build (hidden imports, excludes) → `packaging/dist/ssh2fa-daemon/`.
+- Create: `packaging/com.ssh2fa.daemon.agent.plist` — the SMAppService agent plist (uses `BundleProgram`), copied into the app at build time.
 - Modify: `.gitignore` — ignore `packaging/build/`, `packaging/dist/`, `packaging/*.spec`.
 - Modify: `auto2fa-mac/build.sh` — build the daemon and embed it + the agent plist into the `.app`.
 - Modify: `auto2fa-mac/project.yml` — declare the embedded daemon + agent plist as bundled files (Copy Files build phases).
-- Create: `auto2fa-mac/Auto2FA/BundledDaemonAgent.swift` — `SMAppService.agent` wrapper (register/status), mirroring `LoginItem.swift`.
-- Modify: `auto2fa-mac/Auto2FA/DaemonProcess.swift` — `isBundledBuild` detection; `ensureRunning()` branches bundled→register-agent vs source→spawn; remove the `~/logs/auto2fa_dev` default.
+- Create: `auto2fa-mac/SSH2FA/BundledDaemonAgent.swift` — `SMAppService.agent` wrapper (register/status), mirroring `LoginItem.swift`.
+- Modify: `auto2fa-mac/SSH2FA/DaemonProcess.swift` — `isBundledBuild` detection; `ensureRunning()` branches bundled→register-agent vs source→spawn; remove the `~/logs/auto2fa_dev` default.
 - Modify: `auto2fa/cli.py` — de-personalize help examples.
 - Modify: `README.md` — distribution + Gatekeeper section.
 - Test: `tests/test_depersonalization.py` — asserts shipped code has no personal paths/host names.
@@ -58,14 +58,14 @@ if __name__ == "__main__":
 ```bash
 #!/usr/bin/env bash
 # Build the self-contained daemon with PyInstaller (--onedir).
-# Output: packaging/dist/auto2fa-daemon/auto2fa-daemon (+ _internal/).
+# Output: packaging/dist/ssh2fa-daemon/ssh2fa-daemon (+ _internal/).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VENV_PY=".venv/bin/python"
 "$VENV_PY" -m pip install --quiet --upgrade pyinstaller
 
-"$VENV_PY" -m PyInstaller --noconfirm --onedir --name auto2fa-daemon \
+"$VENV_PY" -m PyInstaller --noconfirm --onedir --name ssh2fa-daemon \
   --collect-submodules keyring \
   --hidden-import keyring.backends.macOS \
   --exclude-module textual \
@@ -75,7 +75,7 @@ VENV_PY=".venv/bin/python"
   --specpath packaging \
   packaging/daemon_entry.py
 
-echo "built: packaging/dist/auto2fa-daemon/auto2fa-daemon"
+echo "built: packaging/dist/ssh2fa-daemon/ssh2fa-daemon"
 ```
 
 - [ ] **Step 3: Ignore build artifacts**
@@ -91,7 +91,7 @@ packaging/*.spec
 - [ ] **Step 4: Build it**
 
 Run: `chmod +x packaging/build_daemon.sh && ./packaging/build_daemon.sh`
-Expected: ends with `built: packaging/dist/auto2fa-daemon/auto2fa-daemon` and no traceback.
+Expected: ends with `built: packaging/dist/ssh2fa-daemon/ssh2fa-daemon` and no traceback.
 
 - [ ] **Step 5: Clean-env smoke test (the key check — catches missing hidden imports)**
 
@@ -100,7 +100,7 @@ This proves the embedded binary has every dependency (esp. keyring) with NO acce
 Run:
 ```bash
 env -i HOME="$HOME" PATH="/usr/bin:/bin" \
-  packaging/dist/auto2fa-daemon/auto2fa-daemon > /tmp/p1_smoke.log 2>&1 &
+  packaging/dist/ssh2fa-daemon/ssh2fa-daemon > /tmp/p1_smoke.log 2>&1 &
 SMOKE=$!; sleep 3; kill -9 $SMOKE 2>/dev/null
 echo "--- smoke output ---"; cat /tmp/p1_smoke.log
 grep -Eq "ModuleNotFoundError|ImportError|Traceback" /tmp/p1_smoke.log \
@@ -118,24 +118,24 @@ git commit -m "feat: PyInstaller build of self-contained daemon"
 
 ---
 
-### Task 2: Embed the daemon + agent plist into Auto2FA.app
+### Task 2: Embed the daemon + agent plist into SSH2FA.app
 
 **Files:**
-- Create: `packaging/com.auto2fa.daemon.agent.plist`
+- Create: `packaging/com.ssh2fa.daemon.agent.plist`
 - Modify: `auto2fa-mac/build.sh`, `auto2fa-mac/project.yml`
 
 - [ ] **Step 1: Create the SMAppService agent plist**
 
-`packaging/com.auto2fa.daemon.agent.plist` (uses `BundleProgram`, a bundle-relative path — NOT an absolute path):
+`packaging/com.ssh2fa.daemon.agent.plist` (uses `BundleProgram`, a bundle-relative path — NOT an absolute path):
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.auto2fa.daemon</string>
+    <string>com.ssh2fa.daemon</string>
     <key>BundleProgram</key>
-    <string>Contents/Resources/daemon/auto2fa-daemon</string>
+    <string>Contents/Resources/daemon/ssh2fa-daemon</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -144,28 +144,28 @@ git commit -m "feat: PyInstaller build of self-contained daemon"
         <false/>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/auto2fa_daemon.log</string>
+    <string>/tmp/ssh2fa_daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/auto2fa_daemon.log</string>
+    <string>/tmp/ssh2fa_daemon.log</string>
 </dict>
 </plist>
 ```
 
 - [ ] **Step 2: Add an embed step to build.sh**
 
-In `auto2fa-mac/build.sh`, after the `APP_PATH="build/Build/Products/$CONFIG/Auto2FA.app"` line and before the `if [ $RUN_AFTER … ]` block, insert:
+In `auto2fa-mac/build.sh`, after the `APP_PATH="build/Build/Products/$CONFIG/SSH2FA.app"` line and before the `if [ $RUN_AFTER … ]` block, insert:
 ```bash
 # Embed the self-contained daemon + its SMAppService agent plist, unless
 # AUTO2FA_SKIP_DAEMON=1 (fast pure-Swift dev iteration → source path at runtime).
 if [ "${AUTO2FA_SKIP_DAEMON:-0}" != "1" ]; then
   echo "→ building + embedding daemon"
   ( cd .. && ./packaging/build_daemon.sh )
-  DAEMON_SRC="../packaging/dist/auto2fa-daemon"
+  DAEMON_SRC="../packaging/dist/ssh2fa-daemon"
   RES_DIR="$APP_PATH/Contents/Resources/daemon"
   AGENTS_DIR="$APP_PATH/Contents/Library/LaunchAgents"
   rm -rf "$RES_DIR" && mkdir -p "$RES_DIR" "$AGENTS_DIR"
   cp -R "$DAEMON_SRC/." "$RES_DIR/"
-  cp ../packaging/com.auto2fa.daemon.agent.plist "$AGENTS_DIR/com.auto2fa.daemon.plist"
+  cp ../packaging/com.ssh2fa.daemon.agent.plist "$AGENTS_DIR/com.ssh2fa.daemon.plist"
   # Re-sign ad-hoc so the embedded code is covered by the bundle signature.
   codesign --force --deep --sign - "$APP_PATH" || true
   echo "→ embedded daemon at $RES_DIR"
@@ -176,25 +176,25 @@ fi
 
 - [ ] **Step 3: Note the project.yml resource boundary**
 
-No `project.yml` change is required because the embed happens post-`xcodebuild` in `build.sh` (copying into the built `.app`). Add a comment in `project.yml` under the `Auto2FA` target documenting that `Contents/Resources/daemon` and `Contents/Library/LaunchAgents` are injected by `build.sh`, so a reader doesn't expect them in the Xcode project:
+No `project.yml` change is required because the embed happens post-`xcodebuild` in `build.sh` (copying into the built `.app`). Add a comment in `project.yml` under the `SSH2FA` target documenting that `Contents/Resources/daemon` and `Contents/Library/LaunchAgents` are injected by `build.sh`, so a reader doesn't expect them in the Xcode project:
 ```yaml
     # NOTE: Contents/Resources/daemon/ and Contents/Library/LaunchAgents/ are
     # injected post-build by build.sh (the embedded PyInstaller daemon + its
     # SMAppService agent plist). They are intentionally not Xcode resources.
 ```
-Place this as a comment line inside the `Auto2FA:` target block (e.g. right after `type: application`).
+Place this as a comment line inside the `SSH2FA:` target block (e.g. right after `type: application`).
 
 - [ ] **Step 4: Build the app and verify the embed**
 
 Run: `cd auto2fa-mac && ./build.sh`
-Expected: `** BUILD SUCCEEDED **` then `→ embedded daemon at …/Auto2FA.app/Contents/Resources/daemon`.
+Expected: `** BUILD SUCCEEDED **` then `→ embedded daemon at …/SSH2FA.app/Contents/Resources/daemon`.
 
 Then verify the files and that the EMBEDDED daemon (inside the built bundle) runs in a clean env:
 ```bash
-APP=auto2fa-mac/build/Build/Products/Debug/Auto2FA.app
-test -x "$APP/Contents/Resources/daemon/auto2fa-daemon" && echo "daemon present"
-test -f "$APP/Contents/Library/LaunchAgents/com.auto2fa.daemon.plist" && echo "agent plist present"
-env -i HOME="$HOME" PATH="/usr/bin:/bin" "$APP/Contents/Resources/daemon/auto2fa-daemon" > /tmp/p1_embed.log 2>&1 &
+APP=auto2fa-mac/build/Build/Products/Debug/SSH2FA.app
+test -x "$APP/Contents/Resources/daemon/ssh2fa-daemon" && echo "daemon present"
+test -f "$APP/Contents/Library/LaunchAgents/com.ssh2fa.daemon.plist" && echo "agent plist present"
+env -i HOME="$HOME" PATH="/usr/bin:/bin" "$APP/Contents/Resources/daemon/ssh2fa-daemon" > /tmp/p1_embed.log 2>&1 &
 P=$!; sleep 3; kill -9 $P 2>/dev/null
 grep -Eq "ModuleNotFoundError|ImportError|Traceback" /tmp/p1_embed.log && echo "EMBED FAIL" || echo "EMBED PASS"
 ```
@@ -204,8 +204,8 @@ Expected: `daemon present`, `agent plist present`, `EMBED PASS`.
 
 ```bash
 cd ~/logs/auto2fa_dev
-git add packaging/com.auto2fa.daemon.agent.plist auto2fa-mac/build.sh auto2fa-mac/project.yml
-git commit -m "feat: embed self-contained daemon + SMAppService agent plist into Auto2FA.app"
+git add packaging/com.ssh2fa.daemon.agent.plist auto2fa-mac/build.sh auto2fa-mac/project.yml
+git commit -m "feat: embed self-contained daemon + SMAppService agent plist into SSH2FA.app"
 ```
 
 ---
@@ -215,29 +215,29 @@ git commit -m "feat: embed self-contained daemon + SMAppService agent plist into
 ### Task 3: BundledDaemonAgent — SMAppService.agent wrapper
 
 **Files:**
-- Create: `auto2fa-mac/Auto2FA/BundledDaemonAgent.swift`
+- Create: `auto2fa-mac/SSH2FA/BundledDaemonAgent.swift`
 
 - [ ] **Step 1: Implement the wrapper** (mirrors `LoginItem.swift`)
 
-`auto2fa-mac/Auto2FA/BundledDaemonAgent.swift`:
+`auto2fa-mac/SSH2FA/BundledDaemonAgent.swift`:
 ```swift
 import Foundation
 import ServiceManagement
 
 /// Wraps SMAppService.agent for the embedded daemon (macOS 13+). The agent's
 /// launchd plist ships inside the app bundle at
-/// Contents/Library/LaunchAgents/com.auto2fa.daemon.plist and points (via
-/// BundleProgram) at Contents/Resources/daemon/auto2fa-daemon. Registering it
+/// Contents/Library/LaunchAgents/com.ssh2fa.daemon.plist and points (via
+/// BundleProgram) at Contents/Resources/daemon/ssh2fa-daemon. Registering it
 /// makes launchd start the bundled daemon at login and keep it alive — without
 /// any absolute paths that break when the app moves.
 enum BundledDaemonAgent {
-    static let plistName = "com.auto2fa.daemon.plist"
+    static let plistName = "com.ssh2fa.daemon.plist"
 
     /// True iff this build actually embeds the daemon (a bundled distribution,
     /// not a from-source dev build).
     static var isBundled: Bool {
         guard let res = Bundle.main.resourceURL else { return false }
-        let daemon = res.appendingPathComponent("daemon/auto2fa-daemon")
+        let daemon = res.appendingPathComponent("daemon/ssh2fa-daemon")
         return FileManager.default.isExecutableFile(atPath: daemon.path)
     }
 
@@ -273,7 +273,7 @@ Expected: `** BUILD SUCCEEDED **` (skip the daemon embed for a fast compile chec
 
 ```bash
 cd ~/logs/auto2fa_dev
-git add auto2fa-mac/Auto2FA/BundledDaemonAgent.swift
+git add auto2fa-mac/SSH2FA/BundledDaemonAgent.swift
 git commit -m "feat: BundledDaemonAgent SMAppService.agent wrapper"
 ```
 
@@ -282,15 +282,15 @@ git commit -m "feat: BundledDaemonAgent SMAppService.agent wrapper"
 ### Task 4: DaemonProcess — bundled vs source path
 
 **Files:**
-- Modify: `auto2fa-mac/Auto2FA/DaemonProcess.swift`
+- Modify: `auto2fa-mac/SSH2FA/DaemonProcess.swift`
 
 - [ ] **Step 1: Branch ensureRunning() on bundled vs source**
 
-In `auto2fa-mac/Auto2FA/DaemonProcess.swift`, find `func ensureRunning() async -> SpawnResult {`. Immediately after its first line (the `if DaemonProcess.socketResponds()` early-return block stays as-is), add a bundled branch BEFORE the `guard let projectDir = DaemonProcess.discoverProjectDir()` line. The function currently begins:
+In `auto2fa-mac/SSH2FA/DaemonProcess.swift`, find `func ensureRunning() async -> SpawnResult {`. Immediately after its first line (the `if DaemonProcess.socketResponds()` early-return block stays as-is), add a bundled branch BEFORE the `guard let projectDir = DaemonProcess.discoverProjectDir()` line. The function currently begins:
 ```swift
     func ensureRunning() async -> SpawnResult {
         if DaemonProcess.socketResponds() {
-            NSLog("[Auto2FA] daemon already running; not spawning")
+            NSLog("[SSH2FA] daemon already running; not spawning")
             return .alreadyRunning
         }
 
@@ -304,14 +304,14 @@ Insert between the socketResponds block and the `guard let projectDir`:
         if BundledDaemonAgent.isBundled {
             if #available(macOS 13.0, *) {
                 if let err = BundledDaemonAgent.register() {
-                    NSLog("[Auto2FA] agent register failed (%@) — falling back to spawn", err)
+                    NSLog("[SSH2FA] agent register failed (%@) — falling back to spawn", err)
                 } else {
                     // Give launchd a moment to bring the socket up.
                     for _ in 0..<75 {
                         try? await Task.sleep(nanoseconds: 200_000_000)
                         if DaemonProcess.socketResponds() { return .alreadyRunning }
                     }
-                    NSLog("[Auto2FA] agent registered but socket not up in 15s — falling back")
+                    NSLog("[SSH2FA] agent registered but socket not up in 15s — falling back")
                 }
             }
         }
@@ -341,7 +341,7 @@ Expected: `** BUILD SUCCEEDED **`.
 
 ```bash
 cd ~/logs/auto2fa_dev
-git add auto2fa-mac/Auto2FA/DaemonProcess.swift
+git add auto2fa-mac/SSH2FA/DaemonProcess.swift
 git commit -m "feat: DaemonProcess bundled (SMAppService) vs source path; drop personal default dir"
 ```
 
@@ -434,7 +434,7 @@ In `README.md`, after the Installation section, add:
 ````markdown
 ## Sharing the prebuilt app (macOS)
 
-Build a self-contained `Auto2FA.app` that bundles its own Python daemon — the
+Build a self-contained `SSH2FA.app` that bundles its own Python daemon — the
 recipient needs no Python and no repo:
 
 ```bash
@@ -442,12 +442,12 @@ cd auto2fa-mac
 ./build.sh release        # embeds the daemon; output under build/Build/Products/Release/
 ```
 
-Zip `Auto2FA.app` and send it. Because the app is ad-hoc signed (no Apple
+Zip `SSH2FA.app` and send it. Because the app is ad-hoc signed (no Apple
 Developer ID), the recipient must clear the Gatekeeper quarantine once:
 
 - **Right-click → Open** the first time (then confirm), or
 - ```bash
-  xattr -dr com.apple.quarantine /Applications/Auto2FA.app
+  xattr -dr com.apple.quarantine /Applications/SSH2FA.app
   ```
 
 Then drag it to `/Applications` and open it. It registers a login agent that
@@ -482,19 +482,19 @@ Expected: `** BUILD SUCCEEDED **` + `→ embedded daemon at …`.
 
 Install + launch the bundled app:
 ```bash
-osascript -e 'quit app "Auto2FA"' 2>/dev/null; sleep 1
-rm -rf /Applications/Auto2FA.app
-cp -R auto2fa-mac/build/Build/Products/Debug/Auto2FA.app /Applications/
+osascript -e 'quit app "SSH2FA"' 2>/dev/null; sleep 1
+rm -rf /Applications/SSH2FA.app
+cp -R auto2fa-mac/build/Build/Products/Debug/SSH2FA.app /Applications/
 # stop the dev LaunchAgent so we observe the bundled agent specifically
-launchctl bootout gui/$(id -u)/com.auto2fa.daemon 2>/dev/null
-open /Applications/Auto2FA.app
+launchctl bootout gui/$(id -u)/com.ssh2fa.daemon 2>/dev/null
+open /Applications/SSH2FA.app
 sleep 8
-echo "--- agent status ---"; launchctl print gui/$(id -u)/com.auto2fa.daemon 2>&1 | grep -E "state|program" | head
+echo "--- agent status ---"; launchctl print gui/$(id -u)/com.ssh2fa.daemon 2>&1 | grep -E "state|program" | head
 echo "--- socket serving? ---"; ~/logs/auto2fa_dev/.venv/bin/auto2fa list 2>&1 | head
 ```
-Expected: the agent shows as running and `auto2fa list` prints hosts. **Ask the human to confirm the Auto2FA menu-bar icon appears and shows the host list.**
+Expected: the agent shows as running and `auto2fa list` prints hosts. **Ask the human to confirm the SSH2FA menu-bar icon appears and shows the host list.**
 
-If SMAppService registration is rejected under ad-hoc signing (agent not running, log shows a registration error): invoke the **contingency** from the spec — change `packaging/com.auto2fa.daemon.agent.plist` consumption so `build.sh` instead writes a P0-style hand-written LaunchAgent pointing at `/Applications/Auto2FA.app/Contents/Resources/daemon/auto2fa-daemon`, and have `BundledDaemonAgent` install that via the existing `installer`-style approach. Re-verify. Report this pivot rather than forcing SMAppService.
+If SMAppService registration is rejected under ad-hoc signing (agent not running, log shows a registration error): invoke the **contingency** from the spec — change `packaging/com.ssh2fa.daemon.agent.plist` consumption so `build.sh` instead writes a P0-style hand-written LaunchAgent pointing at `/Applications/SSH2FA.app/Contents/Resources/daemon/ssh2fa-daemon`, and have `BundledDaemonAgent` install that via the existing `installer`-style approach. Re-verify. Report this pivot rather than forcing SMAppService.
 
 - [ ] **Step 4: Source-path still works**
 
@@ -508,7 +508,7 @@ Expected: dev LaunchAgent reloads, `auto2fa list` prints hosts. (This proves P0'
 
 Run:
 ```bash
-grep -rn "/Users/shgao\|holygpu\|logs/auto2fa_dev" auto2fa/ auto2fa-mac/Auto2FA/ 2>/dev/null | grep -v "//" || echo "clean"
+grep -rn "/Users/shgao\|holygpu\|logs/auto2fa_dev" auto2fa/ auto2fa-mac/SSH2FA/ 2>/dev/null | grep -v "//" || echo "clean"
 ```
 Expected: no shipped-code hits (comments/docs referencing the dev path are acceptable; the assertion is no hardcoded behavior depends on them). Fix any stragglers.
 
@@ -536,4 +536,4 @@ git add -A && git commit -m "test: P1 e2e verification + de-personalization swee
 
 **Placeholder scan:** Build/Swift/e2e steps give exact commands and full code. The two inherently human/exploratory points (menu-bar confirmation in Task 7 Step 3; the contingency pivot) are explicitly flagged as such, not hidden TODOs.
 
-**Type/name consistency:** `BundledDaemonAgent` (`isBundled`, `register()`, `plistName`, `isRegistered`) used identically in Task 3 (def) and Task 4 (call). Agent label `com.auto2fa.daemon` and bundle paths `Contents/Resources/daemon/auto2fa-daemon` + `Contents/Library/LaunchAgents/com.auto2fa.daemon.plist` consistent across Tasks 2, 3, 4, 7. `AUTO2FA_SKIP_DAEMON` env flag consistent across Tasks 2, 3, 4.
+**Type/name consistency:** `BundledDaemonAgent` (`isBundled`, `register()`, `plistName`, `isRegistered`) used identically in Task 3 (def) and Task 4 (call). Agent label `com.ssh2fa.daemon` and bundle paths `Contents/Resources/daemon/ssh2fa-daemon` + `Contents/Library/LaunchAgents/com.ssh2fa.daemon.plist` consistent across Tasks 2, 3, 4, 7. `AUTO2FA_SKIP_DAEMON` env flag consistent across Tasks 2, 3, 4.

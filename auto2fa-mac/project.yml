@@ -1,6 +1,6 @@
 name: Auto2FA
 options:
-  bundleIdPrefix: com.auto2fa
+  bundleIdPrefix: com.ssh2fa
   deploymentTarget:
     macOS: "14.0"
   developmentLanguage: en
@@ -14,8 +14,8 @@ settings:
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "100"
     SWIFT_VERSION: "5.10"
-    PRODUCT_NAME: "Auto2FA"
-    PRODUCT_BUNDLE_IDENTIFIER: "com.auto2fa.app"
+    PRODUCT_NAME: "SSH2FA"
+    PRODUCT_BUNDLE_IDENTIFIER: "com.ssh2fa.app"
     # Hardened runtime OFF for local ad-hoc builds — turning it on without
     # proper entitlements + a real Developer ID signing identity tends to
     # refuse to launch. Easy to flip back on once you sign the release.
@@ -69,7 +69,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: ""
-        PRODUCT_BUNDLE_IDENTIFIER: com.auto2fa.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ssh2fa.tests
 
 schemes:
   Auto2FATests:

@@ -1,11 +1,11 @@
 # Security model
 
-Read this before using Auto2FA — it makes a deliberate trade-off you should
+Read this before using SSH2FA — it makes a deliberate trade-off you should
 understand.
 
 ## The trade-off
 
-Auto2FA stores your **SSH password** and your **TOTP / Duo secret** in the
+SSH2FA stores your **SSH password** and your **TOTP / Duo secret** in the
 macOS Keychain and **submits the second factor for you** at login. That is the
 whole point — it gives you instant, persistent SSH sessions without typing a
 code every time.
@@ -59,4 +59,4 @@ not use this.**
 
 This is a personal/research tool, not a commercially supported product. If you
 find a vulnerability, open an issue at
-<https://github.com/gasvn/auto2fa/issues> (omit anything sensitive).
+<https://github.com/gasvn/ssh2fa/issues> (omit anything sensitive).

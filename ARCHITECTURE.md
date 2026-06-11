@@ -1,4 +1,4 @@
-# Auto2FA — Architecture
+# SSH2FA — Architecture
 
 This document describes the codebase as it is shipped on the `feat/tunnels`
 branch. It is intended to help future contributors (human or LLM) navigate
@@ -6,7 +6,7 @@ quickly.
 
 ## 1. Goal
 
-Auto2FA is a Textual TUI dashboard that:
+SSH2FA is a Textual TUI dashboard that:
 
 1. Maintains persistent SSH ControlMaster connections to login hosts that
    require TOTP (Harvard RC, etc.), so `ssh host` from any other terminal is
@@ -212,7 +212,7 @@ Each top-level key must match a `Host` alias in `~/.ssh/config`. Optional
 ### `~/.ssh/config`
 
 Must use `ControlMaster no` for client connections (so the IDE doesn't try
-to hijack our master pool) and `ControlPath ~/.ssh/cm-auto2fa-%h` so it
+to hijack our master pool) and `ControlPath ~/.ssh/cm-ssh2fa-%h` so it
 follows the per-pool symlink that `SSHHostManager` maintains.
 
 ## 5. Keys at a glance

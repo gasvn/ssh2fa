@@ -28,7 +28,7 @@ final class PreferenceSync {
     var enabled: Bool { defaults.bool(forKey: SettingsKey.syncPrefsViaICloud) }
 
     static var iCloudDir: String {
-        NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/Auto2FA"
+        NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/SSH2FA"
     }
     static var fileURL: URL { URL(fileURLWithPath: iCloudDir).appendingPathComponent("settings.json") }
 

@@ -25,7 +25,7 @@ pub fn socket_path() -> PathBuf {
         return PathBuf::from(v);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".auto2fa").join("auto2fa.sock")
+    PathBuf::from(home).join(".ssh2fa").join("ssh2fa.sock")
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ mod tests {
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
         assert!(
-            p.to_string_lossy().contains(".auto2fa/auto2fa.sock"),
+            p.to_string_lossy().contains(".ssh2fa/ssh2fa.sock"),
             "unexpected path: {p:?}"
         );
     }

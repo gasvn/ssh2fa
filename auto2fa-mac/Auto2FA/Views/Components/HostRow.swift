@@ -282,7 +282,7 @@ struct HostRow: View {
         if let scriptObj = NSAppleScript(source: script) {
             scriptObj.executeAndReturnError(&error)
             if let error {
-                NSLog("[Auto2FA] openTerminal AppleScript error: \(error)")
+                NSLog("[SSH2FA] openTerminal AppleScript error: \(error)")
             }
         }
     }

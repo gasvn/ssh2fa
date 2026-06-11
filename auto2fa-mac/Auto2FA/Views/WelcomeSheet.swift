@@ -29,7 +29,7 @@ struct WelcomeSheet: View {
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
                 .padding(.top, Spacing.xl)
-            Text("Welcome to Auto2FA")
+            Text("Welcome to SSH2FA")
                 .font(.dashTitle)
             Text("Log into your 2FA-protected SSH hosts once, then stay connected — no more typing a Duo/TOTP code every time you `ssh`.")
                 .font(.callout)

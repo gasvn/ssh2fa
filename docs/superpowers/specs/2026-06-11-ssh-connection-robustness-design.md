@@ -15,7 +15,7 @@ destructive reconnect.
 ## Root cause (diagnosed from the live system, 2026-06-11)
 
 The daemon was thrashing every host in a tight loop. The exact chain, from
-`/tmp/auto2fa_daemon.log`:
+`/tmp/ssh2fa_daemon.log`:
 
 1. The heartbeat probes each master every few seconds with `ssh -O check`
    (`master_check`, bounded 5 s in `control.rs`).
@@ -34,7 +34,7 @@ The daemon was thrashing every host in a tight loop. The exact chain, from
 4. The restart path runs a full 2FA re-login (hammering FAS-RC) **and** sweeps
    the old master process (`cleanup_stale_socket` → `kill_orphaned_master`,
    SIGKILL). Because the user's interactive sessions are multiplexed onto that
-   master (`ControlMaster no` + `ControlPath ~/.ssh/cm-auto2fa-%h`), killing it
+   master (`ControlMaster no` + `ControlPath ~/.ssh/cm-ssh2fa-%h`), killing it
    **drops every one of their sessions at once** — confirmed by FASRC's own docs:
    "if you exit or kill the initial connection *all* other ones die, too."
 5. The very next tick finds the master was alive all along
@@ -81,10 +81,10 @@ listening at this path?" — and only acts when the answer is a confident, repea
 
 ### 1. Single stable master per host (retire the pool + symlink)
 
-- One master per host, on a **fixed** ControlPath `cm-auto2fa-<host>` (the path
-  the user's `ControlPath ~/.ssh/cm-auto2fa-%h` already resolves to). No `-<index>`
+- One master per host, on a **fixed** ControlPath `cm-ssh2fa-<host>` (the path
+  the user's `ControlPath ~/.ssh/cm-ssh2fa-%h` already resolves to). No `-<index>`
   suffix, no symlink, no rotation.
-- The user's `~/.ssh/config` needs **no change**: today `cm-auto2fa-<host>` is a
+- The user's `~/.ssh/config` needs **no change**: today `cm-ssh2fa-<host>` is a
   symlink to a slot socket; after this change it *is* the master's real socket.
 - `start_master` spawns ssh with `ControlPath=<stable path>` directly. The argv is
   otherwise unchanged (`ControlMaster=auto`, `ControlPersist=yes`,
@@ -188,18 +188,18 @@ reconnect path. New rules:
     `POOL_SIZE` and slot arrays collapse to one master. (`mark_slot_ready`,
     `note_slot_alive`, `note_slot_dropped`, cooldown/flap APIs retained, de-indexed.)
   - `start_master` uses the stable path; success/failure bookkeeping de-indexed.
-- `crates/a2fa-daemon/src/managers.rs`
+- `crates/ssh2fa-daemon/src/managers.rs`
   - `next_action` collapses to: `Skip` (inactive / cooldown / flap back-off) |
     `Restart` (probe `Dead` and `consecutive_probe_failures >= THRESHOLD`) |
     `AdoptAlive` (state says down but probe `Alive`) | `Healthy`. Remove
     `WarmSlot1`/`Rotate`. Keep it a **pure** function (unit-tested).
   - `tick_host` uses `master_probe`, updates the failure counter, and keeps the
     in-flight `StartGuard`, off-thread restart worker, and toggle-off races intact.
-- `crates/a2fa-daemon/src/{workers.rs,handlers/hosts.rs}`
+- `crates/ssh2fa-daemon/src/{workers.rs,handlers/hosts.rs}`
   - De-index pool writes; set `pool_index=0`, `pool_alive ∈ {0,1}`. Remove the
     rotate handler.
 - `crates/a2fa-cli`, `crates/a2fa-tui`: render single-connection status.
-- `auto2fa-mac/Auto2FA/{Models/Host.swift,Views/Components/HostRow.swift,FriendlyText.swift}`:
+- `auto2fa-mac/SSH2FA/{Models/Host.swift,Views/Components/HostRow.swift,FriendlyText.swift}`:
   single connection indicator.
 
 ## Data flow — one heartbeat tick (new)
@@ -268,7 +268,7 @@ check=Some(false))` / `killed … ControlMaster` churn, and that hosts stay
 ## Migration / rollout
 
 1. **Boot janitor (runs once on the new daemon):** sweep pre-upgrade leftovers —
-   the old `cm-auto2fa-<host>-0/-1` sockets, the `cm-auto2fa-<host>` *symlink*, and
+   the old `cm-ssh2fa-<host>-0/-1` sockets, the `cm-ssh2fa-<host>` *symlink*, and
    any leaked `[mux]` masters on those `-N` paths — then establish the single
    stable master. This is the one place a process-kill of an old master is allowed
    (it belongs to the retired scheme). After this, only stable paths exist.

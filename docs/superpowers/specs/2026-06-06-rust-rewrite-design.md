@@ -37,7 +37,7 @@ auto2fa-rs/
         tunnels.rs                # ssh -L forwards, port probe, Slurm squeue discovery, post-connect hooks
         engine.rs                 # State, the scheduler/tick loop, cooldown/backoff/heartbeat/wake-recover
         error.rs                  # thiserror domain error → ErrCode mapping
-    a2fa-daemon/                  # bin — unix-socket server, flock single-instance, wires engine + proto
+    ssh2fa-daemon/                  # bin — unix-socket server, flock single-instance, wires engine + proto
       src/main.rs
     a2fa-cli/                     # bin — thin socket client; the 28 methods as subcommands (clap)
       src/main.rs
@@ -55,7 +55,7 @@ auto2fa-rs/
 - `clap` — CLI argument parsing.
 - `ratatui` + `crossterm` — TUI.
 - `thiserror` (library errors) + `anyhow` (binary `main`s).
-- `log` + `simplelog` — file logging to `/tmp/auto2fa_daemon.log` (parity with today).
+- `log` + `simplelog` — file logging to `/tmp/ssh2fa_daemon.log` (parity with today).
 - `fs2` — advisory file lock (`try_lock_exclusive`) for the single-instance guard.
 - `regex` — squeue/prompt parsing.
 
@@ -69,11 +69,11 @@ Synchronous threads — **no async/tokio** (the daemon manages a handful of host
 - **Worker threads**: one per host manager (mirrors the proven Python structure) for the master-connection lifecycle; tunnels start/stop on short-lived worker threads. The poll/tick loop runs on its own thread (every 0.5 s, same as today).
 - **OTP serialization**: hosts that share a TOTP secret must not submit codes concurrently (a real, already-fixed behavior). A per-secret `Mutex` (keyed by secret) serializes OTP submission across hosts — held only around the submit window.
 - **IPC server**: a listener thread accepts connections; one thread per connection. Event subscribers are `StreamWriter`-equivalents stored in `State`; the tick loop emits change events to them.
-- **Single instance**: `fs2` exclusive lock on `~/.auto2fa/lock` at startup; if held, exit cleanly (parity with the flock guard added to the Python daemon).
+- **Single instance**: `fs2` exclusive lock on `~/.ssh2fa/lock` at startup; if held, exit cleanly (parity with the flock guard added to the Python daemon).
 
 ## IPC protocol contract (the linchpin — byte-compatible)
 
-Transport: line-delimited JSON over a Unix domain socket at `~/.auto2fa/auto2fa.sock`, `chmod 0600`. Request: `{"id","method","params"}`. Response: `{"id","result"}` or `{"id","error":{"code","message"}}`. Event (to subscribers): `{"event","data"}`. Invalid UTF-8 / bad JSON → `invalid_request` error, connection stays alive.
+Transport: line-delimited JSON over a Unix domain socket at `~/.ssh2fa/ssh2fa.sock`, `chmod 0600`. Request: `{"id","method","params"}`. Response: `{"id","result"}` or `{"id","error":{"code","message"}}`. Event (to subscribers): `{"event","data"}`. Invalid UTF-8 / bad JSON → `invalid_request` error, connection stays alive.
 
 **Methods (28), implemented to parity:**
 `ping`, `list_hosts`, `list_tunnels`, `host_toggle`, `host_mount_toggle`, `host_rotate`, `host_add`, `host_test_credentials`, `tunnel_add`, `tunnel_remove`, `tunnel_toggle`, `tunnel_start`, `tunnel_stop`, `tunnel_set_node`, `tunnel_set_autostart`, `tunnel_set_jump_candidates`, `tunnel_set_post_connect`, `tunnel_set_tags`, `tunnel_set_url_path`, `tunnel_rename`, `tunnels_batch`, `discover_nodes`, `port_suggest`, `wake_recover`, `reset_all`, `log_tail`, `tunnel_events`, `subscribe_events`.
@@ -114,7 +114,7 @@ A 0.5 s tick (own thread) that: runs per-tunnel maintenance (probe/recover) off-
 
 ## Daemon binary
 
-`a2fa-daemon`: acquire the single-instance lock; remove a stale socket; bind + `chmod 0600`; load config (Keychain + json) honoring `config_dir()` fallback to `~/.ssh`; start host workers + tick loop; serve IPC. Logs to `/tmp/auto2fa_daemon.log`.
+`ssh2fa-daemon`: acquire the single-instance lock; remove a stale socket; bind + `chmod 0600`; load config (Keychain + json) honoring `config_dir()` fallback to `~/.ssh`; start host workers + tick loop; serve IPC. Logs to `/tmp/ssh2fa_daemon.log`.
 
 ## CLI binary
 
@@ -127,7 +127,7 @@ A 0.5 s tick (own thread) that: runs per-tunnel maintenance (probe/recover) off-
 ## Build & distribution
 
 - `cargo build --release` → three static binaries. Universal: build `aarch64-apple-darwin` + `x86_64-apple-darwin`, `lipo` together.
-- The Swift app embeds `a2fa-daemon` (replaces the PyInstaller/CPython bundle — the 68 MB problem is gone). The `SMAppService` agent / launch path from the P1 design points at the embedded Rust binary.
+- The Swift app embeds `ssh2fa-daemon` (replaces the PyInstaller/CPython bundle — the 68 MB problem is gone). The `SMAppService` agent / launch path from the P1 design points at the embedded Rust binary.
 - `auto2fa` (CLI) + `auto2fa-tui` ship as small standalone binaries.
 - The P0 installer is reworked to not depend on Python (it becomes trivial: drop the binaries in place + register the agent).
 

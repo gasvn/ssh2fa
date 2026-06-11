@@ -65,7 +65,7 @@ echo "→ built: $APP_PATH"
 # This does NOT change how the app launches the daemon (see T16 / cutover).
 if [ "${AUTO2FA_EMBED_RUST:-0}" = "1" ]; then
   RUST_DIR="$(cd "$(dirname "$0")/../auto2fa-rs" && pwd)"
-  DAEMON_SRC="$RUST_DIR/dist/auto2fa-daemon"
+  DAEMON_SRC="$RUST_DIR/dist/ssh2fa-daemon"
 
   echo "→ AUTO2FA_EMBED_RUST=1: building Rust release binaries"
   "$RUST_DIR/build-release.sh"
@@ -77,14 +77,14 @@ if [ "${AUTO2FA_EMBED_RUST:-0}" = "1" ]; then
 
   DAEMON_DST="$APP_PATH/Contents/Resources/daemon"
   mkdir -p "$DAEMON_DST"
-  cp "$DAEMON_SRC" "$DAEMON_DST/auto2fa-daemon"
-  chmod +x "$DAEMON_DST/auto2fa-daemon"
+  cp "$DAEMON_SRC" "$DAEMON_DST/ssh2fa-daemon"
+  chmod +x "$DAEMON_DST/ssh2fa-daemon"
 
   echo "→ re-signing app bundle (ad-hoc) after embedding daemon"
   codesign --force --deep --sign - "$APP_PATH"
 
-  echo "→ embedded: $DAEMON_DST/auto2fa-daemon"
-  ls -lh "$DAEMON_DST/auto2fa-daemon"
+  echo "→ embedded: $DAEMON_DST/ssh2fa-daemon"
+  ls -lh "$DAEMON_DST/ssh2fa-daemon"
 fi
 # ─────────────────────────────────────────────────────────────────────────────
 

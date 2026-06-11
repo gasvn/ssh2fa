@@ -1,16 +1,16 @@
-# Auto2FA — Native macOS App Architecture
+# SSH2FA — Native macOS App Architecture
 
 **Date:** 2026-05-24
 **Status:** In progress (this session: foundations only)
 
 ## 1. Goal
 
-Ship Auto2FA as a real native macOS application:
+Ship SSH2FA as a real native macOS application:
 - SwiftUI main window — lists hosts and tunnels, full feature parity with the TUI (create tunnel, pick compute node, copy URL, mount/unmount, etc.)
 - AppKit menu bar item — always-visible status indicator + quick-action menu
 - **Dynamic Notch UI** via [MrKai77/DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit) — important state transitions (tunnel connected, tunnel dropped, host failed) animate from the notch on MacBook Pros. Falls back automatically to a floating panel on non-notched Macs.
 - Dock icon — clicking restores the main window
-- Auto-start on login via `~/Library/LaunchAgents/com.auto2fa.daemon.plist`
+- Auto-start on login via `~/Library/LaunchAgents/com.ssh2fa.daemon.plist`
 - Existing Textual TUI continues to work standalone for SSH/headless users
 
 ## 1a. Three UI surfaces
@@ -63,11 +63,11 @@ After this work:
 - **TUI standalone mode (current):** unchanged, for ssh/headless use.
 - **TUI daemon-client mode (future):** TUI can connect to the daemon instead of running its own managers. Out of scope for this session.
 
-A **flock** (`~/.auto2fa/lock`) prevents the standalone TUI and the daemon from running at the same time on the same machine — they'd fight over SSH ControlMaster sockets.
+A **flock** (`~/.ssh2fa/lock`) prevents the standalone TUI and the daemon from running at the same time on the same machine — they'd fight over SSH ControlMaster sockets.
 
 ## 3. IPC protocol
 
-**Transport:** Unix domain socket at `~/.auto2fa/auto2fa.sock`. Local-only, file permissions 0600.
+**Transport:** Unix domain socket at `~/.ssh2fa/ssh2fa.sock`. Local-only, file permissions 0600.
 
 **Framing:** Line-delimited JSON. Each message is one JSON object terminated by `\n`. Easy to debug with `nc -U`.
 
@@ -130,14 +130,14 @@ auto2fa/
 
 New entry points in `setup.py`:
 - `auto2fa` → existing TUI
-- `auto2fa-daemon` → starts the daemon (called by LaunchAgent)
+- `ssh2fa-daemon` → starts the daemon (called by LaunchAgent)
 
 ### Swift (`auto2fa-mac/`)
 
 ```
 auto2fa-mac/
-├── Auto2FA.xcodeproj/    # Xcode project metadata
-├── Auto2FA/
+├── SSH2FA.xcodeproj/    # Xcode project metadata
+├── SSH2FA/
 │   ├── Auto2FAApp.swift       # @main entry, configures menu bar + main window
 │   ├── MenuBarController.swift # NSStatusItem + menu
 │   ├── NotchPresenter.swift   # DynamicNotchKit wrapper for state-change toasts
@@ -164,7 +164,7 @@ auto2fa-mac/
 
 ```
 LaunchAgents/
-└── com.auto2fa.daemon.plist     # template; user installs to ~/Library/LaunchAgents/
+└── com.ssh2fa.daemon.plist     # template; user installs to ~/Library/LaunchAgents/
 ```
 
 ## 5. Session plan (today)
@@ -179,7 +179,7 @@ Today delivers the foundation; the Mac app will be runnable in Xcode but with li
 6. SwiftUI views: `HostsView`, `TunnelsView` (read-only first cut)
 7. Menu bar controller showing tunnel count + dropdown
 8. `NotchPresenter` wiring DynamicNotchKit to daemon events
-9. `LaunchAgents/com.auto2fa.daemon.plist`
+9. `LaunchAgents/com.ssh2fa.daemon.plist`
 10. Top-level `README` updates
 
 ## 6. Out of scope (later sessions)

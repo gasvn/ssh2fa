@@ -22,12 +22,12 @@ Rust daemon/CLI/TUI to feature parity with the Python implementation.
 | Feature | Python ref | Rust location |
 |---|---|---|
 | `expand_first_node` (SLURM range `holygpu[01-03]`→`holygpu01`) | `tunnels.py:42` | `a2fa-core/tunnels/discovery.rs`; applied in daemon `tunnel_set_node` |
-| Per-tunnel event ring buffer (≤200) | `tunnels.py:_record` | `a2fa-daemon/tunnel_runtime.rs` (runtime-only, not core model); `tunnel_events` handler returns real events |
-| Daemon log rotation at startup (gzip >10MB) | `daemon.py:38` | `a2fa-daemon/log_rotation.rs` (flate2) |
+| Per-tunnel event ring buffer (≤200) | `tunnels.py:_record` | `ssh2fa-daemon/tunnel_runtime.rs` (runtime-only, not core model); `tunnel_events` handler returns real events |
+| Daemon log rotation at startup (gzip >10MB) | `daemon.py:38` | `ssh2fa-daemon/log_rotation.rs` (flate2) |
 | `cleanup_orphans` on boot (reap stray `ssh -N -J -L`) | `tunnels.py:944` | `a2fa-core/tunnels/cleanup.rs`; called in `server::run` |
-| Real `wake_recover` + `reset_all` (master rebuild) | `daemon.py:911-1055` | `a2fa-daemon/handlers/system.rs` + `managers::spawn_master_rebuild`/`rebuild_masters` |
+| Real `wake_recover` + `reset_all` (master rebuild) | `daemon.py:911-1055` | `ssh2fa-daemon/handlers/system.rs` + `managers::spawn_master_rebuild`/`rebuild_masters` |
 | Keychain migration v1→v2 on boot + one-time `.pre-keychain-backup` | `credentials.py:200-330` | `a2fa-core/creds/migrate.rs::migrate_passwords_file_if_needed`; wired in `server::run` before `State::new` |
-| Graceful shutdown (SIGINT/SIGTERM teardown) | `daemon.py:1200` | `a2fa-daemon/server.rs` signal thread + `HostManagers::teardown_all` + `TunnelRuntime::kill_all_children` (signal-hook) |
+| Graceful shutdown (SIGINT/SIGTERM teardown) | `daemon.py:1200` | `ssh2fa-daemon/server.rs` signal thread + `HostManagers::teardown_all` + `TunnelRuntime::kill_all_children` (signal-hook) |
 
 ### Design divergences (intentional, documented in code)
 
@@ -75,19 +75,19 @@ Full workspace, single-threaded: **core 107, daemon 125 (+13 integration), tui 3
 
 ## Cutover (T16) — DONE 2026-06-06 (zero-relogin handoff)
 
-The Rust daemon is now the live, launchd-managed daemon (`com.auto2fa.daemon`,
-ProgramArguments → `~/.auto2fa/a2fa-daemon`, env `SSH_CONFIG_PATH=/Users/shgao/.ssh/`).
+The Rust daemon is now the live, launchd-managed daemon (`com.ssh2fa.daemon`,
+ProgramArguments → `~/.ssh2fa/ssh2fa-daemon`, env `SSH_CONFIG_PATH=/Users/shgao/.ssh/`).
 
 **Two correctness fixes made the handoff zero-relogin** (commits `f4121f0`, `351f759`):
 1. `control.rs` resolves `ControlPath` via `ssh -G` (honors the user's
-   `ControlPath ~/.ssh/cm-auto2fa-%h` directive) → Rust computes the SAME socket
+   `ControlPath ~/.ssh/cm-ssh2fa-%h` directive) → Rust computes the SAME socket
    paths Python used.
 2. `boot_autostart` adopts already-live masters (`adopt_if_alive`) → no login when
    a master socket is already up.
 
 **Handoff procedure used** (preserves masters; Python tears them down on SIGTERM via
 `cleanup_all`, so it must be killed without its handler running):
-1. Back up plist; repoint ProgramArguments → `~/.auto2fa/a2fa-daemon`.
+1. Back up plist; repoint ProgramArguments → `~/.ssh2fa/ssh2fa-daemon`.
 2. `kill -STOP` Python → `launchctl unload` (deregister; SIGTERM stays pending while
    frozen) → `kill -KILL` Python (handler never runs → masters survive via
    `ControlPersist`) → `launchctl load` (Rust starts, adopts).
@@ -104,9 +104,9 @@ ProgramArguments → `~/.auto2fa/a2fa-daemon`, env `SSH_CONFIG_PATH=/Users/shgao
 unquoted, so the remote shell split on `|` (`bash: %T: command not found`) — broke node
 discovery + stale detection. Now single-quoted.
 
-**Rollback** (if needed): `cp ~/Library/LaunchAgents/com.auto2fa.daemon.plist.bak-precutover`
+**Rollback** (if needed): `cp ~/Library/LaunchAgents/com.ssh2fa.daemon.plist.bak-precutover`
 back over the plist, then `launchctl unload && launchctl load` it to relaunch the Python
-daemon at `.venv/bin/auto2fa-daemon`. The Python code + venv are intentionally **not
+daemon at `.venv/bin/ssh2fa-daemon`. The Python code + venv are intentionally **not
 deleted** yet — keep until the Rust daemon proves stable over normal use.
 
 **Follow-ups (non-blocking):** investigate k6's keyboard-interactive "exited early" (node

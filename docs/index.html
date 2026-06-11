@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Auto2FA — no-retype 2FA SSH for macOS</title>
+<title>SSH2FA — no-retype 2FA SSH for macOS</title>
 <meta name="description" content="A macOS menu-bar app that keeps SSH ControlMaster connections warm to 2FA-protected hosts and auto-answers the Duo/TOTP login — built for HPC/SLURM clusters.">
 <style>
   :root{
@@ -48,12 +48,12 @@
 
   <header>
     <div class="logo">🔗</div>
-    <h1>Auto2FA</h1>
+    <h1>SSH2FA</h1>
     <p class="tag">Log into your 2FA-protected SSH hosts once, then stay connected — no more typing a Duo/TOTP code every <code>ssh</code>.</p>
     <p class="scope">macOS menu-bar app · built for HPC / SLURM cluster logins · works with any host that asks for a password + a typed 2FA code</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/gasvn/auto2fa/releases">Download</a>
-      <a class="btn" href="https://github.com/gasvn/auto2fa">View on GitHub</a>
+      <a class="btn primary" href="https://github.com/gasvn/ssh2fa/releases">Download</a>
+      <a class="btn" href="https://github.com/gasvn/ssh2fa">View on GitHub</a>
     </div>
   </header>
 
@@ -69,13 +69,13 @@
 
   <section>
     <h2>Install</h2>
-    <p>Download <code>Auto2FA.dmg</code> from <a href="https://github.com/gasvn/auto2fa/releases">Releases</a>, drag the app to <code>/Applications</code>, and launch it. On first run it installs its background helper and registers a LaunchAgent for you — then use <strong>Add Host</strong> to save a host's credentials (stored in your macOS Keychain).</p>
+    <p>Download <code>SSH2FA.dmg</code> from <a href="https://github.com/gasvn/ssh2fa/releases">Releases</a>, drag the app to <code>/Applications</code>, and launch it. On first run it installs its background helper and registers a LaunchAgent for you — then use <strong>Add Host</strong> to save a host's credentials (stored in your macOS Keychain).</p>
     <div class="note">
       If the build isn't notarized, macOS blocks it the first time — open it once via
       <strong>System Settings → Privacy &amp; Security → “Open Anyway,”</strong> or run:
-      <pre>xattr -dr com.apple.quarantine /Applications/Auto2FA.app</pre>
+      <pre>xattr -dr com.apple.quarantine /Applications/SSH2FA.app</pre>
     </div>
-    <p style="margin-top:18px">Prefer to build it yourself? A locally-built app has no Gatekeeper friction — see the <a href="https://github.com/gasvn/auto2fa#build-from-source">build instructions</a>.</p>
+    <p style="margin-top:18px">Prefer to build it yourself? A locally-built app has no Gatekeeper friction — see the <a href="https://github.com/gasvn/ssh2fa#build-from-source">build instructions</a>.</p>
   </section>
 
   <section>
@@ -88,13 +88,13 @@
 
   <section>
     <h2>Security, plainly</h2>
-    <p class="note">Auto2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That's the convenience — but it means your "second factor" no longer protects you against someone with access to your unlocked Mac. Read the full <a href="https://github.com/gasvn/auto2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p>
+    <p class="note">SSH2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That's the convenience — but it means your "second factor" no longer protects you against someone with access to your unlocked Mac. Read the full <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p>
   </section>
 
   <footer>
-    <a href="https://github.com/gasvn/auto2fa">GitHub</a> ·
-    <a href="https://github.com/gasvn/auto2fa/blob/main/SECURITY.md">Security</a> ·
-    <a href="https://github.com/gasvn/auto2fa/blob/main/docs/RELEASE.md">Releasing</a> ·
+    <a href="https://github.com/gasvn/ssh2fa">GitHub</a> ·
+    <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">Security</a> ·
+    <a href="https://github.com/gasvn/ssh2fa/blob/main/docs/RELEASE.md">Releasing</a> ·
     MIT licensed
   </footer>
 

@@ -16,12 +16,12 @@ final class OneShot: @unchecked Sendable {
 }
 
 /// Async/await wrapper around the Python daemon's line-delimited JSON IPC
-/// over `~/.auto2fa/auto2fa.sock`.
+/// over `~/.ssh2fa/ssh2fa.sock`.
 ///
 /// Each request is a JSON object terminated by `\n`. The daemon may at any
 /// time push event objects (no `id` field) — these flow through `events`.
 actor BackendClient {
-    static let socketPath = ("~/.auto2fa/auto2fa.sock" as NSString).expandingTildeInPath
+    static let socketPath = ("~/.ssh2fa/ssh2fa.sock" as NSString).expandingTildeInPath
 
     enum ClientError: Error, LocalizedError {
         case notConnected
@@ -32,7 +32,7 @@ actor BackendClient {
 
         var errorDescription: String? {
             switch self {
-            case .notConnected: return "Not connected to auto2fa-daemon"
+            case .notConnected: return "Not connected to ssh2fa-daemon"
             case .decodeFailed(let s): return "Bad reply: \(s)"
             case .daemonError(_, let m): return m
             case .transport(let s): return s
@@ -501,12 +501,12 @@ actor BackendClient {
         // within the last few seconds, skip — the two Mac monitors fire on a
         // single wake. Actor isolation makes this check/set atomic.
         if wakeRecoverInFlight {
-            NSLog("[Auto2FA] wakeRecover already in flight — coalescing")
+            NSLog("[SSH2FA] wakeRecover already in flight — coalescing")
             return false
         }
         if let last = lastWakeRecoverAt,
            Date().timeIntervalSince(last) < wakeRecoverMinInterval {
-            NSLog("[Auto2FA] wakeRecover ran <\(Int(wakeRecoverMinInterval))s ago — coalescing")
+            NSLog("[SSH2FA] wakeRecover ran <\(Int(wakeRecoverMinInterval))s ago — coalescing")
             return false
         }
         wakeRecoverInFlight = true

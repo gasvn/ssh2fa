@@ -4,7 +4,7 @@
 
 **Goal:** Implement a feature-complete Rust replacement for the Python backend (daemon + CLI + TUI), wire-compatible with the existing IPC protocol, shipping as small static binaries with the daemon embeddable in the Swift app (no CPython).
 
-**Architecture:** One Cargo workspace: `a2fa-core` (library) + three binaries (`a2fa-daemon`, `a2fa-cli`, `a2fa-tui`). Synchronous threads; one `Mutex<State>` never held across ssh I/O; system `ssh` + `portable-pty` for ControlMaster + 2FA. Python kept only as a dev-time conformance oracle, deleted at cutover.
+**Architecture:** One Cargo workspace: `a2fa-core` (library) + three binaries (`ssh2fa-daemon`, `a2fa-cli`, `a2fa-tui`). Synchronous threads; one `Mutex<State>` never held across ssh I/O; system `ssh` + `portable-pty` for ControlMaster + 2FA. Python kept only as a dev-time conformance oracle, deleted at cutover.
 
 **Tech Stack:** Rust (edition 2021), serde/serde_json, portable-pty, keyring, totp-rs, clap, ratatui/crossterm, thiserror/anyhow, log/simplelog, fs2, regex.
 
@@ -69,7 +69,7 @@ auto2fa-rs/
           tick.rs                    # 0.5s poll loop, emit-on-change
           recovery.rs                # wake_recover, reset_all
           schedule.rs                # cooldown/backoff/heartbeat scheduling
-    a2fa-daemon/
+    ssh2fa-daemon/
       Cargo.toml
       src/
         main.rs                      # startup: lock, load, spawn workers+tick, serve
@@ -236,12 +236,12 @@ auto2fa-rs/
 
 ---
 
-## Task 11: a2fa-daemon — server + dispatch + handlers
+## Task 11: ssh2fa-daemon — server + dispatch + handlers
 
-**Files:** `crates/a2fa-daemon/src/{main.rs,singleton.rs,server.rs,subscribers.rs,dispatch.rs,handlers/{mod.rs,hosts.rs,tunnels.rs,system.rs}}` (+ `fs2`). **Parity:** `daemon.py`.
+**Files:** `crates/ssh2fa-daemon/src/{main.rs,singleton.rs,server.rs,subscribers.rs,dispatch.rs,handlers/{mod.rs,hosts.rs,tunnels.rs,system.rs}}` (+ `fs2`). **Parity:** `daemon.py`.
 - [ ] **Step 1: Failing tests** (`tests/dispatch.rs`) — invalid UTF-8 line → `invalid_request`; unknown method → `unknown_method`; `list_hosts` on a seeded State → JSON array.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implement** `singleton.rs` (`fs2` exclusive lock on `~/.auto2fa/lock`), `server.rs` (unix listener, remove stale sock, chmod 0600, thread/conn, line framing, invalid-bytes→error), `subscribers.rs` (writer registry + fan-out), `dispatch.rs` (`Method`→handler), `handlers/*` (the 28 methods grouped: hosts/tunnels/system), `main.rs` (lock→load config/creds→spawn host workers + tick thread→serve; log→`/tmp/auto2fa_daemon.log`). Binary name `auto2fa-daemon`.
+- [ ] **Step 3: Implement** `singleton.rs` (`fs2` exclusive lock on `~/.ssh2fa/lock`), `server.rs` (unix listener, remove stale sock, chmod 0600, thread/conn, line framing, invalid-bytes→error), `subscribers.rs` (writer registry + fan-out), `dispatch.rs` (`Method`→handler), `handlers/*` (the 28 methods grouped: hosts/tunnels/system), `main.rs` (lock→load config/creds→spawn host workers + tick thread→serve; log→`/tmp/ssh2fa_daemon.log`). Binary name `ssh2fa-daemon`.
 - [ ] **Step 4:** `cargo test -p a2fa-daemon` PASS; manual `ping` over the socket. **Step 5:** Commit `feat(rust): daemon server + 28 handlers`.
 
 ---
@@ -278,8 +278,8 @@ auto2fa-rs/
 
 **Files:** `auto2fa-rs/build-release.sh`; modify `auto2fa-mac/build.sh`, `auto2fa-mac/project.yml`.
 - [ ] **Step 1:** `build-release.sh`: build both `aarch64`/`x86_64-apple-darwin`, `lipo` the 3 binaries into `auto2fa-rs/dist/`.
-- [ ] **Step 2:** `auto2fa-mac/build.sh` embeds `dist/auto2fa-daemon` at `Contents/Resources/daemon/auto2fa-daemon` (replaces the PyInstaller embed) + keeps the SMAppService agent plist (BundleProgram→it); re-sign ad-hoc.
-- [ ] **Step 3:** Verify: build app; clean-env smoke the embedded daemon (`env -i … auto2fa-daemon` → binds/flock-exits, no dyld errors).
+- [ ] **Step 2:** `auto2fa-mac/build.sh` embeds `dist/ssh2fa-daemon` at `Contents/Resources/daemon/ssh2fa-daemon` (replaces the PyInstaller embed) + keeps the SMAppService agent plist (BundleProgram→it); re-sign ad-hoc.
+- [ ] **Step 3:** Verify: build app; clean-env smoke the embedded daemon (`env -i … ssh2fa-daemon` → binds/flock-exits, no dyld errors).
 - [ ] **Step 4:** Commit `feat(rust): universal build + embed daemon in app`.
 
 ---
@@ -304,5 +304,5 @@ auto2fa-rs/
 
 **Placeholder scan:** tricky/small units have concrete code+tests; large bodies specified by interface+parity+tests (noted in granularity rule). ssh is prototype-first.
 
-**Type/name consistency:** `Method`/`Event`/`ErrCode` (proto, T2) consumed by daemon (T11)/cli (T13); `HostName`/`Port` (T3) in config (T5)/tunnels (T9)/handlers; `Error::to_errcode` (T4) across; `tunnel_change_key` excludes `total_uptime_sec` (T10 test+spec); `control_path`/`master_check` (T8) used by engine/handlers; binary `auto2fa-daemon` + embed path `Contents/Resources/daemon/auto2fa-daemon` consistent (T11,T15) with P1 agent plist BundleProgram.
+**Type/name consistency:** `Method`/`Event`/`ErrCode` (proto, T2) consumed by daemon (T11)/cli (T13); `HostName`/`Port` (T3) in config (T5)/tunnels (T9)/handlers; `Error::to_errcode` (T4) across; `tunnel_change_key` excludes `total_uptime_sec` (T10 test+spec); `control_path`/`master_check` (T8) used by engine/handlers; binary `ssh2fa-daemon` + embed path `Contents/Resources/daemon/ssh2fa-daemon` consistent (T11,T15) with P1 agent plist BundleProgram.
 ```

@@ -57,21 +57,21 @@ final class AppState: ObservableObject {
     private var reloadFailStreak = 0
 
     func bootstrap() async {
-        NSLog("[Auto2FA] bootstrap: connecting to daemon")
+        NSLog("[SSH2FA] bootstrap: connecting to daemon")
         do {
             try await client.connect()
             connectionError = nil
-            NSLog("[Auto2FA] bootstrap: connected OK")
+            NSLog("[SSH2FA] bootstrap: connected OK")
             notchPresenter.show(
                 systemImage: "bolt.fill",
-                title: "Auto2FA ready",
+                title: "SSH2FA ready",
                 description: "Connected to daemon",
                 tint: .green
             )
         } catch {
-            NSLog("[Auto2FA] bootstrap: connect failed: \(error.localizedDescription)")
+            NSLog("[SSH2FA] bootstrap: connect failed: \(error.localizedDescription)")
             connectionError = "Daemon unreachable: \(error.localizedDescription). " +
-                              "Is auto2fa-daemon running?"
+                              "Is ssh2fa-daemon running?"
             // DON'T return — start the watcher/poll machinery anyway. The
             // old early-return was a dead end: launching the app during a
             // daemon-down window (deploys SIGKILL it; launchd respawns ~10s
@@ -80,7 +80,7 @@ final class AppState: ObservableObject {
             // fallback reconnect and clear the banner on their own.
         }
         await reloadAll()
-        NSLog("[Auto2FA] bootstrap: loaded \(hosts.count) hosts, \(tunnels.count) tunnels")
+        NSLog("[SSH2FA] bootstrap: loaded \(hosts.count) hosts, \(tunnels.count) tunnels")
         startEventTask()
         startConnectionWatcher()
         startPollFallback()
@@ -145,11 +145,11 @@ final class AppState: ObservableObject {
                             if let respawn = await DaemonProcess.shared.respawnIfOwnedDaemonCrashed() {
                                 switch respawn {
                                 case .alreadyRunning, .spawned:
-                                    NSLog("[Auto2FA] daemon respawned after crash")
+                                    NSLog("[SSH2FA] daemon respawned after crash")
                                     await self.bootstrap()
                                     return
                                 case .failed(let reason):
-                                    NSLog("[Auto2FA] daemon respawn failed: \(reason), retrying")
+                                    NSLog("[SSH2FA] daemon respawn failed: \(reason), retrying")
                                     await MainActor.run {
                                         self.connectionError = "Daemon respawn failed (will retry): \(reason)"
                                     }
@@ -169,7 +169,7 @@ final class AppState: ObservableObject {
                         if !ok && !Task.isCancelled {
                             await MainActor.run {
                                 self.connectionError =
-                                    "Couldn't reconnect to the daemon. Restart Auto2FA, or check /tmp/auto2fa_daemon.log."
+                                    "Couldn't reconnect to the daemon. Restart SSH2FA, or check /tmp/ssh2fa_daemon.log."
                             }
                         }
                     }
@@ -223,7 +223,7 @@ final class AppState: ObservableObject {
             // consecutive failures. Genuine socket disconnects are handled
             // separately by the connection watcher (startConnectionWatcher).
             reloadFailStreak += 1
-            NSLog("[Auto2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
+            NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if reloadFailStreak >= 3 {
                 connectionError = "Daemon is slow to respond — retrying…"
             }
@@ -239,7 +239,7 @@ final class AppState: ObservableObject {
             // Event-driven refresh — swallow transient errors (don't flash a
             // banner). reloadAll's streak logic + the connection watcher own
             // the user-visible connection state.
-            NSLog("[Auto2FA] reloadHostsOnly failed: \(error.localizedDescription)")
+            NSLog("[SSH2FA] reloadHostsOnly failed: \(error.localizedDescription)")
         }
     }
 
@@ -255,7 +255,7 @@ final class AppState: ObservableObject {
             if connectionError != nil { connectionError = nil }
         } catch {
             // Event-driven refresh — swallow transient errors (see reloadHostsOnly).
-            NSLog("[Auto2FA] reloadTunnelsOnly failed: \(error.localizedDescription)")
+            NSLog("[SSH2FA] reloadTunnelsOnly failed: \(error.localizedDescription)")
         }
     }
 

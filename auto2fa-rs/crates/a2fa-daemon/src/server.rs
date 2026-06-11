@@ -4,8 +4,8 @@
 //!
 //! | Path                         | Default                      | Override env var  |
 //! |------------------------------|------------------------------|-------------------|
-//! | IPC socket                   | `~/.auto2fa/auto2fa.sock`    | `AUTO2FA_SOCK`    |
-//! | Singleton flock              | `~/.auto2fa/lock`            | `AUTO2FA_LOCK`    |
+//! | IPC socket                   | `~/.ssh2fa/ssh2fa.sock`    | `AUTO2FA_SOCK`    |
+//! | Singleton flock              | `~/.ssh2fa/lock`            | `AUTO2FA_LOCK`    |
 //!
 //! Setting `AUTO2FA_SOCK` / `AUTO2FA_LOCK` lets you smoke-test the Rust daemon
 //! against a temp directory without touching the paths used by a running Python
@@ -14,7 +14,7 @@
 //! # Lifecycle
 //!
 //! 1. Acquire the exclusive flock — exit cleanly if another daemon holds it.
-//! 2. makedirs `~/.auto2fa`.
+//! 2. makedirs `~/.ssh2fa`.
 //! 3. Remove any stale socket.
 //! 4. Bind `UnixListener` at the socket path, chmod 0600.
 //! 5. Load `State` (config + creds) from `passwords.json` + `tunnels.json`.
@@ -87,7 +87,7 @@ fn resolve_home() -> PathBuf {
 pub fn socket_path() -> PathBuf {
     std::env::var("AUTO2FA_SOCK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| resolve_home().join(".auto2fa").join("auto2fa.sock"))
+        .unwrap_or_else(|_| resolve_home().join(".ssh2fa").join("ssh2fa.sock"))
 }
 
 /// Path to the singleton lock file.
@@ -96,7 +96,7 @@ pub fn socket_path() -> PathBuf {
 pub fn lock_path() -> PathBuf {
     std::env::var("AUTO2FA_LOCK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| resolve_home().join(".auto2fa").join("lock"))
+        .unwrap_or_else(|_| resolve_home().join(".ssh2fa").join("lock"))
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ pub fn run() -> Result<()> {
     let lock_p = lock_path();
     let sock_p = socket_path();
 
-    log::info!("a2fa-daemon starting (sock={}, lock={})", sock_p.display(), lock_p.display());
+    log::info!("ssh2fa-daemon starting (sock={}, lock={})", sock_p.display(), lock_p.display());
 
     // 1. Acquire singleton flock.
     let _lock_file = match acquire_lock(&lock_p)? {
@@ -219,11 +219,11 @@ pub fn run() -> Result<()> {
         );
     }
 
-    // Sweep STRAY cm-auto2fa masters sitting on RETIRED ControlPath bases:
+    // Sweep STRAY cm-ssh2fa masters sitting on RETIRED ControlPath bases:
     // when ssh-config edits change a host's resolved path, the old path's
     // masters are never targeted by any per-slot sweep again — they leaked
-    // forever (observed live: 6h-old cm-auto2fa-b8-* masters after b8's base
-    // became cm-auto2fa-boslogin08…). Resolving every known host's base here
+    // forever (observed live: 6h-old cm-ssh2fa-b8-* masters after b8's base
+    // became cm-ssh2fa-boslogin08…). Resolving every known host's base here
     // also pre-warms the control-path cache before the heartbeat starts.
     //
     // SAFETY: only sweep when EVERY host's path resolved AUTHORITATIVELY. If
@@ -330,7 +330,7 @@ pub fn run() -> Result<()> {
     );
 
     log::info!("daemon listening on {}", sock_p.display());
-    println!("a2fa-daemon listening on {}", sock_p.display());
+    println!("ssh2fa-daemon listening on {}", sock_p.display());
 
     // Build the shared daemon context (cloned cheaply per connection).
     let ctx = DaemonCtx {
@@ -616,7 +616,7 @@ mod tests {
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
         assert!(
-            p.to_string_lossy().contains("auto2fa"),
+            p.to_string_lossy().contains("ssh2fa"),
             "path should contain auto2fa: {p:?}"
         );
     }

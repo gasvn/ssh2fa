@@ -38,7 +38,7 @@ pub struct Host {
 /// Canonical host-name safety check (mirrors `_valid_host_name` in daemon.py).
 ///
 /// A host name flows UNQUOTED into ssh argv (as the final `<host>` argument)
-/// and into filesystem paths (`/tmp/auto2fa_ssh_master_<host>_N.log`,
+/// and into filesystem paths (`/tmp/ssh2fa_ssh_master_<host>_N.log`,
 /// `~/Mounts/<host>`). So it must NOT:
 /// - start with `-` (ssh would parse it as an option — argument injection),
 /// - start with `.` (hidden / `..` traversal),

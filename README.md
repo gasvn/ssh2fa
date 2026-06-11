@@ -1,9 +1,9 @@
-# Auto2FA
+# SSH2FA
 
 ![platform: macOS 13+](https://img.shields.io/badge/platform-macOS%2013%2B-black?logo=apple)
 ![arch: universal](https://img.shields.io/badge/arch-arm64%20%2B%20x86__64-informational)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
-[![latest release](https://img.shields.io/github/v/release/gasvn/auto2fa?display_name=tag&sort=semver)](https://github.com/gasvn/auto2fa/releases)
+[![latest release](https://img.shields.io/github/v/release/gasvn/ssh2fa?display_name=tag&sort=semver)](https://github.com/gasvn/ssh2fa/releases)
 
 A macOS menu-bar app + background daemon that keeps **SSH ControlMaster** pools
 warm to 2FA-protected hosts, auto-answering the **Duo / TOTP** login so you log
@@ -12,16 +12,16 @@ nodes.
 
 ### 60-second quickstart
 
-1. **Download** `Auto2FA.dmg` from [Releases](https://github.com/gasvn/auto2fa/releases) → drag the app to `/Applications` → open it. (Un-notarized build? First launch: **System Settings → Privacy & Security → “Open Anyway.”**)
+1. **Download** `SSH2FA.dmg` from [Releases](https://github.com/gasvn/ssh2fa/releases) → drag the app to `/Applications` → open it. (Un-notarized build? First launch: **System Settings → Privacy & Security → “Open Anyway.”**)
 2. **Add Host** → enter your ssh-config **alias**, **password**, and your **2FA secret** (the wizard has a "How do I get this?" walkthrough, incl. Duo). It test-logs-in before saving.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
-Prefer Homebrew? `brew install --cask gasvn/tap/auto2fa` (once the tap is published — see [docs/RELEASE.md](docs/RELEASE.md#homebrew-cask)).
+Prefer Homebrew? `brew install --cask gasvn/tap/ssh2fa` (once the tap is published — see [docs/RELEASE.md](docs/RELEASE.md#homebrew-cask)).
 
 Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's wrong.
 
 <!-- Screenshot: drop an image at docs/screenshot.png and uncomment:
-![Auto2FA dashboard](docs/screenshot.png)
+![SSH2FA dashboard](docs/screenshot.png)
 (Couldn't auto-capture one headlessly — it needs Accessibility permission.) -->
 
 
@@ -51,11 +51,11 @@ Components:
 
 | Piece | What |
 |-------|------|
-| `Auto2FA.app` | SwiftUI menu-bar app (the UI). |
-| `a2fa-daemon` | Rust background daemon (the engine). Runs under a per-user LaunchAgent. |
+| `SSH2FA.app` | SwiftUI menu-bar app (the UI). |
+| `ssh2fa-daemon` | Rust background daemon (the engine). Runs under a per-user LaunchAgent. |
 | `a2fa` / `a2fa-tui` | Rust CLI and terminal UI (optional, talk to the same daemon). |
 
-The app and daemon talk over a unix-socket JSON-RPC at `~/.auto2fa/auto2fa.sock`.
+The app and daemon talk over a unix-socket JSON-RPC at `~/.ssh2fa/ssh2fa.sock`.
 (The original Python implementation has been fully rewritten in Rust; the
 `auto2fa/` Python tree is kept only as a historical reference.)
 
@@ -71,10 +71,10 @@ The app and daemon talk over a unix-socket JSON-RPC at `~/.auto2fa/auto2fa.sock`
 
 ## Install
 
-**From a release (recommended):** download `Auto2FA.dmg` from
-[Releases](https://github.com/gasvn/auto2fa/releases), drag `Auto2FA.app` to
+**From a release (recommended):** download `SSH2FA.dmg` from
+[Releases](https://github.com/gasvn/ssh2fa/releases), drag `SSH2FA.app` to
 `/Applications`, and launch it. On first run the app installs the bundled
-daemon to `~/.auto2fa/` and registers the `com.auto2fa.daemon` LaunchAgent for
+daemon to `~/.ssh2fa/` and registers the `com.ssh2fa.daemon` LaunchAgent for
 you — nothing else to set up. Then use **Add Host** to register a host's
 credentials (stored in the Keychain).
 
@@ -84,7 +84,7 @@ it once via **System Settings → Privacy & Security → "Open Anyway"**, or cle
 the quarantine flag yourself:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Auto2FA.app
+xattr -dr com.apple.quarantine /Applications/SSH2FA.app
 ```
 
 After that it launches normally and the bundled daemon runs in place. (See
@@ -105,8 +105,8 @@ cargo test --workspace -- --test-threads=1
 # macOS app — the .xcodeproj is generated from project.yml by XcodeGen
 brew install xcodegen          # one time
 cd auto2fa-mac && xcodegen generate
-xcodebuild -project Auto2FA.xcodeproj \
-  -scheme Auto2FA -configuration Release build
+xcodebuild -project SSH2FA.xcodeproj \
+  -scheme SSH2FA -configuration Release build
 ```
 
 `source "$HOME/.cargo/env"` first if cargo isn't on your PATH. The `.xcodeproj`

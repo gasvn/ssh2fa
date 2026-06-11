@@ -35,7 +35,7 @@ pub fn acquire_lock(lock_path: &Path) -> Result<Option<File>> {
 
     match file.try_lock_exclusive() {
         Ok(()) => {
-            // Write our PID so an operator can `cat ~/.auto2fa/lock` to find us.
+            // Write our PID so an operator can `cat ~/.ssh2fa/lock` to find us.
             use std::io::Write;
             let mut f = &file;
             let _ = f.write_all(format!("{}\n", std::process::id()).as_bytes());
