@@ -1004,9 +1004,11 @@ mod tests {
 
     #[test]
     fn parse_trailing_index_handles_dashed_base() {
+        // Single-master (POOL_SIZE=1): only slot -0 is a valid index; the old
+        // two-slot -1 suffix is no longer recognized.
         assert_eq!(
             parse_trailing_index("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu-1"),
-            Some(1)
+            None
         );
         assert_eq!(parse_trailing_index("cm-ssh2fa-k6-0"), Some(0));
         assert_eq!(parse_trailing_index("no-index-here"), None);

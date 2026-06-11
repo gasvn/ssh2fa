@@ -1559,43 +1559,6 @@ mod tests {
         }
     }
 
-    /// The write_back lost-update regression: a stale slot-1 worker snapshot
-    /// must NOT roll a concurrently-Ready slot 0 back to Init (the heartbeat
-    /// maps Init to "never started — don't health-check", so the clobber left
-    /// a live master unmonitored forever).
-    #[test]
-    fn write_back_slot_does_not_clobber_other_slot() {
-        let managers = HostManagers::new();
-
-        // Slot-1 worker takes its snapshot EARLY (slot 0 still Init).
-        let mut warmup_pool = managers.snapshot("k6");
-
-        // Meanwhile the slot-0 worker finishes and writes its result.
-        {
-            let mut pool0 = managers.snapshot("k6");
-            pool0.slot_status[0] = SlotStatus::Ready;
-            pool0.mark_slot_ready(0);
-            managers.write_back_slot("k6", 0, &pool0);
-        }
-
-        // Slot-1 worker finishes later and writes back from its stale snapshot.
-        warmup_pool.slot_status[1] = SlotStatus::Ready;
-        warmup_pool.mark_slot_ready(1);
-        managers.write_back_slot("k6", 1, &warmup_pool);
-
-        let pool = managers.snapshot("k6");
-        assert_eq!(
-            pool.slot_status[0],
-            SlotStatus::Ready,
-            "slot 0's Ready must survive a stale slot-1 write-back"
-        );
-        assert_eq!(pool.slot_status[1], SlotStatus::Ready);
-        // The flap-detection uptime stamps must reach the registry, or the
-        // master flap backoff never fires (every drop looks 'never Ready').
-        assert!(pool.slot_ready_since[0].is_some(), "slot 0 ready-since must persist");
-        assert!(pool.slot_ready_since[1].is_some(), "slot 1 ready-since must persist");
-    }
-
     /// Cooldown must persist across two separate snapshots (circuit-breaker test).
     #[test]
     fn persistent_pool_cooldown_survives_two_round_trips() {
@@ -1864,11 +1827,6 @@ mod tests {
         // slot_status[0] == Init by default
         let action = next_action(&pool, 0, true, None, Instant::now());
         assert_eq!(action, MaintenanceAction::Restart);
-
-        // Slot 1 Init with slot 0 NOT Ready stays untouched (warm-up logic
-        // owns slot 1, and it requires slot 0 Ready first).
-        let action1 = next_action(&pool, 1, true, None, Instant::now());
-        assert_eq!(action1, MaintenanceAction::Healthy);
     }
 
     /// REGRESSION (rapid toggle OFF->ON): the late stop-worker State write
