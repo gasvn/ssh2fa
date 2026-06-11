@@ -6,59 +6,63 @@ import UserNotifications
 struct Auto2FAApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var menuBar = MenuBarController()
+    @StateObject private var biometricLock = BiometricLock()
     // Kept as instance vars so they aren't deallocated + unsubscribed.
     @State private var sleepWakeMonitor: SleepWakeMonitor?
     @State private var networkMonitor: NetworkMonitor?
 
     var body: some Scene {
         WindowGroup("Auto2FA") {
-            ContentView()
-                .environmentObject(appState)
-                .onAppear {
-                    SingleInstance.enforceOrExit()
-                    installMenuBarOnce()
-                    installSleepWakeMonitor()
-                    installNetworkMonitor()
-                    installNotificationHandling()
-                }
-                .task {
-                    // Spawn daemon first (or detect existing one), THEN run
-                    // AppState.bootstrap. Doing this serially in a single
-                    // .task avoids the race where ContentView's own .task
-                    // would fire bootstrap before we've started the daemon.
-                    //
-                    // Honor the spawnDaemonOnLaunch user preference — if
-                    // off, we just try to connect to an externally-managed
-                    // daemon (LaunchAgent, manual launch, etc).
-                    let spawnAllowed = UserDefaults.standard
-                        .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
-                    if spawnAllowed {
-                        // First-run / post-update: install the bundled daemon to
-                        // ~/.auto2fa + register the LaunchAgent (no-op in a dev
-                        // build or when already installed). This is what makes
-                        // a downloaded .app self-contained — launchd then keeps
-                        // the daemon alive across reboots; ensureRunning below
-                        // just connects (or direct-spawns as a fallback).
-                        DaemonProcess.shared.installBundledDaemonIfNeeded()
-                        let result = await DaemonProcess.shared.ensureRunning()
-                        switch result {
-                        case .alreadyRunning:
-                            NSLog("[Auto2FA] daemon was already running")
-                        case .spawned(let pid):
-                            NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
-                        case .failed(let reason):
-                            // Surface the reason but DON'T return — fall
-                            // through to bootstrap() so the connection watcher
-                            // + poll fallback start and recover once a daemon
-                            // appears (launchd may bring one up seconds later).
-                            // The old `return` was a permanent dead end.
-                            appState.connectionError = reason
-                        }
-                    } else {
-                        NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
+            LockGate {
+                ContentView()
+                    .environmentObject(appState)
+            }
+            .environmentObject(biometricLock)
+            .onAppear {
+                SingleInstance.enforceOrExit()
+                installMenuBarOnce()
+                installSleepWakeMonitor()
+                installNetworkMonitor()
+                installNotificationHandling()
+            }
+            .task {
+                // Spawn daemon first (or detect existing one), THEN run
+                // AppState.bootstrap. Doing this serially in a single
+                // .task avoids the race where ContentView's own .task
+                // would fire bootstrap before we've started the daemon.
+                //
+                // Honor the spawnDaemonOnLaunch user preference — if
+                // off, we just try to connect to an externally-managed
+                // daemon (LaunchAgent, manual launch, etc).
+                let spawnAllowed = UserDefaults.standard
+                    .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
+                if spawnAllowed {
+                    // First-run / post-update: install the bundled daemon to
+                    // ~/.auto2fa + register the LaunchAgent (no-op in a dev
+                    // build or when already installed). This is what makes
+                    // a downloaded .app self-contained — launchd then keeps
+                    // the daemon alive across reboots; ensureRunning below
+                    // just connects (or direct-spawns as a fallback).
+                    DaemonProcess.shared.installBundledDaemonIfNeeded()
+                    let result = await DaemonProcess.shared.ensureRunning()
+                    switch result {
+                    case .alreadyRunning:
+                        NSLog("[Auto2FA] daemon was already running")
+                    case .spawned(let pid):
+                        NSLog("[Auto2FA] spawned daemon, PID=\(pid)")
+                    case .failed(let reason):
+                        // Surface the reason but DON'T return — fall
+                        // through to bootstrap() so the connection watcher
+                        // + poll fallback start and recover once a daemon
+                        // appears (launchd may bring one up seconds later).
+                        // The old `return` was a permanent dead end.
+                        appState.connectionError = reason
                     }
-                    await appState.bootstrap()
+                } else {
+                    NSLog("[Auto2FA] spawnDaemonOnLaunch=off; assuming external daemon")
                 }
+                await appState.bootstrap()
+            }
         }
         .defaultSize(width: 820, height: 540)
         .windowToolbarStyle(.unifiedCompact)
@@ -112,8 +116,11 @@ struct Auto2FAApp: App {
         // second WindowGroup. The menu-bar status item also offers a quick
         // way to open it via MenuBarController.
         WindowGroup("Auto2FA Logs", id: "logs") {
-            LogViewerView()
-                .environmentObject(appState)
+            LockGate {
+                LogViewerView()
+                    .environmentObject(appState)
+            }
+            .environmentObject(biometricLock)
         }
         .defaultSize(width: 900, height: 600)
     }
