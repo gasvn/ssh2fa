@@ -175,14 +175,6 @@ fn print_hosts(result: &Value) {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let state = if ready { "connected" } else { "stopped" };
-        let pool_idx = h
-            .get("pool_index")
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        let pool_alive = h
-            .get("pool_alive")
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "?".to_string());
         let last_msg = h
             .get("last_msg")
             .and_then(Value::as_str)
@@ -191,7 +183,8 @@ fn print_hosts(result: &Value) {
             .take(50)
             .collect::<String>();
         let glyph = status_glyph(state, tty);
-        println!("  {glyph} {host:<40} pool={pool_idx}/{pool_alive}  {last_msg}");
+        // Single-master: one connection per host, no pool index/count.
+        println!("  {glyph} {host:<40} {state:<12}  {last_msg}");
     }
 }
 

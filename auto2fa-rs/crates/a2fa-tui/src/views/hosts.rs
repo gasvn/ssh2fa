@@ -40,7 +40,8 @@ pub fn render_hosts(f: &mut Frame, area: Rect, app: &AppModel) {
         .enumerate()
         .map(|(i, h)| {
             let (glyph, color) = host_status_glyph(h.is_master_ready, h.active);
-            let pool = format!("{}/{}", h.pool_index, h.pool_alive);
+            // Single-master: one connection per host (●/○), not a pool count.
+            let pool = if h.is_master_ready { "●" } else { "○" }.to_string();
             let mnt = if h.is_mounted { "Y" } else { "N" };
             let msg: String = h.last_msg.chars().take(40).collect();
 
