@@ -9,6 +9,7 @@ enum SettingsKey {
     static let notchPersistent = "auto2fa.notch.persistent"
     static let notchDoNotDisturb = "auto2fa.notch.dnd"
     static let requireTouchID = "auto2fa.security.requireTouchID"
+    static let syncPrefsViaICloud = "auto2fa.sync.icloudPrefs"
     static let autoOpenBrowser = "auto2fa.autoOpenBrowser"
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
@@ -25,10 +26,16 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
+    @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
     // launch-at-login state isn't a persisted preference (it's owned by
     // macOS via SMAppService); we just mirror it in @State for the Toggle.
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginError: String?
+
+    private var iCloudDriveAvailable: Bool {
+        FileManager.default.fileExists(atPath:
+            NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs")
+    }
 
     var body: some View {
         TabView {
@@ -111,6 +118,18 @@ struct SettingsView: View {
                             .foregroundStyle(.orange)
                     }
                 } header: { Text("Privacy & Security") }
+
+                Section {
+                    Toggle("Sync preferences via iCloud Drive (free)", isOn: $syncPrefsViaICloud)
+                    Text("Syncs only these app preferences across your Macs via a file in iCloud Drive — no paid Apple Developer account needed. Never includes your hosts, tunnels, or 2FA secret.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if syncPrefsViaICloud && !iCloudDriveAvailable {
+                        Text("⚠︎ iCloud Drive isn't available — turn it on in System Settings to sync.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } header: { Text("Sync") }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }

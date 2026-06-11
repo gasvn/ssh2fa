@@ -10,6 +10,7 @@ struct Auto2FAApp: App {
     // Kept as instance vars so they aren't deallocated + unsubscribed.
     @State private var sleepWakeMonitor: SleepWakeMonitor?
     @State private var networkMonitor: NetworkMonitor?
+    @State private var preferenceSync: PreferenceSync?
 
     var body: some Scene {
         WindowGroup("Auto2FA") {
@@ -24,6 +25,7 @@ struct Auto2FAApp: App {
                 installSleepWakeMonitor()
                 installNetworkMonitor()
                 installNotificationHandling()
+                installPreferenceSync()
             }
             .task {
                 // Spawn daemon first (or detect existing one), THEN run
@@ -173,6 +175,15 @@ struct Auto2FAApp: App {
         }
         mon.start()
         networkMonitor = mon
+    }
+
+    /// Start free iCloud-Drive preference sync (no-op unless the user opted in
+    /// and is signed into iCloud Drive).
+    private func installPreferenceSync() {
+        guard preferenceSync == nil else { return }
+        let sync = PreferenceSync()
+        sync.start()
+        preferenceSync = sync
     }
 
     /// Hook the notification action buttons (Restart / Show Activity) up
