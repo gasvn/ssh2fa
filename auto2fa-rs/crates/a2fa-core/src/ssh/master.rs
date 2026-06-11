@@ -420,6 +420,18 @@ pub fn start_master(
             state.cooldown_until = None;
             // Start the uptime clock for flap detection (connect-then-drop).
             state.mark_slot_ready(index);
+            // Point the active symlink at this slot if it is the active one.
+            // The base ControlPath (what the user's ssh config resolves to) is
+            // a symlink into the pool; it was previously created ONLY by
+            // try_rotate (a recovery rotation). With the heartbeat thrash fixed
+            // rotations no longer fire on a healthy host, so a clean
+            // establishment left the user's ssh with no master to attach to.
+            // Create/refresh it on establishment so `ssh <host>` always works.
+            // (Stage 2 removes the symlink entirely — the master will bind the
+            // stable path directly.)
+            if index == state.active_index {
+                control::update_symlink(&state.host, index);
+            }
             info!("[{}] master slot {index} Ready", state.host);
             true
         }
@@ -481,7 +493,11 @@ pub fn adopt_if_alive(state: &mut PoolState) -> bool {
     let mut any = false;
     for (i, slot_alive) in alive.iter_mut().enumerate() {
         let path = control::control_path(&state.host, i);
-        if control::master_check(&path, &state.host) {
+        // Use the cheap, reliable probe (not the blocking `ssh -O check`, which
+        // false-negatives under load): a false negative here makes a restart
+        // KILL+rebuild the live masters (a full re-2FA storm) instead of a
+        // zero-login adoption.
+        if control::master_probe(&path) == control::MasterLiveness::Alive {
             *slot_alive = true;
             any = true;
             state.slot_status[i] = SlotStatus::Ready;

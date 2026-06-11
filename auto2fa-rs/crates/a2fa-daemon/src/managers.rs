@@ -574,6 +574,11 @@ pub fn boot_autostart(
         if a2fa_core::ssh::master::adopt_if_alive(&mut pool) {
             let idx = pool.active_index;
             managers.write_back(&host_name, &pool);
+            // Ensure the active symlink points at the adopted slot. A prior
+            // kill+rebuild can leave the base ControlPath (what the user's ssh
+            // config resolves to) missing; without it `ssh <host>` can't reach
+            // the alive master. Idempotent if it already points here.
+            a2fa_core::ssh::control::update_symlink(&host_name, idx);
             // Sweep DUPLICATE masters on every adopted slot: adoption takes
             // the socket OWNER, but older-generation masters on the same
             // path were never targeted by anything (the stale-socket sweep
