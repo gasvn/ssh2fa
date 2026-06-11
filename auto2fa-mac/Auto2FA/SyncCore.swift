@@ -27,6 +27,8 @@ enum SyncCore {
         // updatedAt is epoch seconds (Double), NOT Date — keeps this core free of
         // calendar/timezone concerns. On a same-second tie (r == localLastWriteAt)
         // we return .noop; the next real change breaks the tie.
+        // Last-writer-wins by wall-clock updatedAt. Cross-device clock skew of a
+        // few seconds is acceptable for low-stakes UI prefs — do not over-engineer.
         guard let r = remoteUpdatedAt else { return .writeLocal }   // seed file
         if r > lastAppliedRemoteAt && r > localLastWriteAt { return .applyRemote }
         if localLastWriteAt > r { return .writeLocal }

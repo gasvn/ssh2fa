@@ -32,10 +32,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginError: String?
 
-    private var iCloudDriveAvailable: Bool {
-        FileManager.default.fileExists(atPath:
-            NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs")
-    }
+    private var iCloudDriveAvailable: Bool { PreferenceSync.iCloudDriveAvailable() }
 
     var body: some View {
         TabView {
