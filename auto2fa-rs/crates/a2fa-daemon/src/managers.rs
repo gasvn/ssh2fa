@@ -203,12 +203,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 /// How often the rotation / remote-probe check runs.
 const ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Throttle before restarting a dead slot (mirrors Python's `time.sleep(2)`).
+/// Throttle before restarting a dead master (mirrors Python's `time.sleep(2)`).
 const RESTART_THROTTLE: Duration = Duration::from_secs(2);
-
-/// Stagger delay before starting slot 1 (mirrors Python's `time.sleep(5)` in
-/// `start_master_async`).
-const SLOT1_STAGGER: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // MaintenanceAction — pure decision output, no I/O
@@ -224,12 +220,8 @@ pub enum MaintenanceAction {
     Skip,
     /// Slot appears healthy — no action.
     Healthy,
-    /// Slot is dead / unresponsive — restart it (after throttle).
+    /// Master is dead / unresponsive — restart it (after throttle).
     Restart,
-    /// Slot 1 is not yet warm while slot 0 is ready — warm it (staggered).
-    WarmSlot1,
-    /// Active slot is dead but the other slot is Ready — rotate.
-    Rotate,
     /// Registry says Dead/Failed but the LIVE check PASSED: the registry is
     /// stale (boot-adoption gap, a transient check failure that later
     /// recovered, a worker result landing mid-tick). The master is alive and
@@ -266,51 +258,31 @@ pub fn next_action(
         return MaintenanceAction::Skip;
     }
 
-    // Slot 1 warm-up: if slot 0 is ready but slot 1 has never been started.
-    if slot == 1 && pool.slot_status[0] == SlotStatus::Ready
-        && pool.slot_status[1] == SlotStatus::Init
-    {
-        return MaintenanceAction::WarmSlot1;
-    }
-
     // A Dead/Failed registry status with a PASSING live check means the
     // registry is stale, not the master — adopt, never restart (see
-    // MaintenanceAction::AdoptAlive). Checked BEFORE rotation: if the active
-    // slot's master is actually alive, adopting it beats rotating away.
+    // MaintenanceAction::AdoptAlive). The master is alive and authenticated; a
+    // restart would kill it and burn a full 2FA login for nothing.
     if matches!(pool.slot_status[slot], SlotStatus::Dead | SlotStatus::Failed)
         && check_alive == Some(true)
     {
         return MaintenanceAction::AdoptAlive;
     }
 
-    // Rotation: active slot is dead and the other is ready.
-    let other = (pool.active_index + 1) % POOL_SIZE;
-    if pool.slot_status[pool.active_index] == SlotStatus::Dead
-        && pool.slot_status[other] == SlotStatus::Ready
-        && !pool.in_probe_backoff()
-    {
-        // Only suggest Rotate when evaluating the active slot.
-        if slot == pool.active_index {
-            return MaintenanceAction::Rotate;
-        }
-    }
-
     // Restart if the slot is in a non-Ready state (Dead/Failed), or if the
-    // live check returned false. Slot 0 in Init on an ACTIVE host also
-    // restarts: a rapid toggle OFF→ON race can abandon the activation (the ON
-    // arrived while the old stop worker still held the slot-0 token, so the
-    // start was skipped) — without this arm no heartbeat path ever started
-    // it and the host sat "Connecting" forever. Slot 1 Init stays with the
-    // warm-up logic (which requires slot 0 Ready).
+    // live check returned false. Init on an ACTIVE host also restarts: a rapid
+    // toggle OFF→ON race can abandon the activation (the ON arrived while the
+    // old stop worker still held the slot token, so the start was skipped) —
+    // without this arm no heartbeat path ever started it and the host sat
+    // "Connecting" forever.
     let needs_restart = match pool.slot_status[slot] {
         SlotStatus::Dead | SlotStatus::Failed => true,
         SlotStatus::Init => slot == 0,
         SlotStatus::Ready => check_alive == Some(false),
     };
 
-    // Suppress restart while in probe backoff (rotation) OR flap backoff
-    // (connect-then-drop) — both mean "stop hammering this host for a while".
-    if needs_restart && !pool.in_probe_backoff() && !pool.in_flap_backoff() {
+    // Suppress restart while in flap backoff (connect-then-drop) — "stop
+    // hammering this host for a while".
+    if needs_restart && !pool.in_flap_backoff() {
         return MaintenanceAction::Restart;
     }
 
@@ -1388,19 +1360,6 @@ fn tick_host(
                                 h.last_msg = last_msg;
                             }
                         }
-
-                        // If we just restarted the active slot, try rotating to
-                        // the spare if it's ready (mirrors Python:
-                        // `update_symlink(other)`).
-                        if slot == active_index {
-                            let other = (slot + 1) % POOL_SIZE;
-                            let other_ready = managers2
-                                .with_pool(&host_owned, |p| p.slot_status[other] == SlotStatus::Ready)
-                                .unwrap_or(false);
-                            if other_ready {
-                                managers2.with_pool_mut(&host_owned, |p| { p.try_rotate(); });
-                            }
-                        }
                     });
                 if let Err(e) = spawn_res {
                     // Transient EAGAIN: the closure (and its StartGuard) never
@@ -1411,140 +1370,6 @@ fn tick_host(
                     );
                     managers.end_start(host_name, slot);
                     continue;
-                }
-            }
-
-            MaintenanceAction::WarmSlot1 => {
-                // In-flight guard on slot 1: slot 1 stays Init until the warm
-                // worker finishes, so without this every tick would spawn
-                // another warm worker. Guard prevents the pile-up.
-                if !managers.try_begin_start(host_name, 1) {
-                    info!(
-                        "[{host_name}] heartbeat: warm slot 1 already in flight, skipping spawn"
-                    );
-                    continue;
-                }
-                info!("[{host_name}] heartbeat: warming slot 1 (staggered)");
-                let host_owned = host_name.to_owned();
-                let state2 = Arc::clone(state);
-                let managers2 = Arc::clone(managers);
-                let registry2 = Arc::clone(registry);
-                let guard_managers = Arc::clone(managers);
-                let guard_host = host_name.to_owned();
-                let spawn_res = std::thread::Builder::new()
-                    .name(format!("warmslot1:{host_name}"))
-                    .spawn(move || {
-                        // RAII: release the slot-1 in-flight guard on every exit
-                        // path (early return on deactivation, or panic).
-                        let _start_guard = StartGuard {
-                            managers: guard_managers,
-                            host: guard_host,
-                            slot: 1,
-                        };
-
-                        // Stagger sleep (mirrors Python start_master_async).
-                        std::thread::sleep(SLOT1_STAGGER);
-                        // Guard: re-check active state after the stagger.
-                        let still_active = {
-                            let guard = crate::lock_state(&state2);
-                            guard
-                                .hosts
-                                .iter()
-                                .find(|h| h.host == host_owned)
-                                .map(|h| h.active)
-                                .unwrap_or(false)
-                        };
-                        if !still_active {
-                            info!("[{host_owned}] warm-slot-1 aborted — host no longer active");
-                            return;
-                        }
-                        // Read Keychain creds IN-THREAD (no-wedge invariant).
-                        let (pw_owned, sec_owned) = load_creds(&host_owned);
-                        let otp_closure = make_otp_closure(
-                            sec_owned,
-                            host_owned.clone(),
-                            Arc::clone(&registry2),
-                        );
-                        let mut pool = managers2.snapshot(&host_owned);
-                        let ready = start_master(&mut pool, 1, &pw_owned, otp_closure);
-                        // Per-slot write-back: this snapshot is ~30-60 s stale —
-                        // copying the whole array rolled a just-Ready slot 0
-                        // back to Init (the heartbeat then never checked it).
-                        managers2.write_back_slot(&host_owned, 1, &pool);
-
-                        // Toggle-off during the blocking login → tear down.
-                        let still_active3 = {
-                            let guard = crate::lock_state(&state2);
-                            guard
-                                .hosts
-                                .iter()
-                                .find(|h| h.host == host_owned)
-                                .map(|h| h.active)
-                                .unwrap_or(false)
-                        };
-                        if !still_active3 {
-                            if ready {
-                                info!("[{host_owned}] warm-slot-1: host deactivated during login — stopping fresh master");
-                                a2fa_core::ssh::master::stop_slot(&mut pool, 1);
-                                managers2.write_back_slot(&host_owned, 1, &pool);
-                            }
-                            return;
-                        }
-                        if ready {
-                            info!("[{host_owned}] warm-slot-1: slot 1 Ready");
-                        } else {
-                            warn!("[{host_owned}] warm-slot-1: slot 1 failed");
-                        }
-                        // Update engine State slot count from the REGISTRY's
-                        // Ready count (not a blind increment).
-                        let alive_count = managers2
-                            .with_pool(&host_owned, |p| {
-                                p.slot_status
-                                    .iter()
-                                    .filter(|s| **s == SlotStatus::Ready)
-                                    .count() as u8
-                            })
-                            .unwrap_or(0);
-                        let mut guard = crate::lock_state(&state2);
-                        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
-                            if ready {
-                                h.pool_alive = alive_count;
-                            }
-                        }
-                    });
-                if let Err(e) = spawn_res {
-                    // Transient EAGAIN: the closure (and its slot-1 StartGuard)
-                    // never ran. Release the token so slot 1 isn't wedged Init
-                    // forever — the next tick re-evaluates WarmSlot1.
-                    warn!(
-                        "[{host_name}] heartbeat: failed to spawn warm-slot-1 thread: {e} — releasing token"
-                    );
-                    managers.end_start(host_name, 1);
-                    continue;
-                }
-            }
-
-            MaintenanceAction::Rotate => {
-                // try_rotate updates the active symlink and active_index on disk.
-                // HONOR the result: it returns false (and may have just armed the
-                // ping-pong backoff) when the rotation was refused — writing
-                // "Connected"/is_master_ready=true then would advertise a DEAD
-                // active socket as healthy (and tunnel-jump selection keys on
-                // is_master_ready), while the armed backoff also suppresses the
-                // Restart that would fix it.
-                let rotated = managers.with_pool_mut(host_name, |p| p.try_rotate());
-                if rotated {
-                    let new_idx = managers
-                        .with_pool(host_name, |p| p.active_index)
-                        .unwrap_or(0);
-                    info!("[{host_name}] heartbeat: rotated to spare slot {new_idx}");
-                    let mut guard = crate::lock_state(state);
-                    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                        h.pool_index = new_idx as u8;
-                        h.is_master_ready = true;
-                        h.status = "Connected".into();
-                        h.last_msg = format!("Rotated to slot {new_idx}");
-                    }
                 }
             }
 
@@ -1613,145 +1438,9 @@ fn tick_host(
         }
     }
 
-    // --- Rotation check (every ROTATION_CHECK_INTERVAL) ---
-    if do_rotation_check {
-        let rotated = managers.with_pool_mut(host_name, |p| p.try_rotate());
-
-        if rotated {
-            let new_idx = managers
-                .with_pool(host_name, |p| p.active_index)
-                .unwrap_or(0);
-            let mut guard = crate::lock_state(state);
-            if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                h.pool_index = new_idx as u8;
-                h.last_msg = format!("Rotated to slot {new_idx}");
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Slot-1 warm-up after initial connect (called by host_toggle / boot)
-// ---------------------------------------------------------------------------
-
-/// After slot 0 becomes ready, start slot 1 in the background (staggered).
-///
-/// Mirrors `threading.Thread(target=self.start_master_async, args=(1,))` in
-/// Python's `manage_pool_loop`.
-pub fn spawn_warmup_slot1(
-    host_name: String,
-    registry: Arc<OtpRegistry>,
-    state: Arc<Mutex<State>>,
-    managers: Arc<HostManagers>,
-) {
-    // In-flight guard on slot 1: skip if a slot-1 start is already running.
-    if !managers.try_begin_start(&host_name, 1) {
-        info!("[{host_name}] warmup-slot1: start already in flight for slot 1, skipping");
-        return;
-    }
-    let guard_managers = Arc::clone(&managers);
-    let guard_host = host_name.clone();
-    // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
-    let err_managers = Arc::clone(&managers);
-    let err_host = host_name.clone();
-    let spawn_res = std::thread::Builder::new()
-        .name(format!("warmup-slot1:{host_name}"))
-        .spawn(move || {
-            // RAII: release the slot-1 in-flight guard on every exit path.
-            let _start_guard = StartGuard {
-                managers: guard_managers,
-                host: guard_host,
-                slot: 1,
-            };
-
-            // Stagger delay.
-            std::thread::sleep(SLOT1_STAGGER);
-
-            // Guard: re-check desired state after the stagger.
-            let still_active = {
-                let guard = crate::lock_state(&state);
-                guard
-                    .hosts
-                    .iter()
-                    .find(|h| h.host == host_name)
-                    .map(|h| h.active)
-                    .unwrap_or(false)
-            };
-            if !still_active {
-                info!("[{host_name}] warmup_slot1 aborted — host no longer active");
-                return;
-            }
-
-            // Gate on slot 0 being Ready: warming the spare while slot 0 is
-            // still mid-login (or failed) doubles the 2FA burn per toggle —
-            // two concurrent full logins, double breaker damage on a wrong
-            // password — and the two logins race each other in the OTP group.
-            // If slot 0 isn't Ready yet, skip: the heartbeat's WarmSlot1 action
-            // (gated on slot0==Ready && slot1==Init) warms it within ~3 s of
-            // slot 0 coming up. (Python warmed slot 1 only after the pool was
-            // active.)
-            let slot0_ready = managers
-                .with_pool(&host_name, |p| p.slot_status[0] == SlotStatus::Ready)
-                .unwrap_or(false);
-            if !slot0_ready {
-                info!("[{host_name}] warmup_slot1: slot 0 not Ready — deferring to heartbeat warm-up");
-                return;
-            }
-
-            // Read Keychain creds IN-THREAD (no-wedge invariant).
-            let (password, secret) = load_creds(&host_name);
-            let otp_closure =
-                make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
-            let mut pool = managers.snapshot(&host_name);
-            let ready = start_master(&mut pool, 1, &password, otp_closure);
-            // Per-slot write-back (never clobber slot 0 / rotation state from
-            // this stale snapshot).
-            managers.write_back_slot(&host_name, 1, &pool);
-
-            // Toggle-off during the blocking login → tear down, don't resurrect.
-            let still_active2 = {
-                let guard = crate::lock_state(&state);
-                guard
-                    .hosts
-                    .iter()
-                    .find(|h| h.host == host_name)
-                    .map(|h| h.active)
-                    .unwrap_or(false)
-            };
-            if !still_active2 {
-                if ready {
-                    info!("[{host_name}] warmup_slot1: host deactivated during login — stopping fresh master");
-                    a2fa_core::ssh::master::stop_slot(&mut pool, 1);
-                    managers.write_back_slot(&host_name, 1, &pool);
-                }
-                return;
-            }
-
-            if ready {
-                info!("[{host_name}] warmup_slot1: slot 1 Ready");
-                let alive_count = managers
-                    .with_pool(&host_name, |p| {
-                        p.slot_status
-                            .iter()
-                            .filter(|s| **s == SlotStatus::Ready)
-                            .count() as u8
-                    })
-                    .unwrap_or(0);
-                let mut guard = crate::lock_state(&state);
-                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-                    h.pool_alive = alive_count;
-                }
-            } else {
-                warn!("[{host_name}] warmup_slot1: slot 1 failed");
-            }
-        });
-    if let Err(e) = spawn_res {
-        // Transient EAGAIN: the closure (and its slot-1 StartGuard) never ran.
-        // Release the token so slot 1 isn't wedged; the heartbeat loop will
-        // re-warm it on a later tick.
-        warn!("[{err_host}] warmup-slot1: failed to spawn worker thread: {e} — releasing token");
-        err_managers.end_start(&err_host, 1);
-    }
+    // Single-master: no rotation. `do_rotation_check` is retained in the
+    // signature for the tick scheduler but is now a no-op.
+    let _ = do_rotation_check;
 }
 
 // ---------------------------------------------------------------------------
@@ -2139,38 +1828,6 @@ mod tests {
         heal_host_state(&state, "rk", 0, 2);
         let guard = crate::lock_state(&state);
         assert_eq!(guard.hosts[0].last_msg, "via k6", "no churn when already Connected");
-    }
-
-    #[test]
-    fn next_action_slot1_init_while_slot0_ready_gives_warmslot1() {
-        let mut pool = fresh_pool("k6");
-        pool.slot_status[0] = SlotStatus::Ready;
-        pool.slot_status[1] = SlotStatus::Init;
-        let action = next_action(&pool, 1, true, None, Instant::now());
-        assert_eq!(action, MaintenanceAction::WarmSlot1);
-    }
-
-    #[test]
-    fn next_action_rotate_when_active_slot_dead_and_spare_ready() {
-        let mut pool = fresh_pool("k6");
-        pool.active_index = 0;
-        pool.slot_status[0] = SlotStatus::Dead;
-        pool.slot_status[1] = SlotStatus::Ready;
-        let action = next_action(&pool, 0, true, None, Instant::now());
-        assert_eq!(action, MaintenanceAction::Rotate);
-    }
-
-    #[test]
-    fn next_action_no_rotate_when_in_probe_backoff() {
-        let mut pool = fresh_pool("k6");
-        pool.active_index = 0;
-        pool.slot_status[0] = SlotStatus::Dead;
-        pool.slot_status[1] = SlotStatus::Ready;
-        pool.probe_backoff_until = Some(Instant::now() + Duration::from_secs(60));
-        let action = next_action(&pool, 0, true, None, Instant::now());
-        // In backoff → Restart (not Rotate), but also in_probe_backoff suppresses Restart.
-        // Dead slot + probe_backoff → Healthy (both Rotate and Restart are suppressed).
-        assert_eq!(action, MaintenanceAction::Healthy);
     }
 
     /// After threshold failures the cooldown must be armed.

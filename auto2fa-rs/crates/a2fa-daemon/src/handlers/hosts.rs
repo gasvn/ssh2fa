@@ -20,12 +20,11 @@ use a2fa_core::creds::{get_otpauth, get_password, store_credentials};
 use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
-use a2fa_core::ssh::control::update_symlink;
 use a2fa_core::sys::run_cmd_bounded;
 use a2fa_core::totp::{extract_secret, totp_now_detailed};
 use serde_json::{json, Value};
 
-use crate::managers::{spawn_managed_start, spawn_managed_stop, spawn_warmup_slot1, HostManagers};
+use crate::managers::{spawn_managed_start, spawn_managed_stop, HostManagers};
 use crate::workers::{spawn_host_start, spawn_host_stop, OtpRegistry};
 
 // ---------------------------------------------------------------------------
@@ -255,18 +254,10 @@ pub fn host_toggle_managed(
                 // Persist so the host re-connects on the next daemon restart.
                 persist_host_autoconnect(&host_name, true);
 
-                // Spawn slot 0 start (reads creds in-thread).
+                // Single master — spawn the one master (reads creds in-thread).
                 spawn_managed_start(
                     host_name.clone(),
                     0,
-                    Arc::clone(&reg),
-                    Arc::clone(state),
-                    Arc::clone(&mgrs),
-                );
-
-                // Kick off slot-1 warm-up (staggered ~5 s; reads creds in-thread).
-                spawn_warmup_slot1(
-                    host_name.clone(),
                     Arc::clone(&reg),
                     Arc::clone(state),
                     Arc::clone(&mgrs),
@@ -513,22 +504,19 @@ fn is_mount_point(path: &std::path::Path) -> bool {
 // host_rotate
 // ---------------------------------------------------------------------------
 
-/// Manually rotate the active connection-pool slot for a host.
-///
-/// Mirrors `mgr.update_symlink(new_idx)` in daemon.py.
-/// Updates the active symlink on disk (so ssh clients immediately see the new
-/// slot), then updates the pool_index in State.
+/// Manual rotation is a **no-op** in the single-master model — there is no
+/// spare slot to rotate to. Retained so the IPC surface (and any older client)
+/// keeps working instead of erroring on an unknown method.
 pub fn host_rotate(
     state: &Arc<Mutex<State>>,
     params: &Value,
-    managers: Option<Arc<HostManagers>>,
+    _managers: Option<Arc<HostManagers>>,
 ) -> Result<Value> {
     let host_name = params["host"]
         .as_str()
-        .ok_or_else(|| Error::BadParams("host required".into()))?
-        .to_owned();
+        .ok_or_else(|| Error::BadParams("host required".into()))?;
 
-    // Verify the host is active.
+    // Verify the host is active (keeps the old error contract for a bad host).
     {
         let guard = crate::lock_state(state);
         guard
@@ -538,52 +526,7 @@ pub fn host_rotate(
             .ok_or_else(|| Error::NotFound("host not active".into()))?;
     }
 
-    // Rotate against the REGISTRY, not State's pool_index: the registry owns
-    // active_index, and the spare must actually be Ready — the old code
-    // derived the target from State, never checked readiness, never updated
-    // the registry, and ignored update_symlink's result, so a manual rotate
-    // could point the active symlink at a dead/never-started slot (and the
-    // registry would immediately disagree with the symlink on disk).
-    let new_index: usize = match &managers {
-        Some(mgrs) => mgrs.with_pool_mut(&host_name, |p| {
-            use a2fa_core::ssh::master::{SlotStatus, POOL_SIZE};
-            let other = (p.active_index + 1) % POOL_SIZE;
-            if p.slot_status[other] != SlotStatus::Ready {
-                return Err(Error::BadParams(format!(
-                    "spare slot {other} is not ready — nothing to rotate to"
-                )));
-            }
-            if !update_symlink(&p.host, other) {
-                return Err(Error::Internal("failed to update active symlink".into()));
-            }
-            p.active_index = other;
-            Ok(other)
-        })?,
-        None => {
-            // Legacy fallback (tests without a managers context): blind flip.
-            let idx = {
-                let guard = crate::lock_state(state);
-                let host = guard
-                    .hosts
-                    .iter()
-                    .find(|h| h.host == host_name)
-                    .ok_or_else(|| Error::NotFound("host not found".into()))?;
-                ((host.pool_index + 1) % 2) as usize
-            };
-            let _ = update_symlink(&host_name, idx);
-            idx
-        }
-    };
-
-    // Reflect the rotation in State.
-    {
-        let mut guard = crate::lock_state(state);
-        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-            h.pool_index = new_index as u8;
-            h.last_msg = format!("Manual Rotate -> {new_index}");
-        }
-    }
-
+    log::info!("[{host_name}] host_rotate is a no-op (single master)");
     Ok(Value::Null)
 }
 
@@ -732,7 +675,7 @@ pub fn host_add(
                     Arc::clone(state),
                     Arc::clone(&mgrs),
                 );
-                spawn_warmup_slot1(host_name.clone(), reg, Arc::clone(state), mgrs);
+                let _ = (reg, mgrs); // single master — no slot-1 warm-up
             }
             _ => {
                 // Legacy fallback (tests only — production dispatch always
@@ -1217,18 +1160,11 @@ mod tests {
     }
 
     #[test]
-    fn host_rotate_advances_pool_index() {
+    fn host_rotate_is_noop_for_active_host() {
+        // Single-master: rotation is a no-op that succeeds for an active host
+        // and leaves pool_index untouched.
         let state = make_state_with_host("k6", true);
         crate::lock_state(&state).hosts[0].pool_index = 0;
-        host_rotate(&state, &json!({"host": "k6"}), None).unwrap();
-        // Should advance 0 → 1 (mod 2).
-        assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 1);
-    }
-
-    #[test]
-    fn host_rotate_wraps_around() {
-        let state = make_state_with_host("k6", true);
-        crate::lock_state(&state).hosts[0].pool_index = 1;
         host_rotate(&state, &json!({"host": "k6"}), None).unwrap();
         assert_eq!(crate::lock_state(&state).hosts[0].pool_index, 0);
     }
