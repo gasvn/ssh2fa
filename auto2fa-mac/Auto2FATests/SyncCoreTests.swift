@@ -6,11 +6,11 @@ final class SyncCoreTests: XCTestCase {
     // MARK: LockCore.shouldChallenge
     func testLockDisabledNeverChallenges() {
         XCTAssertFalse(LockCore.shouldChallenge(enabled: false, lastAuth: nil,
-            now: Date(), grace: 60))
+            now: Date(timeIntervalSince1970: 1000), grace: 60))
     }
     func testLockNoPriorAuthChallenges() {
         XCTAssertTrue(LockCore.shouldChallenge(enabled: true, lastAuth: nil,
-            now: Date(), grace: 60))
+            now: Date(timeIntervalSince1970: 1000), grace: 60))
     }
     func testLockWithinGraceDoesNotChallenge() {
         let now = Date(timeIntervalSince1970: 1000)
@@ -21,6 +21,12 @@ final class SyncCoreTests: XCTestCase {
     func testLockPastGraceChallenges() {
         let now = Date(timeIntervalSince1970: 1000)
         let last = Date(timeIntervalSince1970: 930)   // 70s ago, grace 60
+        XCTAssertTrue(LockCore.shouldChallenge(enabled: true, lastAuth: last,
+            now: now, grace: 60))
+    }
+    func testLockAtExactGraceBoundaryChallenges() {
+        let now = Date(timeIntervalSince1970: 1000)
+        let last = Date(timeIntervalSince1970: 940)   // exactly 60s ago; < grace is false
         XCTAssertTrue(LockCore.shouldChallenge(enabled: true, lastAuth: last,
             now: now, grace: 60))
     }
@@ -41,6 +47,11 @@ final class SyncCoreTests: XCTestCase {
     func testResolveAlreadyAppliedNoop() {
         XCTAssertEqual(SyncCore.resolve(remoteUpdatedAt: 100,
             lastAppliedRemoteAt: 100, localLastWriteAt: 100), .noop)
+    }
+    func testResolveRemoteTiesLocalWriteNoop() {
+        // Remote newer than what we applied, but SAME second as our local write -> noop.
+        XCTAssertEqual(SyncCore.resolve(remoteUpdatedAt: 200,
+            lastAppliedRemoteAt: 100, localLastWriteAt: 200), .noop)
     }
 
     // MARK: SyncPayload round-trip

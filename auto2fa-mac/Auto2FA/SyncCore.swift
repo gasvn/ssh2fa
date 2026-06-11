@@ -13,7 +13,7 @@ enum LockCore {
 
 /// On-disk shape of the synced preferences file (in iCloud Drive).
 struct SyncPayload: Codable, Equatable {
-    var version: Int
+    var version: Int                 // reserved for future schema migration; unused by resolve()
     var updatedAt: Double           // epoch seconds (wall clock)
     var values: [String: Bool]
 }
@@ -24,6 +24,9 @@ enum SyncResolution: Equatable { case applyRemote, writeLocal, noop }
 enum SyncCore {
     static func resolve(remoteUpdatedAt: Double?, lastAppliedRemoteAt: Double,
                         localLastWriteAt: Double) -> SyncResolution {
+        // updatedAt is epoch seconds (Double), NOT Date — keeps this core free of
+        // calendar/timezone concerns. On a same-second tie (r == localLastWriteAt)
+        // we return .noop; the next real change breaks the tie.
         guard let r = remoteUpdatedAt else { return .writeLocal }   // seed file
         if r > lastAppliedRemoteAt && r > localLastWriteAt { return .applyRemote }
         if localLastWriteAt > r { return .writeLocal }
