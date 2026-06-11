@@ -133,15 +133,13 @@ struct HostRow: View {
     /// SSH alias), so there is no distinct resolved name to show — blank.
     private var hostnameText: String { "" }
 
+    /// Single-master: one connection per host — a single dot (filled green when
+    /// the master is ready, hollow otherwise). Replaces the old 2-slot pool pips.
     private var poolPips: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<2, id: \.self) { i in
-                Image(systemName: i < host.poolAlive ? "circle.fill" : "circle")
-                    .font(.system(size: 6))
-                    .foregroundStyle(i < host.poolAlive ? Color.green : Color.secondary)
-            }
-        }
-        .help("\(host.poolAlive)/2 connections ready")
+        Image(systemName: host.isMasterReady ? "circle.fill" : "circle")
+            .font(.system(size: 6))
+            .foregroundStyle(host.isMasterReady ? Color.green : Color.secondary)
+            .help(host.isMasterReady ? "Connected" : "Not connected")
     }
 
     // MARK: - Actions (same calls / disabled logic as old HostsView)
