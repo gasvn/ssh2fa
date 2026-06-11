@@ -41,6 +41,11 @@ final class PreferenceSync {
 
     func start() {
         wasEnabled = enabled
+        // Seed the write-loop baseline SYNCHRONOUSLY before observers fire — else an
+        // unrelated UserDefaults change in the gap before the async reconcile() runs
+        // would diff against an empty snapshot, schedule a spurious write, and could
+        // clobber a newer remote update.
+        lastWrittenSnapshot = currentSnapshot()
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: UserDefaults.didChangeNotification,
             object: nil, queue: .main) { [weak self] _ in
