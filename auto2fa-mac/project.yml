@@ -65,6 +65,7 @@ targets:
       # daemon-install / spawn side-effects never fire during `xcodebuild test`.
       - path: Auto2FATests
       - path: Auto2FA/SyncCore.swift
+      - path: Auto2FA/SearchFilter.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
