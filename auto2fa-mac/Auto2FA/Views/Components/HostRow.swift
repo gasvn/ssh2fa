@@ -14,6 +14,7 @@ struct HostRow: View {
     @EnvironmentObject var appState: AppState
 
     @State private var hovering = false
+    @Namespace private var actionGlassNS
 
     // MARK: - Busy logic (verbatim from old HostsView)
 
@@ -116,14 +117,13 @@ struct HostRow: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
         .padding(.vertical, 2)
         .frame(minHeight: RowMetric.minHeight)
         .contentShape(Rectangle())
         .help(rowTooltip)
         .changeHighlight(host.status)
         .hoverLift(hovering)
-        .onHover { hovering = $0 }
+        .onHover { h in withAnimation(.bouncy(duration: 0.35)) { hovering = h } }
         .contextMenu { hostMenuItems }
     }
 
@@ -148,57 +148,66 @@ struct HostRow: View {
     /// each. Same AppState calls + disabled logic as before; Rotate lives in
     /// the `⋯` overflow menu. Row height stays fixed.
     private var actions: some View {
-        HStack(spacing: Spacing.xs) {
-            // Connect / Disconnect (toggle active).
-            Button {
-                Task { await appState.toggleHost(host) }
-            } label: {
-                if isBusy {
-                    HStack(spacing: Spacing.xs) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.6)
-                            .frame(width: 14, height: 14)
-                        Text(host.active ? "Disconnect" : "Connect")
-                            .font(.caption)
+        GlassEffectContainer(spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                glassActionButton(id: "toggle",
+                                  disabled: appState.inFlightHosts.contains(host.host),
+                                  help: host.active ? "Disconnect host" : "Connect host") {
+                    Task { await appState.toggleHost(host) }
+                } label: {
+                    if isBusy {
+                        HStack(spacing: Spacing.xs) {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                                .frame(width: 14, height: 14)
+                            Text(host.active ? "Disconnect" : "Connect").font(.caption)
+                        }
+                    } else {
+                        Label(host.active ? "Disconnect" : "Connect",
+                              systemImage: host.active ? "stop.fill" : "play.fill")
                     }
-                } else {
-                    Label(host.active ? "Disconnect" : "Connect",
-                          systemImage: host.active ? "stop.fill" : "play.fill")
+                }
+
+                glassActionButton(id: "mount",
+                                  disabled: isBusy || (!host.isMasterReady && !host.isMounted),
+                                  help: host.isMounted ? "Unmount filesystem" : "Mount filesystem") {
+                    Task { await appState.toggleMount(host) }
+                } label: {
+                    Label(host.isMounted ? "Unmount" : "Mount",
+                          systemImage: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
+                }
+
+                glassActionButton(id: "terminal",
+                                  disabled: !host.isMasterReady,
+                                  help: "Open Terminal") {
+                    openTerminal(for: host)
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
                 }
             }
-            .help(host.active ? "Disconnect host" : "Connect host")
-            .accessibilityLabel(host.active ? "Disconnect host" : "Connect host")
-            // Only disable during the brief in-flight toggle RPC (prevents a
-            // double-click), NOT for the whole "connecting" state. Otherwise a
-            // host stuck connecting forever (e.g. its login node is down) could
-            // NEVER be stopped — the Disconnect button stayed disabled. The
-            // spinner still shows via isBusy; the button stays clickable so you
-            // can always stop an active host.
-            .disabled(appState.inFlightHosts.contains(host.host))
-
-            // Mount / Unmount.
-            Button {
-                Task { await appState.toggleMount(host) }
-            } label: {
-                Label(host.isMounted ? "Unmount" : "Mount",
-                      systemImage: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
-            }
-            .disabled(isBusy || (!host.isMasterReady && !host.isMounted))
-            .help(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
-            .accessibilityLabel(host.isMounted ? "Unmount filesystem" : "Mount filesystem")
-
-            // Open terminal.
-            Button {
-                openTerminal(for: host)
-            } label: {
-                Label("Terminal", systemImage: "terminal")
-            }
-            .disabled(!host.isMasterReady)
-            .help("Open Terminal")
-            .accessibilityLabel("Open Terminal")
         }
-        .buttonStyle(IconTextActionButton())
+    }
+
+    /// One morphing glass pill in the hover action bar. `id` ties it to the row's
+    /// GlassEffectContainer namespace so pills fluidly merge/split on hover.
+    @ViewBuilder
+    private func glassActionButton<L: View>(
+        id: String,
+        disabled: Bool,
+        help: String,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> L
+    ) -> some View {
+        Button(action: action, label: label)
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .foregroundStyle(disabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .glassEffectID(id, in: actionGlassNS)
+            .disabled(disabled)
+            .help(help)
+            .accessibilityLabel(help)
     }
 
     // MARK: - Always-visible overflow menu (discoverable, labeled)
