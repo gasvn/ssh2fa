@@ -4,6 +4,7 @@
 ![arch: universal](https://img.shields.io/badge/arch-arm64%20%2B%20x86__64-informational)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
 [![latest release](https://img.shields.io/github/v/release/gasvn/ssh2fa?display_name=tag&sort=semver)](https://github.com/gasvn/ssh2fa/releases)
+[![website](https://img.shields.io/badge/website-shgao.site%2Fssh2fa-5b9cff)](https://shgao.site/ssh2fa/)
 
 A macOS menu-bar app + background daemon that keeps **SSH ControlMaster** pools
 warm to 2FA-protected hosts, auto-answering the **Duo / TOTP** login so you log

@@ -90,13 +90,15 @@ Tags may be `vX.Y.Z` or `X.Y.Z`; the checker strips a leading `v`.
 
 ## Project landing page (GitHub Pages)
 
-A one-page site lives at [`docs/index.html`](index.html). To publish it at
-`https://gasvn.github.io/ssh2fa/`:
+A one-page site lives at [`docs/index.html`](index.html) and is **live at
+<https://shgao.site/ssh2fa/>** (GitHub Pages, deploy-from-branch `main` → `/docs`).
 
-1. Repo **Settings → Pages**.
-2. **Source: Deploy from a branch → `main` → `/docs`** → Save.
+Note: `gasvn` has a user-level custom domain (`shgao.site`), so project pages
+resolve at `shgao.site/<repo>/` rather than `gasvn.github.io/<repo>/`. To
+(re)configure: Repo **Settings → Pages → Source: Deploy from a branch → `main`
+→ `/docs`**.
 
-That's the only step — `docs/.nojekyll` makes GitHub serve the HTML as-is. The
+`docs/.nojekyll` makes GitHub serve the HTML as-is. The
 markdown docs (README/SECURITY/RELEASE) stay GitHub-rendered; the landing page
 links to them.
 
