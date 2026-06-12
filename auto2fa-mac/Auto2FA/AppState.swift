@@ -32,6 +32,9 @@ final class AppState: ObservableObject {
     }
     @Published var tunnels: [Tunnel] = []
     @Published var connectionError: String?
+    /// Global search text driven by the toolbar field; read by HostsView and
+    /// TunnelsView to filter their lists. Empty = show everything.
+    @Published var searchQuery: String = ""
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
     let persistentNotch: PersistentNotchController = PersistentNotchController()
     @Published var activeSheet: ActiveSheet?
