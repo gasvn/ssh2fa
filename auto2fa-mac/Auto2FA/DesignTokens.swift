@@ -195,6 +195,16 @@ extension View {
             )
     }
 
+    /// Real Liquid Glass CONTENT card — the main hosts/tunnels lists sit in
+    /// this (refractive frosted glass, legible) floating over the clear
+    /// wallpaper window. Sheets keep the transparent `groupedContent` to avoid
+    /// glass-on-glass over the sheet's own system glass.
+    func glassContent(cornerRadius: CGFloat = Radius.card) -> some View {
+        self
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+
     /// Lighter glass for floating chrome — bars / palettes.
     func glassChrome(cornerRadius: CGFloat = Radius.control) -> some View {
         self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))

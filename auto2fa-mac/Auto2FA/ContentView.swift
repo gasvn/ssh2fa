@@ -50,11 +50,8 @@ struct ContentView: View {
         }
         .padding(Spacing.l)
         .frame(minWidth: 700, minHeight: 400)
-        // Full Liquid Glass: a frosted pane that blurs the desktop, on a
-        // genuinely transparent window. Content floats on the frost (legible
-        // via vibrancy); no opaque gray surfaces.
-        .windowGlassBackground()
-        .transparentWindow()
+        // Window is clear (wallpaper shows through, set in Auto2FAApp); the
+        // host/tunnel lists carry their own real Liquid Glass cards.
         .toolbar { mainToolbar }
     }
 
@@ -68,17 +65,9 @@ struct ContentView: View {
                     .frame(minWidth: 180)
             }
         }
-        ToolbarItemGroup(placement: .primaryAction) {
-            Button { appState.presentAddHost() } label: {
-                Label("Add Host", systemImage: "server.rack")
-            }
-            .buttonStyle(.glass)
-
-            Button { appState.presentNewTunnel() } label: {
-                Label("New Tunnel", systemImage: "plus")
-            }
-            .buttonStyle(.glassProminent)
-
+        // Add Host / New Tunnel live in their own section headers (below) —
+        // the toolbar keeps only global actions.
+        ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("Settings…") {
                     NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)

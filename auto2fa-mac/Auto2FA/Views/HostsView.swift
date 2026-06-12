@@ -33,7 +33,7 @@ struct HostsView: View {
                 Image(systemName: "plus")
                     .font(.body.weight(.semibold))
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.glass)
             .help("Add a host (register SSH + 2FA)")
         }
     }
@@ -64,9 +64,8 @@ struct HostsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
-        // Content sits at the BASE layer in a quiet OPAQUE grouped surface —
-        // no glass. Rows read crisply against the solid control background.
-        .groupedContent()
+        // Rows float in a real Liquid Glass card over the clear wallpaper window.
+        .glassContent()
     }
 
     // MARK: - Empty state

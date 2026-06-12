@@ -19,6 +19,9 @@ struct Auto2FAApp: App {
                     .environmentObject(appState)
             }
             .environmentObject(biometricLock)
+            // Clear window background — the desktop wallpaper shows through;
+            // content carries its own real Liquid Glass cards (no gray material).
+            .containerBackground(.clear, for: .window)
             .onAppear {
                 SingleInstance.enforceOrExit()
                 installMenuBarOnce()
