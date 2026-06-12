@@ -20,6 +20,7 @@ struct TunnelRow: View {
     @EnvironmentObject var appState: AppState
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @State private var hovering = false
+    @Namespace private var actionGlassNS
 
     // MARK: - Busy logic (verbatim from old TunnelsView)
 
@@ -134,7 +135,6 @@ struct TunnelRow: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.12), value: hovering)
         .padding(.vertical, compactRows ? 1 : 2)
         .frame(minHeight: compactRows ? 22 : RowMetric.minHeight)
         .contentShape(Rectangle())
@@ -143,7 +143,7 @@ struct TunnelRow: View {
         .changeHighlight(tunnel.status)
         .help(rowTooltip)
         .hoverLift(hovering)
-        .onHover { hovering = $0 }
+        .onHover { h in withAnimation(.bouncy(duration: 0.35)) { hovering = h } }
     }
 
     // MARK: - via jump-host menu (compact; verbatim behaviour)
@@ -214,59 +214,72 @@ struct TunnelRow: View {
     /// Clone / jump-host / Delete live in the `⋯` overflow menu. Row height
     /// stays fixed.
     private var actions: some View {
-        HStack(spacing: Spacing.xs) {
-            // Start / Stop (toggle).
-            Button {
-                Task { await appState.toggleTunnel(tunnel) }
-            } label: {
-                if isBusy {
-                    HStack(spacing: Spacing.xs) {
-                        ProgressView().controlSize(.small).scaleEffect(0.6)
-                            .frame(width: 14, height: 14)
-                        Text(tunnelIsOn ? "Stop" : "Start")
-                            .font(.caption)
+        GlassEffectContainer(spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                glassActionButton(id: "toggle",
+                                  disabled: appState.inFlightTunnels.contains(tunnel.name),
+                                  help: tunnelIsOn ? "Stop tunnel" : "Start tunnel") {
+                    Task { await appState.toggleTunnel(tunnel) }
+                } label: {
+                    if isBusy {
+                        HStack(spacing: Spacing.xs) {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                                .frame(width: 14, height: 14)
+                            Text(tunnelIsOn ? "Stop" : "Start").font(.caption)
+                        }
+                    } else {
+                        Label(tunnelIsOn ? "Stop" : "Start",
+                              systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
                     }
-                } else {
-                    Label(tunnelIsOn ? "Stop" : "Start",
-                          systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
+                }
+
+                glassActionButton(id: "node",
+                                  disabled: isBusy,
+                                  help: "Pick compute node") {
+                    appState.presentNodePicker(for: tunnel)
+                } label: {
+                    Label("Node", systemImage: "list.bullet.rectangle")
+                }
+
+                glassActionButton(id: "open",
+                                  disabled: isBusy || tunnel.displayState != .alive,
+                                  help: "Open in browser") {
+                    openInBrowser(tunnel)
+                } label: {
+                    Label("Open", systemImage: "safari")
+                }
+
+                glassActionButton(id: "copy",
+                                  disabled: false,
+                                  help: "Copy localhost URL") {
+                    copyURL(tunnel.url)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
                 }
             }
-            .help(tunnelIsOn ? "Stop tunnel" : "Start tunnel")
-            .accessibilityLabel(tunnelIsOn ? "Stop tunnel" : "Start tunnel")
-            // Only block during the brief in-flight RPC, never for the whole
-            // "starting" state — so a tunnel stuck starting can always be stopped.
-            .disabled(appState.inFlightTunnels.contains(tunnel.name))
-
-            // Node (pick compute node).
-            Button {
-                appState.presentNodePicker(for: tunnel)
-            } label: {
-                Label("Node", systemImage: "list.bullet.rectangle")
-            }
-            .help("Pick compute node")
-            .accessibilityLabel("Pick compute node")
-            .disabled(isBusy)
-
-            // Open in browser (disabled if not alive).
-            Button {
-                openInBrowser(tunnel)
-            } label: {
-                Label("Open", systemImage: "safari")
-            }
-            .help("Open in browser")
-            .accessibilityLabel("Open in browser")
-            .disabled(isBusy || tunnel.displayState != .alive)
-
-            // Copy URL.
-            Button {
-                copyURL(tunnel.url)
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-            .help("Copy localhost URL")
-            .accessibilityLabel("Copy localhost URL")
         }
-        .buttonStyle(IconTextActionButton())
+    }
+
+    /// One morphing glass pill in the hover action bar (mirrors HostRow).
+    @ViewBuilder
+    private func glassActionButton<L: View>(
+        id: String,
+        disabled: Bool,
+        help: String,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> L
+    ) -> some View {
+        Button(action: action, label: label)
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .foregroundStyle(disabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .glassEffectID(id, in: actionGlassNS)
+            .disabled(disabled)
+            .help(help)
+            .accessibilityLabel(help)
     }
 
     // MARK: - Always-visible overflow menu (discoverable, labeled)
