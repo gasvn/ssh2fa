@@ -67,7 +67,7 @@ struct Auto2FAApp: App {
             }
         }
         .defaultSize(width: 820, height: 540)
-        .windowToolbarStyle(.unifiedCompact)
+        .windowToolbarStyle(.unified)
         .commands {
             // Replace the standard File → New so ⌘N opens our New Tunnel sheet.
             CommandGroup(replacing: .newItem) {

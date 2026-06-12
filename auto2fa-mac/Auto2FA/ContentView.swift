@@ -50,17 +50,57 @@ struct ContentView: View {
         }
         .padding(Spacing.l)
         .frame(minWidth: 700, minHeight: 400)
-        .background(windowBackground)
+        // Translucent floating window base; the lists keep their own opaque
+        // grouped surfaces so text stays fully legible (Liquid Glass red line).
+        .windowGlassBackground()
+        .toolbar { mainToolbar }
     }
 
-    /// Plain opaque window base. Content is the base layer — no gradient, no
-    /// material wash. Liquid Glass lives only on the toolbar/chrome floating
-    /// above this, and the lists carry their own quiet grouped surface.
-    @ViewBuilder
-    private var windowBackground: some View {
-        Rectangle()
-            .fill(Color(nsColor: .windowBackgroundColor))
-            .ignoresSafeArea()
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search hosts & tunnels", text: $appState.searchQuery)
+                    .textFieldStyle(.plain)
+                    .frame(minWidth: 180)
+            }
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button { appState.presentAddHost() } label: {
+                Label("Add Host", systemImage: "server.rack")
+            }
+            .buttonStyle(.glass)
+
+            Button { appState.presentNewTunnel() } label: {
+                Label("New Tunnel", systemImage: "plus")
+            }
+            .buttonStyle(.glassProminent)
+
+            Menu {
+                Button("Settings…") {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                }
+                Button("Show Logs…") { openWindow(id: "logs") }
+                Divider()
+                Button("Export Tunnels…") {
+                    if let err = TunnelExportImport.exportToFile(appState.tunnels),
+                       err != "cancelled" {
+                        appState.showActionError("Export failed: \(err)")
+                    }
+                }
+                Button("Import Tunnels…") {
+                    let (imported, err) = TunnelExportImport.importFromFile()
+                    if let imported, !imported.isEmpty {
+                        Task { _ = await appState.importTunnels(imported) }
+                    } else if let err, err != "cancelled" {
+                        appState.showActionError(err)
+                    }
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+        }
     }
 
     @ViewBuilder
