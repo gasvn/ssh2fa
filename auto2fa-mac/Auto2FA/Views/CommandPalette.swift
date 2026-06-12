@@ -133,11 +133,7 @@ struct CommandPalette: View {
                   subtitle: "preferences (⌘,)",
                   keywords: ["settings", "preferences", "options"]
             ) {
-                if #available(macOS 14, *) {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                } else {
-                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-                }
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             },
         ])
         return out
@@ -198,7 +194,7 @@ struct CommandPalette: View {
             }
         }
         .frame(width: 600)
-        .background(.ultraThinMaterial)
+        .glassChrome(cornerRadius: Radius.card)
         .onAppear { focused = true }
         .onKeyPress(.downArrow) {
             selectedIdx = min(filtered.count - 1, selectedIdx + 1)
@@ -234,7 +230,8 @@ struct CommandPalette: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(isSelected ? Color.accentColor : Color.clear)
+        .glassEffect(isSelected ? .regular.tint(.accentColor).interactive() : .identity,
+                     in: .rect(cornerRadius: Radius.control, style: .continuous))
         .contentShape(Rectangle())
     }
 
