@@ -182,19 +182,16 @@ extension View {
         self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    /// Quiet, OPAQUE grouped content surface for list sections — the BASE
-    /// layer. Continuous rounded corners + a hairline border, NO blur / NO
-    /// glass. This is what content (hosts/tunnels lists) sits in; glass is
-    /// reserved for floating chrome above content.
+    /// Content section surface — TRANSPARENT so list rows float directly on the
+    /// window's frosted glass pane (the wallpaper shows through). No opaque fill;
+    /// just a continuous rounded clip + a faint glass-edge hairline. The frosted
+    /// window material behind it is what keeps row text legible.
     func groupedContent(cornerRadius: CGFloat = Radius.card) -> some View {
         self
-            .background(
-                Color(nsColor: .controlBackgroundColor),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 1)
             )
     }
 
@@ -209,14 +206,24 @@ extension View {
         return self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    /// Translucent window base — desktop ambient shows through the margins while
-    /// content groups stay opaque, so the window "floats" (Liquid Glass look).
+    /// Frosted glass window pane — blurs the DESKTOP behind the window (needs
+    /// `transparentWindow()` so the NSWindow is non-opaque, else it samples a
+    /// flat gray backing). This frosted pane is the single glass surface the
+    /// whole UI floats on.
     func windowGlassBackground() -> some View {
         self.background(
             VisualEffectBackground(material: .underWindowBackground,
                                    blending: .behindWindow)
                 .ignoresSafeArea()
         )
+    }
+
+    /// Make the hosting NSWindow non-opaque + clear so the `.behindWindow`
+    /// frosted material actually shows the desktop/wallpaper (the core of the
+    /// floating Liquid Glass look). Without this the window stays opaque and the
+    /// material renders flat gray.
+    func transparentWindow() -> some View {
+        self.background(WindowConfigurator())
     }
 
     /// Subtle hover elevation — gentle scale + soft shadow, animated.
@@ -252,5 +259,27 @@ struct VisualEffectBackground: NSViewRepresentable {
     func updateNSView(_ v: NSVisualEffectView, context: Context) {
         v.material = material
         v.blendingMode = blending
+    }
+}
+
+/// Reaches the hosting NSWindow and makes it non-opaque + clear-backed so a
+/// `.behindWindow` visual-effect material samples the actual desktop (wallpaper
+/// shows through, frosted). Without this the window's opaque backing turns the
+/// "translucent" material into flat gray.
+struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { [weak v] in configure(v?.window) }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in configure(nsView?.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.isOpaque = false
+        window.backgroundColor = .clear
     }
 }

@@ -44,7 +44,7 @@ struct HostsView: View {
             .foregroundStyle(Brand.accent)
             .padding(.horizontal, Spacing.s)
             .padding(.vertical, 2)
-            .background(Brand.accent.opacity(0.15), in: Capsule())
+            .glassEffect(.regular.tint(Brand.accent.opacity(0.5)), in: .capsule)
     }
 
     // MARK: - List

@@ -50,9 +50,11 @@ struct ContentView: View {
         }
         .padding(Spacing.l)
         .frame(minWidth: 700, minHeight: 400)
-        // Translucent floating window base; the lists keep their own opaque
-        // grouped surfaces so text stays fully legible (Liquid Glass red line).
+        // Full Liquid Glass: a frosted pane that blurs the desktop, on a
+        // genuinely transparent window. Content floats on the frost (legible
+        // via vibrancy); no opaque gray surfaces.
         .windowGlassBackground()
+        .transparentWindow()
         .toolbar { mainToolbar }
     }
 
