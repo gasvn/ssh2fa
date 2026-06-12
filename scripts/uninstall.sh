@@ -5,7 +5,7 @@
 #   1. the LaunchAgent (stops the daemon — it tears down its SSH masters on the
 #      way out)
 #   2. every Keychain credential SSH2FA stored (service "auto2fa")
-#   3. ~/.auto2fa (socket, install marker, any legacy daemon copy)
+#   3. ~/.ssh2fa (socket, install marker, any legacy daemon copy)
 #   4. (only with --purge-config) ~/.ssh/passwords.json + tunnels.json — your
 #      saved host metadata + tunnel definitions
 #
@@ -28,7 +28,7 @@ for arg in "$@"; do
   esac
 done
 
-LABEL="com.auto2fa.daemon"
+LABEL="com.ssh2fa.daemon"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 SSH_DIR="${SSH_CONFIG_PATH:-$HOME/.ssh}"
 SSH_DIR="${SSH_DIR%/}"
@@ -60,10 +60,10 @@ while security delete-generic-password -s auto2fa >/dev/null 2>&1; do
 done
 echo "• deleted $n Keychain credential(s)"
 
-# 3. Remove ~/.auto2fa (socket, marker, legacy daemon copy).
-if [ -d "$HOME/.auto2fa" ]; then
-  rm -rf "$HOME/.auto2fa"
-  echo "• removed ~/.auto2fa"
+# 3. Remove ~/.ssh2fa (socket, marker, legacy daemon copy).
+if [ -d "$HOME/.ssh2fa" ]; then
+  rm -rf "$HOME/.ssh2fa"
+  echo "• removed ~/.ssh2fa"
 fi
 
 # 4. Optionally remove the saved config.
