@@ -15,6 +15,10 @@ struct HostsView: View {
         .padding(Spacing.m)
     }
 
+    private var visibleHosts: [SSHHost] {
+        appState.hosts.filter { SearchFilter.matches(query: appState.searchQuery, in: [$0.host]) }
+    }
+
     // MARK: - Header
 
     private var header: some View {
@@ -47,7 +51,7 @@ struct HostsView: View {
 
     private var hostsList: some View {
         List {
-            ForEach(appState.hosts) { host in
+            ForEach(visibleHosts) { host in
                 HostRow(host: host)
                     .listRowInsets(EdgeInsets(top: 1,
                                               leading: Spacing.m,

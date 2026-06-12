@@ -5,7 +5,6 @@ struct TunnelsView: View {
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @State private var selection: Set<Tunnel.ID> = []
     @State private var detailsForTunnel: Tunnel?
-    @State private var filter: String = ""
     @State private var activeTagFilter: String? = nil
     @State private var renamingTunnel: Tunnel? = nil
     @State private var renameDraft: String = ""
@@ -15,17 +14,14 @@ struct TunnelsView: View {
         Array(Set(appState.tunnels.flatMap { $0.tags })).sorted()
     }
 
-    /// Tunnels passing both the text filter and the tag filter.
+    /// Tunnels passing both the global search text and the tag filter.
     private var visibleTunnels: [Tunnel] {
-        let q = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return appState.tunnels.filter { t in
+        appState.tunnels.filter { t in
             if let tag = activeTagFilter, !t.tags.contains(tag) { return false }
-            if q.isEmpty { return true }
-            if t.name.lowercased().contains(q) { return true }
-            if (t.lastNode ?? "").lowercased().contains(q) { return true }
-            if (t.activeJump ?? "").lowercased().contains(q) { return true }
-            if t.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
-            return false
+            return SearchFilter.matches(
+                query: appState.searchQuery,
+                in: [t.name, t.lastNode, t.activeJump] + t.tags.map { Optional($0) }
+            )
         }
     }
 
@@ -35,7 +31,9 @@ struct TunnelsView: View {
             if appState.tunnels.isEmpty {
                 emptyState
             } else {
-                filterBar
+                if !selection.isEmpty || !allTags.isEmpty {
+                    filterBar
+                }
                 tunnelsList
                     .controlSize(compactRows ? .small : .regular)
                     .font(compactRows ? .caption : .body)
@@ -121,18 +119,8 @@ struct TunnelsView: View {
 
     private var filterBar: some View {
         VStack(spacing: Spacing.s) {
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("filter by name, node, jump, tag…", text: $filter)
-                    .textFieldStyle(.roundedBorder)
-                if !filter.isEmpty {
-                    Button {
-                        filter = ""
-                    } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.borderless)
-                }
-                if !selection.isEmpty {
-                    Divider().frame(height: 16)
+            if !selection.isEmpty {
+                HStack(spacing: Spacing.s) {
                     Text("\(selection.count) selected")
                         .font(.caption).foregroundStyle(.secondary)
                     Button {
@@ -153,6 +141,7 @@ struct TunnelsView: View {
                     } label: { Label("Stop", systemImage: "stop.fill") }
                         .controlSize(.small)
                         .disabled(appState.batchInFlight)
+                    Spacer()
                 }
             }
             if !allTags.isEmpty {
