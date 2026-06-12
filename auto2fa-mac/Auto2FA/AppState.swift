@@ -208,7 +208,7 @@ final class AppState: ObservableObject {
             // alive for hours.
             if isFirstLoad {
                 for t in self.tunnels {
-                    self.lastNotchSignature[t.name] = t.status
+                    self.lastNotchSignature[t.name] = notchSignature(status: t.status, lastMsg: t.lastMsg)
                 }
             }
             // Success → the daemon is reachable. Clear any stale transient
@@ -377,16 +377,39 @@ final class AppState: ObservableObject {
     /// the user in notches.)
     private var lastNotchSignature: [String: String] = [:]
 
+    /// Dedup key for a tunnel's notch. The daemon AUTO-STOPS a tunnel (node
+    /// gone from squeue, or repeated recovery failures) by prefixing `last_msg`
+    /// with "Auto-stopped:" and clearing wants_alive. That deserves its own
+    /// notice distinct from a transient failure — and the signature must encode
+    /// it so a transient-failed → auto-stopped transition (same status string)
+    /// still fires exactly once.
+    private func notchSignature(status: String, lastMsg: String) -> String {
+        lastMsg.hasPrefix("Auto-stopped:") ? "autostop:\(status)" : status
+    }
+
     private func maybeShowNotch(name: String, status: String, lastMsg: String) {
         if UserDefaults.standard.object(forKey: "auto2fa.notch.enabled") != nil,
            UserDefaults.standard.bool(forKey: "auto2fa.notch.enabled") == false {
             return
         }
         // Dedup: if the last notch we showed for this tunnel had the same
-        // status string, skip. This makes "Connected" fire only on a real
+        // signature, skip. This makes "Connected" fire only on a real
         // idle/starting → alive transition, never on repeat snapshots.
-        if lastNotchSignature[name] == status { return }
-        lastNotchSignature[name] = status
+        let sig = notchSignature(status: status, lastMsg: lastMsg)
+        if lastNotchSignature[name] == sig { return }
+        lastNotchSignature[name] = sig
+        // Auto-stop (node gone / repeated failures): a distinct, clear notice —
+        // the tunnel gave up and won't keep retrying.
+        if lastMsg.hasPrefix("Auto-stopped:") {
+            let reason = String(lastMsg.dropFirst("Auto-stopped: ".count))
+            notchPresenter.show(
+                systemImage: "stop.circle.fill",
+                title: "Tunnel stopped",
+                description: "\(name): \(reason)",
+                tint: .orange
+            )
+            return
+        }
         switch status {
         case "alive":
             notchPresenter.show(

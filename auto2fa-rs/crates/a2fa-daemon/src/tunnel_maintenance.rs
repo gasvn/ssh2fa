@@ -40,8 +40,9 @@ use a2fa_core::tunnels::uptime::now_unix;
 use a2fa_core::ssh::control::active_symlink_path;
 
 use crate::tunnel_runtime::{
-    note_stop_dead_flap, should_autostart, tunnel_action, TunnelAction, TunnelRuntime,
-    TunnelStatusKind, STALE_MISS_THRESHOLD, TUNNEL_FLAP_BACKOFF_SEC, TUNNEL_FLAP_THRESHOLD,
+    note_stop_dead_flap, should_auto_stop_after_failures, should_autostart, tunnel_action,
+    TunnelAction, TunnelRuntime, TunnelStatusKind, RECOVERY_FAILURE_THRESHOLD,
+    STALE_MISS_THRESHOLD, TUNNEL_FLAP_BACKOFF_SEC, TUNNEL_FLAP_THRESHOLD,
 };
 
 /// How often the maintenance loop wakes up.
@@ -492,20 +493,31 @@ fn run_squeue_check(
         };
 
         if should_mark_stale {
+            // Auto-stop: the compute node is gone, so the tunnel can never come
+            // back to THIS node. Clear `wants_alive` so it stays stopped — both
+            // now (Stale + !wants_alive → Skip) and across daemon restarts
+            // (should_autostart is false). Previously `wants_alive` stayed true,
+            // so every daemon restart re-ran the futile recover→stale burst.
             info!(
-                "[tunnel:{name}] node {node} gone from squeue, marking stale"
+                "[tunnel:{name}] node {node} gone from squeue — auto-stopping tunnel"
             );
-            runtime.record(name, now, "compute node ended");
+            runtime.record(name, now, format!("auto-stopped: node {node} ended"));
             accumulate_uptime(name, state, runtime, now);
             runtime.kill_child(name);
 
-            let mut guard = crate::lock_state(state);
-            if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
-                t.status = TunnelStatus::Stale;
-                t.active_jump = None;
-                t.fail_count += 1;
-                t.last_msg = format!("node {node} no longer in squeue");
+            {
+                let mut guard = crate::lock_state(state);
+                if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                    t.status = TunnelStatus::Stale;
+                    t.active_jump = None;
+                    t.fail_count += 1;
+                    t.wants_alive = false;
+                    t.last_msg = format!("Auto-stopped: node {node} no longer in squeue");
+                }
             }
+            crate::handlers::tunnels::persist_tunnels(state);
+            // Fresh slate if the user re-picks a node / re-enables later.
+            runtime.with_rt_mut(name, |r| r.consecutive_recovery_failures = 0);
         }
     }
 }
@@ -581,6 +593,41 @@ fn mark_tunnel_idle(
 ///
 /// If no ready jump host is found, marks the tunnel Idle with an appropriate
 /// message and returns.
+/// Record one recovery failure for `name`. If consecutive failures cross
+/// [`RECOVERY_FAILURE_THRESHOLD`], AUTO-STOP the tunnel: clear `wants_alive`
+/// (so it stops retrying — on this run AND across daemon restarts), set a clear
+/// "Auto-stopped" status, persist, and reset the counter so a later re-enable
+/// gets a fresh set of attempts. Returns `true` iff it auto-stopped (the caller
+/// surfaces it to the user).
+fn note_recovery_failure_and_maybe_stop(
+    name: &str,
+    state: &Arc<Mutex<State>>,
+    runtime: &Arc<TunnelRuntime>,
+    now: f64,
+) -> bool {
+    let n = runtime.with_rt_mut(name, |r| {
+        r.consecutive_recovery_failures += 1;
+        r.consecutive_recovery_failures
+    });
+    if !should_auto_stop_after_failures(n, RECOVERY_FAILURE_THRESHOLD) {
+        return false;
+    }
+    warn!("[tunnel:{name}] auto-stopped after {n} consecutive recovery failures");
+    runtime.record(name, now, format!("auto-stopped: {n} consecutive failures"));
+    {
+        let mut guard = crate::lock_state(state);
+        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+            t.wants_alive = false;
+            t.active_jump = None;
+            t.last_msg = format!("Auto-stopped: {n} consecutive failures");
+        }
+    }
+    crate::handlers::tunnels::persist_tunnels(state);
+    // Fresh slate if the user re-enables it later.
+    runtime.with_rt_mut(name, |r| r.consecutive_recovery_failures = 0);
+    true
+}
+
 fn do_tunnel_start(
     name: &str,
     snap: &TunnelSnapshot,
@@ -778,6 +825,8 @@ fn spawn_tunnel_start_with_runtime(
                             t.last_msg = format!("via {jump}");
                         }
                     }
+                    // A successful connect clears the consecutive-failure tally.
+                    runtime.with_rt_mut(&name, |r| r.consecutive_recovery_failures = 0);
 
                     // Persist wants_alive (off-lock + through the serialized
                     // save helper — a raw snapshot-then-save here could rename
@@ -809,25 +858,31 @@ fn spawn_tunnel_start_with_runtime(
                     };
                     warn!("[tunnel:{name}] maintenance: {msg}");
                     runtime.record(&name, now_unix(), &msg);
-                    let mut guard = crate::lock_state(&state);
-                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
-                        t.fail_count += 1;
-                        t.status = TunnelStatus::Failed;
-                        t.last_msg = msg;
-                        t.active_jump = None;
+                    {
+                        let mut guard = crate::lock_state(&state);
+                        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                            t.fail_count += 1;
+                            t.status = TunnelStatus::Failed;
+                            t.last_msg = msg;
+                            t.active_jump = None;
+                        }
                     }
+                    note_recovery_failure_and_maybe_stop(&name, &state, &runtime, now_unix());
                 }
                 Err(e) => {
                     warn!("[tunnel:{name}] maintenance: probe error: {e}");
                     let msg = format!("probe error: {e}");
                     runtime.record(&name, now_unix(), &msg);
-                    let mut guard = crate::lock_state(&state);
-                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
-                        t.fail_count += 1;
-                        t.status = TunnelStatus::Failed;
-                        t.last_msg = msg;
-                        t.active_jump = None;
+                    {
+                        let mut guard = crate::lock_state(&state);
+                        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
+                            t.fail_count += 1;
+                            t.status = TunnelStatus::Failed;
+                            t.last_msg = msg;
+                            t.active_jump = None;
+                        }
                     }
+                    note_recovery_failure_and_maybe_stop(&name, &state, &runtime, now_unix());
                 }
             }
         });

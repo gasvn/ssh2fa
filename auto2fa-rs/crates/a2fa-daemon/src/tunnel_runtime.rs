@@ -79,6 +79,13 @@ pub struct TunnelRtState {
     /// [`TUNNEL_FLAP_MIN_UPTIME_SEC`]). At [`TUNNEL_FLAP_THRESHOLD`] the
     /// StopDead → immediate-recover path backs off instead of respawning.
     pub consecutive_flaps: u32,
+
+    /// Consecutive recovery attempts that FAILED to bring the tunnel up (never
+    /// reached Alive). Reset to 0 on a successful connect. At
+    /// [`RECOVERY_FAILURE_THRESHOLD`] the tunnel auto-stops (clears
+    /// `wants_alive`) instead of retrying forever against a target it can't
+    /// reach — see `note_recovery_failure_and_maybe_stop`.
+    pub consecutive_recovery_failures: u32,
 }
 
 impl Default for TunnelRtState {
@@ -89,8 +96,20 @@ impl Default for TunnelRtState {
             consecutive_squeue_misses: 0,
             alive_since: None,
             consecutive_flaps: 0,
+            consecutive_recovery_failures: 0,
         }
     }
+}
+
+/// How many consecutive recovery failures before a `wants_alive` tunnel
+/// auto-stops (clears `wants_alive`) and notifies the user, instead of retrying
+/// forever against an unreachable target.
+pub const RECOVERY_FAILURE_THRESHOLD: u32 = 5;
+
+/// Pure decision: should a tunnel auto-stop after this many consecutive recovery
+/// failures? Extracted so the threshold logic is unit-tested without the daemon.
+pub fn should_auto_stop_after_failures(consecutive_failures: u32, threshold: u32) -> bool {
+    consecutive_failures >= threshold
 }
 
 /// Flap accounting for the StopDead path. Called when an Alive tunnel is found
@@ -524,6 +543,15 @@ pub fn should_autostart(auto_start: bool, wants_alive: bool, last_node: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_stop_after_failures_at_threshold() {
+        // Below threshold → keep trying; at/above → auto-stop.
+        assert!(!should_auto_stop_after_failures(0, RECOVERY_FAILURE_THRESHOLD));
+        assert!(!should_auto_stop_after_failures(4, 5));
+        assert!(should_auto_stop_after_failures(5, 5));
+        assert!(should_auto_stop_after_failures(6, 5));
+    }
 
     // Helper: a "now" timestamp far enough from 0 that throttles all pass.
     const NOW: f64 = 1_700_000_000.0;
