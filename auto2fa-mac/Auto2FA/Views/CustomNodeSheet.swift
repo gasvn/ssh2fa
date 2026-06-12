@@ -37,7 +37,7 @@ struct CustomNodeSheet: View {
                 }
             }
             .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
 
             if let error {
                 Text(error)

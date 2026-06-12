@@ -27,7 +27,8 @@ struct NodePickerSheet: View {
                 Spacer()
             }
 
-            // Table / state container — glassCard for layered look
+            // Table / state container — opaque grouped surface inside the
+            // sheet's own system glass (avoid glass-on-glass).
             Group {
                 if loading {
                     HStack(spacing: Spacing.s) {
@@ -67,7 +68,7 @@ struct NodePickerSheet: View {
                     .frame(minHeight: 200)
                 }
             }
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
 
             HStack {
                 Button {

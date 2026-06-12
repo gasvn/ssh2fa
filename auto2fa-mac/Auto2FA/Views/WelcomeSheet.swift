@@ -63,7 +63,7 @@ struct WelcomeSheet: View {
                     body: "Status at a glance, right-click for quick actions. ⌘, for Settings; daemon logs from the menu-bar menu.")
             }
             .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
         }
         .padding(Spacing.xl)
     }
@@ -104,6 +104,5 @@ struct WelcomeSheet: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(Spacing.xl)
-        .background(.bar)
     }
 }

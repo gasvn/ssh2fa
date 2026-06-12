@@ -100,7 +100,7 @@ struct TunnelDetailsPopover: View {
                 }
             }
             .frame(minHeight: 160, maxHeight: 220)
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
             .padding(.horizontal, Spacing.l)
             .padding(.vertical, Spacing.xs)
 

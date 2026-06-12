@@ -84,7 +84,6 @@ struct AddHostSheet: View {
         }
         .padding(.horizontal, Spacing.xl)
         .padding(.vertical, Spacing.m)
-        .background(.bar)
     }
 
     private var stepConnection: some View {
@@ -144,7 +143,7 @@ struct AddHostSheet: View {
                       })
             }
             .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
 
             // Reassurance line
             HStack(spacing: Spacing.s) {
@@ -239,7 +238,7 @@ struct AddHostSheet: View {
                 }
             }
             .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
+            .groupedContent(cornerRadius: Radius.control)
 
             Divider()
 
@@ -305,7 +304,6 @@ struct AddHostSheet: View {
         }
         .padding(.horizontal, Spacing.xl)
         .padding(.vertical, Spacing.m)
-        .background(.bar)
     }
 
     @ViewBuilder
