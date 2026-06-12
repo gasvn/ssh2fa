@@ -163,6 +163,20 @@
   .foot-links a{color:var(--muted);font-size:14.5px}
   .foot-links a:hover{color:var(--text)}
   .foot-note{color:var(--faint);font-size:13px;margin-top:20px;width:100%}
+  .foot-note a:hover{color:var(--text)}
+
+  /* sponsor */
+  .spons{display:inline-flex;align-items:center;gap:6px;color:var(--a4)!important;font-weight:600;font-size:14.5px;transition:color .2s}
+  .spons:hover{color:#ff7ab8!important}
+  #support{padding:84px 0}
+  .support{max-width:720px;margin:0 auto;text-align:center;padding:52px 40px;border-radius:24px;border:1px solid rgba(255,77,157,.24);background:radial-gradient(130% 110% at 50% -10%,rgba(255,77,157,.1),rgba(139,92,255,.05) 55%,rgba(8,10,16,.4));position:relative;overflow:hidden;backdrop-filter:blur(6px)}
+  .support .ci2{display:inline-grid;place-items:center;width:56px;height:56px;border-radius:16px;color:#ff4d9d;background:rgba(255,77,157,.12);border:1px solid rgba(255,77,157,.3);box-shadow:0 0 40px -8px rgba(255,77,157,.6);margin-bottom:18px}
+  .support .goal{display:inline-block;font-size:12px;font-weight:600;letter-spacing:.04em;color:#ff7ab8;border:1px solid rgba(255,77,157,.3);border-radius:100px;padding:5px 13px;margin-bottom:16px}
+  .support h2{font-size:clamp(27px,3.8vw,40px);font-weight:700;letter-spacing:-.03em;margin-bottom:15px}
+  .support p{color:var(--muted);font-size:16.5px;line-height:1.6;max-width:56ch;margin:0 auto 26px}
+  .support p b{color:var(--text);font-weight:600}
+  .support .btn{padding:14px 26px;font-size:15.5px}
+  .support-note{margin:16px auto 0!important;color:var(--faint);font-size:12.5px}
 
   .reveal{opacity:0;transform:translateY(24px);transition:opacity .75s var(--ease),transform .75s var(--ease)}
   .reveal.in{opacity:1;transform:none}
@@ -192,6 +206,7 @@
       <a href="#features">Features</a>
       <a href="#security">Security</a>
       <a href="https://github.com/gasvn/ssh2fa">GitHub</a>
+      <a class="spons" href="https://github.com/sponsors/gasvn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor</a>
       <a class="btn btn-primary" href="#install">Get SSH2FA</a>
     </div>
   </div>
@@ -312,6 +327,19 @@ cd ssh2fa/auto2fa-mac && ./package-app.sh</div>
   </div>
 </section>
 
+<section id="support">
+  <div class="wrap">
+    <div class="support reveal">
+      <span class="ci2"><svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg></span>
+      <div class="goal mono">Goal: $99 / year — the Apple Developer fee</div>
+      <h2 class="display">Help get SSH2FA notarized.</h2>
+      <p>SSH2FA is free and open source. The one missing piece is an <b>Apple Developer membership ($99/year)</b> — with it, the app can be <b>notarized</b> so it installs with <b>zero Gatekeeper warnings</b> for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99 — every bit counts.</p>
+      <a class="btn btn-primary" href="https://github.com/sponsors/gasvn"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor on GitHub</a>
+      <p class="support-note mono">GitHub Sponsors · 0% platform fee · one-time or monthly · goes straight toward the $99 Apple fee</p>
+    </div>
+  </div>
+</section>
+
 <footer>
   <div class="wrap foot">
     <a class="brand" href="#top"><span class="logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8l4 4-4 4M12 16h7" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>SSH2FA</a>
@@ -321,6 +349,7 @@ cd ssh2fa/auto2fa-mac && ./package-app.sh</div>
       <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">Security</a>
       <a href="https://github.com/gasvn/ssh2fa/blob/main/docs/RELEASE.md">Releasing</a>
       <a href="https://github.com/gasvn/ssh2fa/blob/main/LICENSE">License</a>
+      <a href="https://github.com/sponsors/gasvn">Sponsor</a>
       <a href="https://shgao.site">Author</a>
     </div>
     <p class="foot-note mono">Built by <a href="https://shgao.site" style="color:var(--muted)">gasvn</a> · persistent, no-retype 2FA SSH for HPC / cluster users on macOS · MIT licensed.</p>
