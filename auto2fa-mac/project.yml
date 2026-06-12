@@ -2,7 +2,7 @@ name: Auto2FA
 options:
   bundleIdPrefix: com.ssh2fa
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   developmentLanguage: en
   createIntermediateGroups: true
 
@@ -72,6 +72,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ssh2fa.tests
 
 schemes:
+  Auto2FA:
+    build:
+      targets:
+        Auto2FA: [run, build, archive]
+    run:
+      config: Debug
   Auto2FATests:
     build:
       targets:

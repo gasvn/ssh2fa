@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Spacing
 
@@ -173,26 +174,12 @@ extension View {
         self.padding(.vertical, RowMetric.vPad)
     }
 
-    // MARK: Liquid Glass surfaces (macOS 26) with material fallback (14.0+)
+    // MARK: Liquid Glass surfaces (macOS 26 — no fallback; app is 26-only)
 
-    /// Primary elevated surface — cards / panels. Uses Liquid Glass on
-    /// macOS 26, falls back to a bordered + shadowed material on older systems.
-    @ViewBuilder
+    /// Primary elevated FLOATING surface — cards / snackbars / banners that hover
+    /// above content. Real Liquid Glass.
     func glassCard(cornerRadius: CGFloat = Radius.card) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
-        } else {
-            self
-                .background(
-                    .regularMaterial,
-                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(.white.opacity(0.08))
-                )
-                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-        }
+        self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
     }
 
     /// Quiet, OPAQUE grouped content surface for list sections — the BASE
@@ -211,14 +198,25 @@ extension View {
             )
     }
 
-    /// Lighter glass for chrome — toolbars / bars. Thinner material fallback.
-    @ViewBuilder
-    func glassChrome() -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: .rect(cornerRadius: Radius.control))
-        } else {
-            self.background(.ultraThinMaterial)
-        }
+    /// Lighter glass for floating chrome — bars / palettes.
+    func glassChrome(cornerRadius: CGFloat = Radius.control) -> some View {
+        self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    /// One interactive, semantically-tinted glass surface for hero controls.
+    func interactiveGlass(tint: Color? = nil, cornerRadius: CGFloat = Radius.control) -> some View {
+        let glass: Glass = tint.map { .regular.tint($0).interactive() } ?? .regular.interactive()
+        return self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    /// Translucent window base — desktop ambient shows through the margins while
+    /// content groups stay opaque, so the window "floats" (Liquid Glass look).
+    func windowGlassBackground() -> some View {
+        self.background(
+            VisualEffectBackground(material: .underWindowBackground,
+                                   blending: .behindWindow)
+                .ignoresSafeArea()
+        )
     }
 
     /// Subtle hover elevation — gentle scale + soft shadow, animated.
@@ -231,5 +229,28 @@ extension View {
                 y: hovering ? 3 : 0
             )
             .animation(.easeOut(duration: 0.16), value: hovering)
+    }
+}
+
+// MARK: - Translucent material backing (AppKit bridge)
+
+/// Thin wrapper over `NSVisualEffectView` so a SwiftUI view can sit on a
+/// real desktop-sampling translucent material — the basis of the floating
+/// window look. SwiftUI has no first-class equivalent on macOS.
+struct VisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blending: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = blending
+        v.state = .active
+        return v
+    }
+
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {
+        v.material = material
+        v.blendingMode = blending
     }
 }
