@@ -64,8 +64,8 @@ struct HostsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
-        // Rows float in a real Liquid Glass card over the clear wallpaper window.
-        .glassContent()
+        // Rows float directly on the window's frosted glass (no separate card).
+        .groupedContent()
     }
 
     // MARK: - Empty state

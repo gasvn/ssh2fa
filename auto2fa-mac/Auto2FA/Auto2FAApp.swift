@@ -19,9 +19,11 @@ struct Auto2FAApp: App {
                     .environmentObject(appState)
             }
             .environmentObject(biometricLock)
-            // Translucent glass window — frosted, wallpaper-tinted (not flat
-            // gray, not fully clear). Content carries its own real glass cards.
-            .containerBackground(.thinMaterial, for: .window)
+            // Real frosted glass (磨砂玻璃): a behind-window NSVisualEffect frost
+            // that blurs the actual desktop. Needs the window to be non-opaque,
+            // which `.containerBackground(.clear, for: .window)` guarantees.
+            .windowGlassBackground()
+            .containerBackground(.clear, for: .window)
             .onAppear {
                 SingleInstance.enforceOrExit()
                 installMenuBarOnce()
