@@ -176,6 +176,7 @@
   .support p{color:var(--muted);font-size:16.5px;line-height:1.6;max-width:56ch;margin:0 auto 26px}
   .support p b{color:var(--text);font-weight:600}
   .support .btn{padding:14px 26px;font-size:15.5px}
+  .support-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
   .support-note{margin:16px auto 0!important;color:var(--faint);font-size:12.5px}
 
   .reveal{opacity:0;transform:translateY(24px);transition:opacity .75s var(--ease),transform .75s var(--ease)}
@@ -206,7 +207,7 @@
       <a href="#features">Features</a>
       <a href="#security">Security</a>
       <a href="https://github.com/gasvn/ssh2fa">GitHub</a>
-      <a class="spons" href="https://github.com/sponsors/gasvn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor</a>
+      <a class="spons" href="#support"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor</a>
       <a class="btn btn-primary" href="#install">Get SSH2FA</a>
     </div>
   </div>
@@ -334,8 +335,11 @@ cd ssh2fa/auto2fa-mac && ./package-app.sh</div>
       <div class="goal mono">Goal: $99 / year — the Apple Developer fee</div>
       <h2 class="display">Help get SSH2FA notarized.</h2>
       <p>SSH2FA is free and open source. The one missing piece is an <b>Apple Developer membership ($99/year)</b> — with it, the app can be <b>notarized</b> so it installs with <b>zero Gatekeeper warnings</b> for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99 — every bit counts.</p>
-      <a class="btn btn-primary" href="https://github.com/sponsors/gasvn"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor on GitHub</a>
-      <p class="support-note mono">GitHub Sponsors · 0% platform fee · one-time or monthly · goes straight toward the $99 Apple fee</p>
+      <div class="support-btns">
+        <a class="btn btn-primary" href="https://ko-fi.com/shgao"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><path d="M6 1v3M10 1v3M14 1v3"/></svg>Buy me a coffee</a>
+        <a class="btn btn-ghost" href="https://github.com/sponsors/gasvn"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>Sponsor on GitHub</a>
+      </div>
+      <p class="support-note mono">Ko-fi (instant, 0% fee) or GitHub Sponsors · one-time or monthly · goes straight toward the $99 Apple fee</p>
     </div>
   </div>
 </section>
