@@ -15,6 +15,9 @@ enum SettingsKey {
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
     static let welcomeShown = "auto2fa.welcomeShown"
     static let compactRows = "auto2fa.compactRows"
+    /// "" = ask the first time; "system" = default .command handler; else a
+    /// terminal app bundle id. Used by TerminalLauncher (host "Open Terminal").
+    static let terminalApp = "auto2fa.terminalApp"
 }
 
 struct SettingsView: View {
@@ -25,6 +28,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
+    @AppStorage(SettingsKey.terminalApp) private var terminalApp = ""
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
     // launch-at-login state isn't a persisted preference (it's owned by
@@ -61,6 +65,20 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } header: { Text("Launch") }
+
+                Section {
+                    Picker("Open SSH in", selection: $terminalApp) {
+                        Text("Ask the first time").tag("")
+                        Text("System default").tag("system")
+                        Text("Terminal").tag(TerminalLauncher.appleTerminalBundleID)
+                        if TerminalLauncher.iTermInstalled() {
+                            Text("iTerm").tag(TerminalLauncher.iTermBundleID)
+                        }
+                    }
+                    Text("Which terminal app a host's “Open Terminal” action launches and SSHes in with.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Terminal") }
 
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)

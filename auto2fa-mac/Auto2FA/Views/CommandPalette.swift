@@ -16,6 +16,7 @@ struct CommandPalette: View {
     // which doesn't exist anywhere → "Show daemon logs" silently no-op'd
     // unless a logs window happened to already be open.
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var query: String = ""
     @State private var selectedIdx: Int = 0
     @FocusState private var focused: Bool
@@ -80,13 +81,7 @@ struct CommandPalette: View {
                 subtitle: "ssh \(host.host) via warm ControlMaster",
                 keywords: [host.host, "terminal", "ssh", "shell"]
             ) {
-                // Escape for the AppleScript literal (defense-in-depth; the
-                // daemon validates host names at add time).
-                let safeHost = host.host
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "\"", with: "\\\"")
-                let script = "tell application \"Terminal\"\n  activate\n  do script \"ssh \(safeHost)\"\nend tell"
-                NSAppleScript(source: script)?.executeAndReturnError(nil)
+                TerminalLauncher.openSSH(host: host.host)
             })
         }
 
@@ -133,7 +128,7 @@ struct CommandPalette: View {
                   subtitle: "preferences (⌘,)",
                   keywords: ["settings", "preferences", "options"]
             ) {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                openSettings()
             },
         ])
         return out

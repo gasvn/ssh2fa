@@ -70,8 +70,7 @@ struct TunnelsView: View {
             countPill(appState.tunnels.count)
             Spacer()
             Button { appState.presentNewTunnel() } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
+                Label("New Tunnel", systemImage: "plus")
             }
             .buttonStyle(.glass)
             .help("New tunnel (⌘N)")

@@ -94,27 +94,30 @@ struct TunnelRow: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(minWidth: 110, alignment: .leading)
 
-            // Node (secondary; "(no node)" tertiary) — flexible column.
-            Group {
-                if let n = tunnel.lastNode {
-                    Text(n)
-                        .font(.rowIdentifier)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    Text("(no node)")
-                        .font(.rowMeta)
-                        .foregroundStyle(.tertiary)
-                        .italic()
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // via <jump> — the existing clickable jump-host Menu, compact.
-            // Hidden on hover (it lives in the `⋯` overflow as "Use jump host").
+            // Node + via + metadata — shown at rest, ALL hidden on hover so the
+            // now-labeled action bar gets the full trailing width (otherwise the
+            // flexible node column squeezes the buttons and their text clips at
+            // the default window size).
             if !hovering {
+                // Node (secondary; "(no node)" tertiary) — flexible column.
+                Group {
+                    if let n = tunnel.lastNode {
+                        Text(n)
+                            .font(.rowIdentifier)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text("(no node)")
+                            .font(.rowMeta)
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // via <jump> — clickable jump-host Menu (also in the ⋯ overflow).
                 viaMenu
                     .frame(width: 70, alignment: .leading)
 
@@ -270,6 +273,7 @@ struct TunnelRow: View {
         @ViewBuilder label: () -> L
     ) -> some View {
         Button(action: action, label: label)
+            .labelStyle(.titleAndIcon)
             .buttonStyle(.plain)
             .font(.caption)
             .padding(.horizontal, 8)

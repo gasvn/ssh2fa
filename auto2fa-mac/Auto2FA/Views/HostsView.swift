@@ -30,8 +30,7 @@ struct HostsView: View {
             countPill(appState.hosts.count)
             Spacer()
             Button { appState.presentAddHost() } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
+                Label("Add Host", systemImage: "plus")
             }
             .buttonStyle(.glass)
             .help("Add a host (register SSH + 2FA)")

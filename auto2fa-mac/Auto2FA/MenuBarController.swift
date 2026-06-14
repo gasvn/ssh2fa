@@ -336,12 +336,10 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
     @objc private func openSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
-        // macOS 14+: SwiftUI Settings scene is exposed via this selector.
-        if #available(macOS 14, *) {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        } else {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
+        // The private showSettingsWindow: selector is a no-op on macOS 26, so
+        // hand off to SwiftUI: a view opens the Settings scene via
+        // @Environment(\.openSettings) on receiving this.
+        NotificationCenter.default.post(name: .a2fShowSettings, object: nil)
     }
 
     @objc private func quit(_ sender: NSMenuItem) {

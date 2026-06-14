@@ -6,6 +6,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var showingWelcome = false
     @State private var showingPalette = false
 
@@ -41,6 +42,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .a2fShowLogs)) { _ in
                 openWindow(id: "logs")
             }
+            .onReceive(NotificationCenter.default.publisher(for: .a2fShowSettings)) { _ in
+                openSettings()
+            }
     }
 
     private var mainStack: some View {
@@ -65,32 +69,14 @@ struct ContentView: View {
                     .frame(minWidth: 180)
             }
         }
-        // Add Host / New Tunnel live in their own section headers (below) —
-        // the toolbar keeps only global actions.
+        // Add Host / New Tunnel live in their section headers; Logs / Export /
+        // Import live in the menu bar (Window / File). The toolbar gets a DIRECT
+        // Settings button — one click opens it, no dropdown.
         ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button("Settings…") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                }
-                Button("Show Logs…") { openWindow(id: "logs") }
-                Divider()
-                Button("Export Tunnels…") {
-                    if let err = TunnelExportImport.exportToFile(appState.tunnels),
-                       err != "cancelled" {
-                        appState.showActionError("Export failed: \(err)")
-                    }
-                }
-                Button("Import Tunnels…") {
-                    let (imported, err) = TunnelExportImport.importFromFile()
-                    if let imported, !imported.isEmpty {
-                        Task { _ = await appState.importTunnels(imported) }
-                    } else if let err, err != "cancelled" {
-                        appState.showActionError(err)
-                    }
-                }
-            } label: {
-                Label("More", systemImage: "ellipsis.circle")
+            Button { openSettings() } label: {
+                Label("Settings", systemImage: "gearshape")
             }
+            .help("Settings (⌘,)")
         }
     }
 
