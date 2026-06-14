@@ -56,7 +56,7 @@ fn ssh_squeue_output(mut cmd: std::process::Command, deadline: Duration) -> Resu
     }
 }
 
-/// A single SLURM job row from `squeue -h -o '%i|%P|%j|%T|%M|%R'`.
+/// A single SLURM job row from `squeue -h -o '%i|%P|%j|%T|%M|%L|%R'`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub jobid: String,
@@ -64,10 +64,13 @@ pub struct Job {
     pub name: String,
     pub state: String,
     pub time: String,
+    /// SLURM `%L` (TIME_LEFT) — remaining walltime, e.g. "2:14:03",
+    /// "1-12:00:00", or "UNLIMITED". Powers the tunnel expiry countdown.
+    pub time_left: String,
     pub node: String,
 }
 
-/// Parse the stdout of `squeue -h -o '%i|%P|%j|%T|%M|%R'`.
+/// Parse the stdout of `squeue -h -o '%i|%P|%j|%T|%M|%L|%R'`.
 ///
 /// - Skips blank lines and malformed rows (wrong field count or empty node).
 /// - Filters to STATE == "RUNNING": only a RUNNING job sits on a real compute
@@ -81,8 +84,8 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(7, '|').collect();
-        if parts.len() != 6 {
+        let parts: Vec<&str> = line.splitn(8, '|').collect();
+        if parts.len() != 7 {
             log::debug!("skipping malformed squeue row: {:?}", line);
             continue;
         }
@@ -93,7 +96,7 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
             log::debug!("skipping non-RUNNING squeue row: {:?}", line);
             continue;
         }
-        let node = parts[5].trim().to_string();
+        let node = parts[6].trim().to_string();
         if node.is_empty() {
             log::debug!("skipping squeue row with empty node: {:?}", line);
             continue;
@@ -104,6 +107,7 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
             name:      parts[2].trim().to_string(),
             state:     state.to_string(),
             time:      parts[4].trim().to_string(),
+            time_left: parts[5].trim().to_string(),
             node,
         });
     }
@@ -230,7 +234,7 @@ pub fn discover_nodes(jump: &str, user: Option<&str>) -> Result<Vec<Job>> {
         // token. ssh concatenates argv with spaces and the remote shell
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
-        "'%i|%P|%j|%T|%M|%R'",
+        "'%i|%P|%j|%T|%M|%L|%R'",
         // Restrict to one user's jobs. WITHOUT this, squeue lists EVERY job
         // on the cluster (thousands on FAS-RC) → the query exceeds the 15s
         // deadline and times out → discovery returns nothing → "no compute
@@ -299,7 +303,7 @@ pub fn discover_nodes_via_control(
         // token. ssh concatenates argv with spaces and the remote shell
         // re-parses it; without quotes the `|` separators become shell
         // pipes (observed live: `bash: %T: command not found`).
-        "'%i|%P|%j|%T|%M|%R'",
+        "'%i|%P|%j|%T|%M|%L|%R'",
         // Restrict to one user's jobs (default: remote `$USER`, expanded by
         // the REMOTE shell). WITHOUT this, squeue lists EVERY job on the
         // cluster (thousands on FAS-RC) → the query exceeds the 15s deadline
@@ -387,11 +391,12 @@ mod tests {
     #[test]
     fn parses_squeue_rows() {
         let jobs = parse_squeue(
-            "123|gpu|run|RUNNING|01:00:00|holygpu01\nbad row\n456|cpu|x|PENDING|0:00|\n",
+            "123|gpu|run|RUNNING|01:00:00|23:00:00|holygpu01\nbad row\n456|cpu|x|PENDING|0:00|NOT_SET|(Resources)\n",
         );
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].node, "holygpu01");
         assert_eq!(jobs[0].state, "RUNNING");
+        assert_eq!(jobs[0].time_left, "23:00:00");
     }
 
     #[test]
@@ -400,9 +405,9 @@ mod tests {
         // CONFIGURING job isn't usable yet. Only RUNNING jobs (on a real node)
         // must survive — otherwise the node picker offers bogus targets.
         let jobs = parse_squeue(
-            "1|gpu|train|RUNNING|2:00:00|holygpu01\n\
-             2|gpu|wait|PENDING|0:00|(Resources)\n\
-             3|gpu|cfg|CONFIGURING|0:01|holygpu02\n",
+            "1|gpu|train|RUNNING|2:00:00|6:00:00|holygpu01\n\
+             2|gpu|wait|PENDING|0:00|1-00:00:00|(Resources)\n\
+             3|gpu|cfg|CONFIGURING|0:01|1:00:00|holygpu02\n",
         );
         assert_eq!(jobs.len(), 1, "only the RUNNING job is kept");
         assert_eq!(jobs[0].node, "holygpu01");
@@ -416,15 +421,15 @@ mod tests {
 
     #[test]
     fn skips_row_with_empty_node() {
-        // The 6th field (node) is blank → row must be skipped.
-        let jobs = parse_squeue("456|cpu|x|PENDING|0:00|");
+        // The 7th field (node) is blank → row must be skipped.
+        let jobs = parse_squeue("456|cpu|x|RUNNING|0:00|1:00:00|");
         assert!(jobs.is_empty());
     }
 
     #[test]
     fn parses_multiple_valid_rows() {
-        let raw = "1|gpu|train|RUNNING|2:00:00|holygpu01\n\
-                   2|cpu|eval|RUNNING|0:30:00|holycpu05\n";
+        let raw = "1|gpu|train|RUNNING|2:00:00|6:00:00|holygpu01\n\
+                   2|cpu|eval|RUNNING|0:30:00|1:30:00|holycpu05\n";
         let jobs = parse_squeue(raw);
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].jobid, "1");
@@ -433,7 +438,7 @@ mod tests {
 
     #[test]
     fn bad_row_count_is_skipped() {
-        // 5 fields instead of 6
+        // 5 fields instead of 7
         let jobs = parse_squeue("1|gpu|train|RUNNING|2:00:00");
         assert!(jobs.is_empty());
     }
@@ -481,7 +486,7 @@ mod tests {
 
     #[test]
     fn preserves_all_fields() {
-        let jobs = parse_squeue("999|gpu|myrun|RUNNING|03:14:15|holygpu42");
+        let jobs = parse_squeue("999|gpu|myrun|RUNNING|03:14:15|20:45:45|holygpu42");
         assert_eq!(jobs.len(), 1);
         let j = &jobs[0];
         assert_eq!(j.jobid, "999");
@@ -489,6 +494,7 @@ mod tests {
         assert_eq!(j.name, "myrun");
         assert_eq!(j.state, "RUNNING");
         assert_eq!(j.time, "03:14:15");
+        assert_eq!(j.time_left, "20:45:45");
         assert_eq!(j.node, "holygpu42");
     }
 }

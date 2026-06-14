@@ -975,6 +975,7 @@ pub fn discover_nodes(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value
                 "name": j.name,
                 "state": j.state,
                 "time": j.time,
+                "time_left": j.time_left,
                 "node": j.node,
             })
         })

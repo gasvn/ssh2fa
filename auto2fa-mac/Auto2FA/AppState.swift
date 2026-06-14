@@ -203,6 +203,7 @@ final class AppState: ObservableObject {
             self.hosts = try await client.listHosts()
             self.tunnels = try await client.listTunnels()
             updateDockBadge()
+            checkDeadlines()
             // On the very first reload at app launch, seed the dedup map
             // with every tunnel's current status — otherwise the first
             // batch of TUNNEL_STATUS_CHANGED events would each be treated
@@ -229,6 +230,38 @@ final class AppState: ObservableObject {
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if reloadFailStreak >= 3 {
                 connectionError = "Daemon is slow to respond — retrying…"
+            }
+        }
+    }
+
+    // MARK: - Compute-allocation expiry warnings
+
+    /// Tunnel names already warned about imminent expiry (re-armed when the
+    /// deadline moves back out past the threshold or is cleared).
+    private var warnedDeadlines: Set<String> = []
+
+    /// Fire a one-time notch warning ~10 min before a running tunnel's compute
+    /// allocation expires. Called on every reload (≤5s cadence).
+    private func checkDeadlines() {
+        let now = Date()
+        let warnWindow: TimeInterval = 600   // 10 min
+        for t in tunnels {
+            let on = (t.displayState == .alive || t.displayState == .starting)
+            guard on, let endsAt = TunnelDeadlines.endsAt(t.name) else {
+                warnedDeadlines.remove(t.name)
+                continue
+            }
+            let remaining = endsAt.timeIntervalSince(now)
+            if remaining > warnWindow {
+                warnedDeadlines.remove(t.name)        // re-arm
+            } else if remaining > 0, !warnedDeadlines.contains(t.name) {
+                warnedDeadlines.insert(t.name)
+                notchPresenter.show(
+                    systemImage: "hourglass.bottomhalf.filled",
+                    title: "\(t.name): ~\(max(1, Int(remaining / 60))) min left",
+                    description: "Compute allocation expiring soon",
+                    tint: .orange
+                )
             }
         }
     }

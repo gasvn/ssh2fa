@@ -226,6 +226,13 @@ struct NodePickerSheet: View {
             ) {
                 error = errMsg  // surface in the picker; don't dismiss
                 submitting = false
+            } else {
+                // Success → record the allocation's expiry for the row countdown.
+                if let tl = job.timeLeft, let secs = SlurmTime.seconds(tl) {
+                    TunnelDeadlines.set(tunnelName, endsAt: Date().addingTimeInterval(secs))
+                } else {
+                    TunnelDeadlines.clear(tunnelName)   // unlimited / unknown → no countdown
+                }
             }
             // on success: appState.pickNode dismisses the sheet, no need to clear submitting
         }

@@ -47,6 +47,26 @@ struct TunnelRow: View {
         }
     }
 
+    private func countdownColor(_ remaining: TimeInterval) -> Color {
+        if remaining < 300 { return .red }      // < 5 min (incl. expired)
+        if remaining < 1800 { return .orange }  // < 30 min
+        return .secondary
+    }
+
+    /// Live compute-allocation countdown (SLURM walltime remaining).
+    @ViewBuilder
+    private func countdownView(endsAt: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let remaining = endsAt.timeIntervalSince(ctx.date)
+            Label(SlurmTime.format(remaining: remaining), systemImage: "hourglass")
+                .labelStyle(.titleAndIcon)
+                .font(.rowMeta)
+                .foregroundStyle(countdownColor(remaining))
+                .lineLimit(1)
+                .help("Compute allocation time left")
+        }
+    }
+
     private var busyLabel: String {
         let msg = tunnel.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         return msg.isEmpty ? "Working…" : msg
@@ -210,7 +230,9 @@ struct TunnelRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
-                if let aliveTxt = tunnel.aliveSince() {
+                if tunnelIsOn, let endsAt = TunnelDeadlines.endsAt(tunnel.name) {
+                    countdownView(endsAt: endsAt)
+                } else if let aliveTxt = tunnel.aliveSince() {
                     Text(aliveTxt)
                         .font(.rowMeta)
                         .foregroundStyle(.secondary)
