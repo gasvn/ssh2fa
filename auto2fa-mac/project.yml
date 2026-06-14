@@ -72,6 +72,7 @@ targets:
       - path: Auto2FA/SSHConfigParser.swift
       - path: Auto2FA/SSHSyncDiff.swift
       - path: Auto2FA/ControlPathResolver.swift
+      - path: Auto2FA/SSHConfigManager.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
