@@ -63,6 +63,7 @@ struct HostRow: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .help("\"\(host.host)\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back, or remove this registration.")
+                    .accessibilityLabel("Warning: \(host.host) is not in ~/.ssh/config and won't connect")
             }
 
             // Spinner + progress text while busy, else flexible hostname column.
@@ -156,6 +157,7 @@ struct HostRow: View {
             .font(.system(size: 6))
             .foregroundStyle(host.isMasterReady ? Color.green : Color.secondary)
             .help(host.isMasterReady ? "Connected" : "Not connected")
+            .accessibilityLabel(host.isMasterReady ? "Master connected" : "Master not connected")
     }
 
     // MARK: - Actions (same calls / disabled logic as old HostsView)

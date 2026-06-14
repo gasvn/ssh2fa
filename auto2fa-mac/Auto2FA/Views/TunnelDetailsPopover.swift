@@ -8,6 +8,7 @@ import SwiftUI
 /// Triggered from a "info.circle" button on each tunnel row.
 struct TunnelDetailsPopover: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     /// Snapshot captured when the popover opened — fallback only.
     let initialTunnel: Tunnel
 
@@ -175,12 +176,20 @@ struct TunnelDetailsPopover: View {
                             cmdSaveStatus = nil
                         }
                     }
-                    .keyboardShortcut(.defaultAction)
                     .disabled(postConnectDraft == (tunnel.postConnectCmd ?? ""))
                 }
             }
             .padding(.horizontal, Spacing.l)
             .padding(.bottom, Spacing.l)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)   // Esc / explicit close
+            }
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.s)
         }
         .frame(width: 720)
         .task {

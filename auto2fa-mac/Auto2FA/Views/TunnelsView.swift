@@ -234,7 +234,7 @@ struct TunnelsView: View {
         .contextMenu(forSelectionType: Tunnel.ID.self) { ids in
             if let id = ids.first,
                let t = appState.tunnels.first(where: { $0.id == id }) {
-                Button(t.displayState == .alive ? "Stop" : "Start") {
+                Button((t.displayState == .alive || t.displayState == .starting) ? "Stop" : "Start") {
                     Task { await appState.toggleTunnel(t) }
                 }
                 Button("Pick node…") {

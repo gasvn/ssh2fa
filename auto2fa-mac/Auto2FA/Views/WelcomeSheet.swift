@@ -21,6 +21,10 @@ struct WelcomeSheet: View {
             footer
         }
         .frame(width: 440)
+        // Persist "seen" on EVERY dismissal route — Esc / scrim / button — so the
+        // welcome sheet never reappears just because the user closed it with the
+        // keyboard (the buttons set this too; this covers the paths they don't).
+        .onDisappear { UserDefaults.standard.set(true, forKey: SettingsKey.welcomeShown) }
     }
 
     private var header: some View {

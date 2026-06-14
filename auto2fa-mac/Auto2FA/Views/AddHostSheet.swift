@@ -250,11 +250,11 @@ struct AddHostSheet: View {
                     }
                 } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
-                let otpOk = otpauthURL.lowercased().contains("secret=")
+                let otpOk = OTPSecret.normalize(input: otpauthURL, account: hostname) != nil
                 Label {
                     HStack(spacing: 0) {
                         Text("OTP secret: ").foregroundStyle(.secondary)
-                        Text(otpOk ? "extracted" : "(missing secret= param)")
+                        Text(otpOk ? "ready" : "(not a valid secret)")
                             .foregroundColor(otpOk ? .primary : .red)
                     }
                 } icon: {
@@ -351,8 +351,9 @@ struct AddHostSheet: View {
         let h = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else { error = "Hostname is required."; focused = .hostname; return }
         guard !password.isEmpty else { error = "Password is required."; focused = .password; return }
-        guard otpauthURL.lowercased().contains("secret=") else {
-            error = "OTP URL must contain a `secret=` parameter."; focused = .otpauth; return
+        guard OTPSecret.normalize(input: otpauthURL, account: hostname) != nil else {
+            error = "Enter a 2FA secret — an otpauth:// URL or a base32 key."
+            focused = .otpauth; return
         }
         error = nil
         step = 1
@@ -367,7 +368,8 @@ struct AddHostSheet: View {
             let (ok, reason) = try await appState.client.testHostCredentials(
                 host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
                 password: password,
-                otpauthURL: otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
+                    ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             testResult = (ok, ok ? "Login succeeded — you can save now." : reason)
         } catch {
@@ -384,7 +386,8 @@ struct AddHostSheet: View {
             if let msg = await appState.addHost(
                 host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
                 password: password,
-                otpauthURL: otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
+                    ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines),
                 autoConnect: autoConnect
             ) {
                 error = msg
