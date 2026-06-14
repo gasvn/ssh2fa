@@ -231,7 +231,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         menu.addItem(prefs)
 
         let troubleshoot = NSMenuItem(title: "Troubleshoot…",
-                                      action: #selector(openSettings(_:)), keyEquivalent: "")
+                                      action: #selector(openTroubleshoot(_:)), keyEquivalent: "")
         troubleshoot.target = self
         troubleshoot.toolTip = "Open Settings → Troubleshoot to run health checks."
         menu.addItem(troubleshoot)
@@ -335,6 +335,18 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     @objc private func openSettings(_ sender: Any?) {
+        UserDefaults.standard.set(SettingsTab.general, forKey: SettingsKey.settingsTab)
+        showSettingsWindow()
+    }
+
+    /// Deep-link straight to the Troubleshoot tab (the menu item that promised
+    /// "Open Settings → Troubleshoot" used to dump the user on General).
+    @objc private func openTroubleshoot(_ sender: Any?) {
+        UserDefaults.standard.set(SettingsTab.troubleshoot, forKey: SettingsKey.settingsTab)
+        showSettingsWindow()
+    }
+
+    private func showSettingsWindow() {
         NSApp.activate(ignoringOtherApps: true)
         // The private showSettingsWindow: selector is a no-op on macOS 26, so
         // hand off to SwiftUI: a view opens the Settings scene via

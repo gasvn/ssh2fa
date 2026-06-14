@@ -20,6 +20,16 @@ enum SettingsKey {
     static let terminalApp = "auto2fa.terminalApp"
     static let warmReuseEnabled = "auto2fa.warmReuseInclude"
     static let warmReuseAsked   = "auto2fa.warmReuseAsked"
+    /// Which Settings tab is shown — lets the menu-bar "Troubleshoot…" deep-link
+    /// straight to that tab instead of dumping the user on General.
+    static let settingsTab = "auto2fa.settingsTab"
+}
+
+/// Settings tab identifiers (also the persisted `settingsTab` values).
+enum SettingsTab {
+    static let general = "general"
+    static let troubleshoot = "troubleshoot"
+    static let about = "about"
 }
 
 struct SettingsView: View {
@@ -34,6 +44,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.warmReuseEnabled) private var warmReuseEnabled = false
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
+    @AppStorage(SettingsKey.settingsTab) private var settingsTab = SettingsTab.general
     // launch-at-login state isn't a persisted preference (it's owned by
     // macOS via SMAppService); we just mirror it in @State for the Toggle.
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -42,7 +53,7 @@ struct SettingsView: View {
     private var iCloudDriveAvailable: Bool { PreferenceSync.iCloudDriveAvailable() }
 
     var body: some View {
-        TabView {
+        TabView(selection: $settingsTab) {
             Form {
                 Section {
                     Toggle("Start SSH2FA at login", isOn: $launchAtLogin)
@@ -166,12 +177,15 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
+            .tag(SettingsTab.general)
 
             TroubleshootPane()
                 .tabItem { Label("Troubleshoot", systemImage: "stethoscope") }
+                .tag(SettingsTab.troubleshoot)
 
             AboutPane()
                 .tabItem { Label("About", systemImage: "info.circle") }
+                .tag(SettingsTab.about)
         }
         .frame(width: 520, height: 460)
     }

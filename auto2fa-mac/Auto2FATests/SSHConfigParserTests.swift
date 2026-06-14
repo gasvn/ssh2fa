@@ -91,6 +91,17 @@ final class SSHConfigParserTests: XCTestCase {
                        [ConfigHost(alias: "box", hostName: "1.2.3.4", user: nil)])
     }
 
+    func testParseAcceptsEqualsSeparator() {
+        // ssh treats '=' (with or without surrounding spaces) like whitespace.
+        let cfg = """
+        Host=box
+            HostName=1.2.3.4
+            User = bob
+        """
+        XCTAssertEqual(SSHConfigParser.parse(cfg),
+                       [ConfigHost(alias: "box", hostName: "1.2.3.4", user: "bob")])
+    }
+
     // MARK: - parseConfig: following Include directives (filesystem)
 
     private func tempDir() -> String {

@@ -82,9 +82,14 @@ enum SSHConfigParser {
             if let hash = line.firstIndex(of: "#") { line = String(line[..<hash]) }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
-            let parts = trimmed.split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard let keyword = parts.first else { continue }
-            let values = parts.dropFirst().map(String.init)
+            // ssh treats whitespace OR '=' as the keyword/value separator, so
+            // `HostName foo`, `HostName=foo`, and `HostName = foo` are equal.
+            guard let sep = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" })
+            else { continue }   // a lone keyword with no value — nothing we use
+            let keyword = String(trimmed[trimmed.startIndex..<sep])
+            var rest = String(trimmed[trimmed.index(after: sep)...])
+            while let f = rest.first, f == " " || f == "\t" || f == "=" { rest.removeFirst() }
+            let values = rest.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             switch keyword.lowercased() {
             case "host":
                 flush()
