@@ -8,196 +8,191 @@
 <meta property="og:title" content="SSH2FA — no-retype 2FA SSH for macOS">
 <meta property="og:description" content="Keep your SSH connections warm to 2FA-gated clusters. Type your Duo/TOTP code once; connect instantly after.">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#0b0a08">
+<meta name="theme-color" content="#05070e">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Saira:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
+  @property --ang{syntax:'<angle>';inherits:false;initial-value:0deg}
   :root{
-    --bg:#0b0a08; --bg2:#100e0b; --panel:rgba(255,255,255,.018);
-    --text:#ece6da; --muted:#9a9082; --faint:#6b6256;
-    --amber:#ffb454; --amber2:#ff9a3d; --amber-soft:rgba(255,180,84,.13);
-    --live:#5eead4;
-    --line:rgba(255,180,84,.16); --line2:rgba(255,180,84,.08);
-    --maxw:1140px; --ease:cubic-bezier(.2,.9,.25,1);
+    --bg:#05070e; --bg2:#070b18; --glass:rgba(18,28,52,.34);
+    --text:#e6ecfb; --muted:#8b93ad; --faint:#535c78;
+    --cyan:#22e0ff; --blue:#4d8bff; --violet:#9b6bff;
+    --line:rgba(90,170,255,.16); --line2:rgba(90,170,255,.08);
+    --glow:rgba(34,224,255,.5);
+    --maxw:1160px; --ease:cubic-bezier(.2,.9,.25,1);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html{scroll-behavior:smooth}
-  body{background:var(--bg);color:var(--text);font-family:'Hanken Grotesk',sans-serif;font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased;overflow-x:hidden;position:relative}
+  body{background:var(--bg);color:var(--text);font-family:'Saira',-apple-system,sans-serif;font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden;position:relative}
   a{color:inherit;text-decoration:none}
   .mono{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace}
-  .disp{font-family:'Bricolage Grotesque','Hanken Grotesk',sans-serif}
+  .disp{font-family:'Chakra Petch','Saira',sans-serif}
   .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
-  .amber{color:var(--amber)}
+  .holo{background:linear-gradient(110deg,var(--cyan),var(--blue) 45%,var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
 
-  /* ---- CRT atmosphere ---- */
-  .glow{position:fixed;top:-340px;left:50%;transform:translateX(-50%);width:1100px;height:680px;z-index:-3;pointer-events:none;
-    background:radial-gradient(ellipse at center,rgba(255,154,61,.16),transparent 62%);filter:blur(20px);animation:breathe 7s ease-in-out infinite}
-  @keyframes breathe{0%,100%{opacity:.7}50%{opacity:1}}
-  .dots{position:fixed;inset:0;z-index:-2;pointer-events:none;
-    background-image:radial-gradient(rgba(255,180,84,.08) 1px,transparent 1px);background-size:30px 30px;
-    -webkit-mask-image:radial-gradient(ellipse 95% 60% at 50% 0,#000,transparent 72%);mask-image:radial-gradient(ellipse 95% 60% at 50% 0,#000,transparent 72%)}
-  .scan{position:fixed;inset:0;z-index:200;pointer-events:none;opacity:.5;mix-blend-mode:overlay;
-    background:repeating-linear-gradient(0deg,rgba(0,0,0,.35) 0,rgba(0,0,0,.35) 1px,transparent 2px,transparent 4px);animation:scan 8s linear infinite}
-  @keyframes scan{to{transform:translateY(4px)}}
-  .grain{position:fixed;inset:0;z-index:201;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-  .vig{position:fixed;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(ellipse 130% 90% at 50% 0,transparent 50%,rgba(0,0,0,.55) 100%)}
+  /* ---- atmosphere: deep space + 3D grid + glows ---- */
+  .grid3d{position:fixed;left:0;right:0;bottom:0;height:62vh;z-index:-4;perspective:300px;overflow:hidden;
+    -webkit-mask-image:linear-gradient(transparent,#000 55%,#000);mask-image:linear-gradient(transparent,#000 55%,#000);opacity:.45}
+  .grid3d::before{content:"";position:absolute;left:-60%;right:-60%;top:-10%;bottom:-60%;transform:rotateX(74deg);transform-origin:50% 100%;
+    background-image:linear-gradient(rgba(77,139,255,.55) 1px,transparent 1px),linear-gradient(90deg,rgba(34,224,255,.45) 1px,transparent 1px);
+    background-size:46px 46px;animation:grid 5.5s linear infinite}
+  @keyframes grid{to{background-position:0 46px}}
+  .orb{position:fixed;z-index:-3;border-radius:50%;filter:blur(90px);pointer-events:none;will-change:transform}
+  .orb1{top:-300px;left:50%;transform:translateX(-50%);width:900px;height:560px;background:radial-gradient(ellipse,rgba(34,224,255,.2),transparent 60%);animation:breathe 8s ease-in-out infinite}
+  .orb2{top:120px;left:-180px;width:520px;height:520px;background:radial-gradient(circle,rgba(155,107,255,.16),transparent 62%)}
+  .orb3{top:40px;right:-200px;width:520px;height:520px;background:radial-gradient(circle,rgba(77,139,255,.16),transparent 62%)}
+  @keyframes breathe{0%,100%{opacity:.75}50%{opacity:1}}
+  .stars{position:fixed;inset:0;z-index:-3;background-image:radial-gradient(1px 1px at 20% 30%,rgba(180,220,255,.6),transparent),radial-gradient(1px 1px at 70% 20%,rgba(150,200,255,.5),transparent),radial-gradient(1px 1px at 40% 70%,rgba(180,220,255,.4),transparent),radial-gradient(1px 1px at 85% 60%,rgba(150,200,255,.5),transparent),radial-gradient(1px 1px at 12% 80%,rgba(180,220,255,.45),transparent);opacity:.5}
+  .grain{position:fixed;inset:0;z-index:200;pointer-events:none;opacity:.04;mix-blend-mode:overlay;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  .hbeam{position:fixed;left:0;right:0;top:0;height:2px;z-index:199;pointer-events:none;background:linear-gradient(90deg,transparent,var(--cyan),transparent);box-shadow:0 0 14px var(--cyan);opacity:.0;animation:beam 6s ease-in-out 1.5s}
+  @keyframes beam{0%{top:0;opacity:0}10%{opacity:.7}90%{opacity:.5}100%{top:100%;opacity:0}}
 
-  /* ---- nav (status bar) ---- */
-  nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);background:rgba(11,10,8,.7);border-bottom:1px solid transparent;transition:border-color .3s,background .3s}
-  nav.scrolled{border-color:var(--line);background:rgba(11,10,8,.88)}
-  .nav-inner{display:flex;align-items:center;gap:24px;height:60px;font-family:'JetBrains Mono',monospace}
-  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;letter-spacing:-.01em}
-  .brand .mk{width:26px;height:26px;border:1px solid var(--amber);border-radius:6px;display:grid;place-items:center;color:var(--amber);box-shadow:0 0 16px -4px var(--amber)}
-  .brand .mk svg{width:14px;height:14px}
-  .nav-links{display:flex;gap:22px;margin-left:auto;align-items:center;font-size:13px}
+  /* ---- nav ---- */
+  nav{position:sticky;top:0;z-index:50;backdrop-filter:saturate(160%) blur(16px);background:rgba(5,7,14,.55);border-bottom:1px solid transparent;transition:border-color .3s,background .3s}
+  nav.scrolled{border-color:var(--line);background:rgba(5,7,14,.82)}
+  .nav-inner{display:flex;align-items:center;gap:26px;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-family:'Chakra Petch',sans-serif;font-weight:700;font-size:18px;letter-spacing:.01em}
+  .mk{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:#061018;background:linear-gradient(135deg,var(--cyan),var(--blue));box-shadow:0 0 20px -4px var(--glow)}
+  .mk svg{width:16px;height:16px}
+  .nav-links{display:flex;gap:24px;margin-left:auto;align-items:center;font-family:'JetBrains Mono',monospace;font-size:13px}
   .nav-links a{color:var(--muted);transition:color .2s}
-  .nav-links a:hover{color:var(--amber)}
-  .nav-links .stat{display:flex;align-items:center;gap:7px;color:var(--live)}
-  .nav-links .stat .led{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 8px var(--live);animation:pulse 2s ease-in-out infinite}
+  .nav-links a:hover{color:var(--cyan)}
+  .nav-links .stat{display:flex;align-items:center;gap:7px;color:var(--cyan)}
+  .nav-links .stat .led{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 9px var(--cyan);animation:pulse 2s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-weight:500;font-size:13px;border:1px solid var(--line);transition:transform .14s var(--ease),box-shadow .25s,border-color .2s,background .2s,color .2s;white-space:nowrap}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-weight:500;font-size:13.5px;border:1px solid var(--line);transition:transform .14s var(--ease),box-shadow .25s,border-color .2s,background .2s;white-space:nowrap}
   .btn:hover{transform:translateY(-1px)}
-  .btn-amber{border-color:var(--amber);color:var(--amber);background:var(--amber-soft);box-shadow:0 0 22px -10px var(--amber)}
-  .btn-amber:hover{background:rgba(255,180,84,.2);box-shadow:0 0 30px -8px var(--amber);color:var(--amber)}
-  .btn-ghost{color:var(--text);background:transparent}
-  .btn-ghost:hover{border-color:var(--muted);color:var(--text)}
+  .btn-neon{border-color:transparent;color:#04121c;background:linear-gradient(110deg,var(--cyan),var(--blue));box-shadow:0 0 26px -6px var(--glow)}
+  .btn-neon:hover{box-shadow:0 0 40px -4px var(--glow)}
+  .btn-ghost{color:var(--text);background:rgba(90,170,255,.05)}
+  .btn-ghost:hover{background:rgba(90,170,255,.1);border-color:var(--cyan);color:var(--cyan)}
 
   /* ---- hero ---- */
-  header.hero{padding:88px 0 48px;position:relative}
-  .boot{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);margin-bottom:26px;opacity:0;animation:bootln .5s var(--ease) .1s forwards}
-  .boot .ok{color:var(--live)} .boot .p{color:var(--amber)}
-  h1{font-family:'Bricolage Grotesque',sans-serif;font-size:clamp(44px,7.6vw,92px);line-height:.98;font-weight:700;letter-spacing:-.03em;max-width:15ch}
-  h1 .ln{display:block;overflow:hidden}
-  h1 .ln span{display:inline-block;transform:translateY(105%);animation:rise .8s var(--ease) forwards}
-  h1 .flick{animation:rise .8s var(--ease) forwards,flicker 3s steps(1) 1.2s infinite}
-  @keyframes rise{to{transform:none}}
-  @keyframes flicker{0%,96%,100%{opacity:1}97%{opacity:.55}98%{opacity:1}99%{opacity:.7}}
-  @keyframes bootln{to{opacity:1}}
-  .sub{margin:30px 0 0;max-width:56ch;color:var(--muted);font-size:clamp(16.5px,1.7vw,20px);line-height:1.55;opacity:0;animation:bootln .7s var(--ease) .85s forwards}
+  header.hero{padding:92px 0 50px;position:relative;text-align:center}
+  .eyebrow{display:inline-flex;align-items:center;gap:9px;padding:6px 15px;border-radius:100px;border:1px solid var(--line);background:rgba(34,224,255,.05);color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:12.5px;margin-bottom:28px;opacity:0;animation:up .7s var(--ease) .1s forwards}
+  .eyebrow .led{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation:pulse 2s ease-in-out infinite}
+  h1{font-family:'Chakra Petch',sans-serif;font-size:clamp(42px,7.4vw,88px);line-height:1.02;font-weight:700;letter-spacing:-.01em;max-width:16ch;margin:0 auto;text-transform:uppercase}
+  h1 .w{display:inline-block;opacity:0;transform:translateY(26px);filter:blur(10px);animation:win .85s var(--ease) forwards}
+  h1 .glow{text-shadow:0 0 28px rgba(34,224,255,.55),0 0 60px rgba(77,139,255,.35)}
+  @keyframes win{to{opacity:1;transform:none;filter:none}}
+  @keyframes up{to{opacity:1;transform:none}}
+  .sub{margin:28px auto 0;max-width:60ch;color:var(--muted);font-size:clamp(16px,1.7vw,20px);line-height:1.55;opacity:0;animation:up .8s var(--ease) .55s forwards}
   .sub b{color:var(--text);font-weight:600}
-  .cta{display:flex;gap:13px;margin-top:34px;flex-wrap:wrap;opacity:0;animation:bootln .7s var(--ease) 1s forwards}
-  .cta .btn{padding:13px 22px;font-size:14px}
-  .micro{margin-top:18px;font-family:'JetBrains Mono',monospace;color:var(--faint);font-size:12.5px;opacity:0;animation:bootln .7s var(--ease) 1.15s forwards}
+  .cta{display:flex;gap:13px;justify-content:center;flex-wrap:wrap;margin-top:34px;opacity:0;animation:up .8s var(--ease) .7s forwards}
+  .cta .btn{padding:14px 24px;font-size:14.5px}
+  .micro{margin-top:18px;font-family:'JetBrains Mono',monospace;color:var(--faint);font-size:12.5px;opacity:0;animation:up .8s var(--ease) .85s forwards}
 
-  /* ---- terminal + host panel ---- */
-  .stage{margin-top:54px;display:grid;grid-template-columns:1.55fr 1fr;gap:18px;align-items:start;opacity:0;animation:bootln .8s var(--ease) 1.3s forwards}
-  .term{border:1px solid var(--line);border-radius:11px;background:rgba(6,5,4,.85);overflow:hidden;box-shadow:0 40px 100px -50px #000,inset 0 0 60px -30px rgba(255,154,61,.15)}
-  .tbar{display:flex;align-items:center;gap:10px;padding:11px 15px;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--faint)}
-  .tbar .br{color:var(--amber)}
-  .tbar .live{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--live)}
-  .tbar .live .led{width:6px;height:6px;border-radius:50%;background:var(--live);box-shadow:0 0 8px var(--live);animation:pulse 1.8s ease-in-out infinite}
-  .tbody{padding:20px 20px 24px;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.95;min-height:172px}
-  .tbody .l{display:block;white-space:pre-wrap;opacity:0}
-  .tbody .l.show{opacity:1}
-  .pr{color:var(--amber)} .cm{color:var(--text)} .dm{color:var(--faint)} .okk{color:var(--live)} .nt{color:var(--amber2)}
-  .cur{display:inline-block;width:9px;height:15px;vertical-align:-2px;background:var(--amber);box-shadow:0 0 8px var(--amber);animation:blink 1.05s steps(1) infinite}
+  /* ---- product: glass terminal + HUD host panel ---- */
+  .stage{margin:56px auto 0;max-width:880px;display:grid;grid-template-columns:1.55fr 1fr;gap:18px;align-items:start;text-align:left;opacity:0;animation:up .9s var(--ease) 1s forwards;perspective:1600px}
+  .glasswrap{position:relative;border-radius:15px;padding:1px}
+  .glasswrap::before{content:"";position:absolute;inset:-1px;border-radius:16px;padding:1.4px;background:conic-gradient(from var(--ang),transparent,var(--cyan) 15%,var(--blue) 30%,transparent 45%,transparent 62%,var(--violet) 80%,transparent);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:spin 6s linear infinite}
+  @keyframes spin{to{--ang:360deg}}
+  .glass{position:relative;border-radius:14px;border:1px solid var(--line);background:var(--glass);backdrop-filter:blur(16px) saturate(150%);box-shadow:0 40px 100px -50px #000,inset 0 1px 0 rgba(140,200,255,.12)}
+  .tbar{display:flex;align-items:center;gap:9px;padding:12px 15px;border-bottom:1px solid var(--line);font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--faint)}
+  .tdot{width:10px;height:10px;border-radius:50%;box-shadow:0 0 7px currentColor}
+  .tdot.c{color:#ff6b6b;background:currentColor}.tdot.b{color:#ffd166;background:currentColor}.tdot.a{color:#22e0ff;background:currentColor}
+  .tbar .live{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--cyan)}
+  .tbar .live .led{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:pulse 1.8s ease-in-out infinite}
+  .tbody{padding:20px;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.95;min-height:176px}
+  .tbody .l{display:block;white-space:pre-wrap;opacity:0}.tbody .l.show{opacity:1}
+  .pr{color:var(--cyan)}.cm{color:var(--text)}.dm{color:var(--faint)}.ok{color:#34f0c0}.nt{color:var(--blue)}
+  .cur{display:inline-block;width:9px;height:15px;vertical-align:-2px;background:var(--cyan);box-shadow:0 0 9px var(--cyan);animation:blink 1.05s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
-  .hostpanel{border:1px solid var(--line);border-radius:11px;background:rgba(6,5,4,.7);padding:16px 17px;font-family:'JetBrains Mono',monospace;font-size:12.5px}
-  .hostpanel .hh{display:flex;justify-content:space-between;color:var(--faint);font-size:11px;letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--line2);padding-bottom:10px;margin-bottom:11px}
-  .hostpanel .hh .w{color:var(--live)}
+  .hud{position:relative;border-radius:14px;border:1px solid var(--line);background:var(--glass);backdrop-filter:blur(16px);padding:16px 17px;font-family:'JetBrains Mono',monospace;font-size:12.5px}
+  .hud::before,.hud::after{content:"";position:absolute;width:14px;height:14px;border:1.5px solid var(--cyan);opacity:.8}
+  .hud::before{top:-1px;left:-1px;border-width:1.5px 0 0 1.5px}.hud::after{bottom:-1px;right:-1px;border-width:0 1.5px 1.5px 0}
+  .hud .hh{display:flex;justify-content:space-between;color:var(--faint);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;border-bottom:1px solid var(--line2);padding-bottom:10px;margin-bottom:11px}
+  .hud .hh .w{color:var(--cyan)}
   .hrow{display:flex;align-items:center;gap:9px;padding:5px 0;color:var(--muted)}
-  .hrow .led{width:6px;height:6px;border-radius:50%;background:var(--live);box-shadow:0 0 7px var(--live);flex:none}
-  .hrow .hn{color:var(--text);width:74px}
-  .hrow .hm{margin-left:auto;color:var(--faint)}
+  .hrow .led{width:6px;height:6px;border-radius:50%;background:#34f0c0;box-shadow:0 0 7px #34f0c0;flex:none}
+  .hrow .hn{color:var(--text);width:72px}.hrow .hm{margin-left:auto;color:var(--faint)}
 
-  /* ---- section scaffolding ---- */
+  /* ---- sections ---- */
   section{padding:92px 0;position:relative}
-  .stag{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--amber);margin-bottom:30px}
+  .stag{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--cyan);margin-bottom:14px;justify-content:center}
   .stag .num{color:var(--faint);border:1px solid var(--line);border-radius:5px;padding:2px 8px}
-  .stag::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
-  .sec-h{font-family:'Bricolage Grotesque',sans-serif;font-size:clamp(28px,4vw,46px);font-weight:700;letter-spacing:-.025em;line-height:1.06;max-width:18ch}
-  .sec-sub{margin-top:14px;color:var(--muted);font-size:18px;max-width:60ch}
+  .sec-head{text-align:center;max-width:62ch;margin:0 auto 50px}
+  .sec-head h2{font-family:'Chakra Petch',sans-serif;font-size:clamp(28px,4vw,46px);font-weight:600;letter-spacing:-.01em;line-height:1.08;text-transform:uppercase}
+  .sec-head p{margin-top:14px;color:var(--muted);font-size:18px}
 
-  /* corner-bracket panels */
-  .brk{position:relative;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(4px)}
-  .brk::before,.brk::after{content:"";position:absolute;width:13px;height:13px;border:1.5px solid var(--amber);opacity:.7;transition:opacity .3s}
-  .brk::before{top:-1px;left:-1px;border-width:1.5px 0 0 1.5px}
-  .brk::after{bottom:-1px;right:-1px;border-width:0 1.5px 1.5px 0}
-  .brk:hover::before,.brk:hover::after{opacity:1}
-
-  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
-  .step{padding:26px;border-radius:10px}
-  .step .n{font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:13px;margin-bottom:14px}
-  .step h3{font-family:'Bricolage Grotesque',sans-serif;font-size:19px;font-weight:600;margin-bottom:8px}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .panel{position:relative;border-radius:12px;border:1px solid var(--line);background:var(--glass);backdrop-filter:blur(8px);transition:transform .3s var(--ease),border-color .3s,box-shadow .3s}
+  .panel:hover{transform:translateY(-3px);border-color:var(--cyan);box-shadow:0 0 36px -16px var(--glow)}
+  .panel::before,.panel::after{content:"";position:absolute;width:12px;height:12px;border:1.5px solid var(--cyan);opacity:0;transition:opacity .3s}
+  .panel::before{top:-1px;left:-1px;border-width:1.5px 0 0 1.5px}.panel::after{bottom:-1px;right:-1px;border-width:0 1.5px 1.5px 0}
+  .panel:hover::before,.panel:hover::after{opacity:.9}
+  .step{padding:26px}
+  .step .n{font-family:'JetBrains Mono',monospace;color:var(--cyan);font-size:13px;margin-bottom:14px}
+  .step h3{font-family:'Chakra Petch',sans-serif;font-size:18px;font-weight:600;margin-bottom:8px}
   .step p{color:var(--muted);font-size:15px}
-  .step code{font-family:'JetBrains Mono',monospace;font-size:.88em;color:var(--amber);background:var(--amber-soft);padding:1px 5px;border-radius:4px}
+  .step code{font-family:'JetBrains Mono',monospace;font-size:.88em;color:var(--cyan);background:rgba(34,224,255,.08);padding:1px 5px;border-radius:4px}
 
-  .bento{display:grid;grid-template-columns:repeat(6,1fr);gap:18px;margin-top:40px}
-  .card{padding:28px;border-radius:10px;transition:transform .3s var(--ease),border-color .3s}
-  .card:hover{transform:translateY(-3px);border-color:var(--amber)}
+  .bento{display:grid;grid-template-columns:repeat(6,1fr);gap:18px}
+  .card{padding:28px}
   .span3{grid-column:span 3}.span2{grid-column:span 2}.span6{grid-column:span 6}
-  .ic{width:40px;height:40px;border-radius:9px;display:grid;place-items:center;margin-bottom:18px;color:var(--amber);border:1px solid var(--line);background:var(--amber-soft)}
+  .ic{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;margin-bottom:18px;color:var(--cyan);border:1px solid var(--line);background:rgba(34,224,255,.07);box-shadow:0 0 22px -10px var(--glow)}
   .ic svg{width:20px;height:20px}
-  .card h3{font-family:'Bricolage Grotesque',sans-serif;font-size:20px;font-weight:600;margin-bottom:9px}
+  .card h3{font-family:'Chakra Petch',sans-serif;font-size:20px;font-weight:600;margin-bottom:9px}
   .card.flag h3{font-size:24px}
-  .card p{color:var(--muted);font-size:15.5px}
-  .card p .mono{color:var(--text)}
+  .card p{color:var(--muted);font-size:15.5px}.card p .mono{color:var(--text)}
   .stat-row{display:flex;gap:40px;flex-wrap:wrap;align-items:center}
-  .stat .v{font-family:'Bricolage Grotesque',sans-serif;font-size:30px;font-weight:700;color:var(--amber)}
+  .stat .v{font-family:'Chakra Petch',sans-serif;font-size:30px;font-weight:700}
   .stat .k{color:var(--faint);font-size:13px;margin-top:3px;font-family:'JetBrains Mono',monospace}
 
-  .fit{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:40px}
-  .fit .col{padding:28px;border-radius:10px}
-  .fit h3{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:.05em;margin-bottom:18px}
+  .fit{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .fit .col{padding:28px}
+  .fit h3{font-family:'JetBrains Mono',monospace;font-size:14px;margin-bottom:18px}
   .fit ul{list-style:none;display:flex;flex-direction:column;gap:13px}
-  .fit li{display:flex;gap:11px;color:var(--muted);font-size:15.5px;line-height:1.5}
-  .fit li b{color:var(--text)} .fit .mono{color:var(--amber)}
-  .mk2{font-family:'JetBrains Mono',monospace;flex:none;font-weight:700;margin-top:1px}
-  .mk2.y{color:var(--live)} .mk2.n{color:#ff7a6b}
+  .fit li{display:flex;gap:11px;color:var(--muted);font-size:15.5px;line-height:1.5}.fit li b{color:var(--text)}.fit .mono{color:var(--cyan)}
+  .mk2{font-family:'JetBrains Mono',monospace;flex:none;font-weight:700;margin-top:1px}.mk2.y{color:#34f0c0}.mk2.n{color:#ff7a6b}
 
-  .callout{padding:32px 34px;border-radius:12px;display:flex;gap:20px;align-items:flex-start;max-width:860px;margin:0 auto;border-color:rgba(255,154,61,.3)!important}
-  .callout .ci{flex:none;width:44px;height:44px;border-radius:11px;display:grid;place-items:center;color:var(--amber2);border:1px solid rgba(255,154,61,.35);background:rgba(255,154,61,.1)}
-  .callout h3{font-family:'Bricolage Grotesque',sans-serif;font-size:19px;font-weight:600;margin-bottom:8px}
-  .callout p{color:var(--muted);font-size:15.5px}
-  .callout a{color:var(--amber);font-weight:600;border-bottom:1px solid var(--line)}
+  .callout{padding:32px 34px;display:flex;gap:20px;align-items:flex-start;max-width:860px;margin:0 auto;border-radius:14px;border:1px solid rgba(255,209,102,.3);background:rgba(255,209,102,.05);backdrop-filter:blur(8px)}
+  .callout .ci{flex:none;width:44px;height:44px;border-radius:11px;display:grid;place-items:center;color:#ffd166;border:1px solid rgba(255,209,102,.35);background:rgba(255,209,102,.1)}
+  .callout h3{font-family:'Chakra Petch',sans-serif;font-size:19px;font-weight:600;margin-bottom:8px}
+  .callout p{color:var(--muted);font-size:15.5px}.callout a{color:#ffd166;font-weight:600}
 
-  /* support */
-  .support{max-width:740px;margin:0 auto;text-align:center;padding:52px 40px;border-radius:16px;border-color:var(--amber)!important}
-  .support .meter{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--amber);margin-bottom:18px;letter-spacing:.04em}
-  .support .meter .bar{display:inline-block;color:var(--faint)}
-  .support h2{font-family:'Bricolage Grotesque',sans-serif;font-size:clamp(27px,3.6vw,40px);font-weight:700;letter-spacing:-.025em;margin-bottom:15px}
-  .support p{color:var(--muted);font-size:16.5px;max-width:56ch;margin:0 auto 26px}
-  .support p b{color:var(--text)}
-  .support-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-  .support-btns .btn{padding:13px 22px;font-size:14px}
+  .support{max-width:740px;margin:0 auto;text-align:center;padding:52px 40px;border-radius:16px;border:1px solid var(--cyan);background:radial-gradient(130% 110% at 50% -10%,rgba(34,224,255,.1),rgba(77,139,255,.04) 55%,var(--glass));backdrop-filter:blur(12px);position:relative}
+  .support::before,.support::after{content:"";position:absolute;width:16px;height:16px;border:1.5px solid var(--cyan);opacity:.85}
+  .support::before{top:-1px;left:-1px;border-width:1.5px 0 0 1.5px}.support::after{bottom:-1px;right:-1px;border-width:0 1.5px 1.5px 0}
+  .support .meter{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--cyan);margin-bottom:18px;letter-spacing:.04em}
+  .support .bar{display:inline-block;width:130px;height:7px;border-radius:4px;background:rgba(34,224,255,.12);vertical-align:middle;overflow:hidden;border:1px solid var(--line)}
+  .support .bar i{display:block;height:100%;width:8%;background:linear-gradient(90deg,var(--cyan),var(--blue));box-shadow:0 0 12px var(--glow)}
+  .support h2{font-family:'Chakra Petch',sans-serif;font-size:clamp(27px,3.6vw,40px);font-weight:600;letter-spacing:-.01em;margin-bottom:15px;text-transform:uppercase}
+  .support p{color:var(--muted);font-size:16.5px;max-width:56ch;margin:0 auto 26px}.support p b{color:var(--text)}
+  .support-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}.support-btns .btn{padding:13px 22px;font-size:14px}
   .support-note{margin-top:18px;font-family:'JetBrains Mono',monospace;color:var(--faint);font-size:12px}
 
-  .install{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:940px;margin:40px auto 0}
-  .ins{padding:26px;border-radius:10px}
+  .install{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:940px;margin:0 auto}
+  .ins{padding:26px}
   .ins h3{font-family:'JetBrains Mono',monospace;font-size:14px;margin-bottom:14px;display:flex;align-items:center;gap:9px}
-  .ins .tag{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--amber);border:1px solid var(--line);border-radius:5px;padding:2px 7px}
-  .code{font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.7;background:rgba(6,5,4,.7);border:1px solid var(--line);border-radius:8px;padding:13px 15px;color:#d8cfc0;overflow-x:auto;white-space:pre}
-  .code .c{color:var(--faint)} .code a{color:var(--amber)}
-  .code+.code{margin-top:10px}
-  .ins p{color:var(--muted);font-size:14.5px;margin-top:14px}.ins p a{color:var(--amber);font-weight:600}
+  .ins .tag{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cyan);border:1px solid var(--line);border-radius:5px;padding:2px 7px}
+  .code{font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.7;background:rgba(5,8,18,.7);border:1px solid var(--line);border-radius:8px;padding:13px 15px;color:#cdd8f0;overflow-x:auto;white-space:pre}
+  .code .c{color:var(--faint)}.code a{color:var(--cyan)}.code+.code{margin-top:10px}
+  .ins p{color:var(--muted);font-size:14.5px;margin-top:14px}.ins p a{color:var(--cyan);font-weight:600}
 
   footer{border-top:1px solid var(--line);padding:40px 0 56px;margin-top:48px;font-family:'JetBrains Mono',monospace}
   .foot{display:flex;justify-content:space-between;gap:26px;flex-wrap:wrap;align-items:center}
   .foot-links{display:flex;gap:22px;flex-wrap:wrap;font-size:13px}
-  .foot-links a{color:var(--muted)}.foot-links a:hover{color:var(--amber)}
-  .foot-note{color:var(--faint);font-size:12px;margin-top:18px;width:100%}
-  .foot-note a{color:var(--muted);border-bottom:1px solid var(--line)}
+  .foot-links a{color:var(--muted)}.foot-links a:hover{color:var(--cyan)}
+  .foot-note{color:var(--faint);font-size:12px;margin-top:18px;width:100%}.foot-note a{color:var(--muted);border-bottom:1px solid var(--line)}
 
-  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s var(--ease),transform .7s var(--ease)}
-  .reveal.in{opacity:1;transform:none}
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s var(--ease),transform .7s var(--ease)}.reveal.in{opacity:1;transform:none}
   @media (prefers-reduced-motion:reduce){
-    *{animation:none!important}
-    .glow,.scan{animation:none}.reveal{opacity:1;transform:none;transition:none}
-    h1 .ln span{transform:none}.boot,.sub,.cta,.micro,.stage{opacity:1}.tbody .l{opacity:1}.cur{animation:none}
+    *{animation:none!important}.grid3d::before,.orb1,.hbeam{animation:none}.reveal{opacity:1;transform:none;transition:none}
+    h1 .w,.eyebrow,.sub,.cta,.micro,.stage{opacity:1;transform:none;filter:none}.tbody .l{opacity:1}.cur{animation:none}
   }
   @media(max-width:880px){
     .nav-links a:not(.btn):not(.stat){display:none}
-    .stage{grid-template-columns:1fr}
-    .steps,.bento,.fit,.install{grid-template-columns:1fr}
-    .span3,.span2,.span6{grid-column:span 1}
-    .callout{flex-direction:column}
+    .stage{grid-template-columns:1fr}.steps,.bento,.fit,.install{grid-template-columns:1fr}
+    .span3,.span2,.span6{grid-column:span 1}.callout{flex-direction:column}
   }
 </style>
 </head>
 <body>
-<div class="glow"></div><div class="dots"></div><div class="vig"></div><div class="scan"></div><div class="grain"></div>
+<div class="grid3d"></div><div class="stars"></div>
+<div class="orb orb1"></div><div class="orb orb2"></div><div class="orb orb3"></div>
+<div class="hbeam"></div><div class="grain"></div>
 
 <nav id="nav"><div class="wrap nav-inner">
   <a class="brand" href="#top"><span class="mk"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8l4 4-4 4M12 16h7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>SSH2FA</a>
@@ -205,67 +200,63 @@
     <a href="#how">how</a><a href="#features">features</a><a href="#security">security</a>
     <a href="https://github.com/gasvn/ssh2fa">github</a>
     <a class="stat" href="#support"><span class="led"></span>sponsor</a>
-    <a class="btn btn-amber" href="#install">get ssh2fa</a>
+    <a class="btn btn-neon" href="#install">get ssh2fa</a>
   </div>
 </div></nav>
 
 <header class="hero" id="top"><div class="wrap">
-  <div class="boot mono"><span class="p">~ $</span> ssh2fa --status &nbsp; <span class="ok">[ OK ]</span> &nbsp;<span style="color:var(--faint)">macOS menu-bar · for HPC / SLURM clusters</span></div>
-  <h1>
-    <span class="ln"><span style="animation-delay:.2s">Your cluster,</span></span>
-    <span class="ln"><span style="animation-delay:.34s">always one</span></span>
-    <span class="ln"><span class="amber flick" style="animation-delay:.48s">keystroke</span> <span style="animation-delay:.56s">away.</span></span>
+  <span class="eyebrow"><span class="led"></span>macOS menu-bar · for HPC / SLURM clusters</span>
+  <h1 class="disp" aria-label="Your cluster, always one keystroke away.">
+    <span class="w" style="animation-delay:.1s">Your</span> <span class="w" style="animation-delay:.18s">cluster,</span> <span class="w" style="animation-delay:.28s">always</span> <span class="w glow holo" style="animation-delay:.4s">one</span> <span class="w glow holo" style="animation-delay:.48s">keystroke</span> <span class="w" style="animation-delay:.58s">away.</span>
   </h1>
-  <p class="sub">Type your Duo / TOTP code <b>once</b>. SSH2FA keeps a warm ControlMaster connection to every host and answers the login for you — so <span class="mono amber">ssh</span>, <span class="mono amber">scp</span>, and your editor connect <b>instantly</b> and stay live through sleep, Wi-Fi changes, and reboots.</p>
+  <p class="sub">Type your Duo / TOTP code <b>once</b>. SSH2FA keeps a warm ControlMaster connection to every host and answers the login for you — so <span class="mono" style="color:var(--cyan)">ssh</span>, <span class="mono" style="color:var(--cyan)">scp</span>, and your editor connect <b>instantly</b> and stay live through sleep, Wi-Fi changes, and reboots.</p>
   <div class="cta">
-    <a class="btn btn-amber" id="magnetic" href="#install">get ssh2fa →</a>
+    <a class="btn btn-neon" id="magnetic" href="#install">get ssh2fa →</a>
     <a class="btn btn-ghost" href="https://github.com/gasvn/ssh2fa">view source ↗</a>
   </div>
   <div class="micro">free &amp; open source · apple silicon + intel · macOS 13+ · MIT</div>
 
   <div class="stage">
-    <div class="term">
-      <div class="tbar mono"><span class="br">┌─</span> zsh — ~ <span class="live"><span class="led"></span>warm</span></div>
+    <div class="glasswrap"><div class="glass">
+      <div class="tbar"><span class="tdot c"></span><span class="tdot b"></span><span class="tdot a"></span><span style="margin-left:6px">zsh — ~</span><span class="live"><span class="led"></span>warm</span></div>
       <div class="tbody" id="term">
         <span class="l" data-line><span class="pr">~ $</span> <span class="cm" id="typed"></span><span class="cur" id="cur"></span></span>
-        <span class="l" data-line><span class="okk">✓ connected — reused a warm ControlMaster</span></span>
+        <span class="l" data-line><span class="ok">✓ connected — reused a warm ControlMaster</span></span>
         <span class="l" data-line><span class="dm">no password prompt · no 2FA code</span></span>
         <span class="l" data-line><span class="pr">[gpu-04 ~]$</span> </span>
         <span class="l" data-line>&nbsp;</span>
         <span class="l" data-line><span class="nt">↑ you typed your Duo code hours ago. it's still you.</span></span>
       </div>
-    </div>
-    <div class="hostpanel">
+    </div></div>
+    <div class="hud">
       <div class="hh"><span>hosts</span><span class="w">● 3 warm</span></div>
-      <div class="hrow"><span class="led"></span><span class="hn">login01</span>connected<span class="hm">2 masters</span></div>
-      <div class="hrow"><span class="led"></span><span class="hn">gpu-04</span>connected<span class="hm">2 masters</span></div>
-      <div class="hrow"><span class="led"></span><span class="hn">compute</span>connected<span class="hm">1 master</span></div>
+      <div class="hrow"><span class="led"></span><span class="hn">login01</span>online<span class="hm">2 masters</span></div>
+      <div class="hrow"><span class="led"></span><span class="hn">gpu-04</span>online<span class="hm">2 masters</span></div>
+      <div class="hrow"><span class="led"></span><span class="hn">compute</span>online<span class="hm">1 master</span></div>
       <div class="hh" style="border:0;margin:11px 0 0;padding:10px 0 0;border-top:1px solid var(--line2)"><span>re-logins today</span><span class="w">0</span></div>
     </div>
   </div>
 </div></header>
 
 <section id="how"><div class="wrap">
-  <div class="stag reveal"><span class="num">01</span> how it works</div>
-  <h2 class="sec-h reveal">Type your 2FA once.<br>Then just <span class="amber">ssh</span>.</h2>
+  <div class="sec-head reveal"><div class="stag"><span class="num">01</span> how it works</div><h2>Type your 2FA once. Then just <span class="holo">ssh</span>.</h2></div>
   <div class="steps">
-    <div class="step brk reveal"><div class="n">[01]</div><h3>Add a host</h3><p>Its ssh-config alias, your password, and your 2FA secret — stored in the macOS Keychain. A one-shot test login runs before saving.</p></div>
-    <div class="step brk reveal"><div class="n">[02]</div><h3>It stays warm</h3><p>The daemon keeps two SSH ControlMaster connections alive per host, and auto-recovers them after sleep, network changes, and reboots.</p></div>
-    <div class="step brk reveal"><div class="n">[03]</div><h3>Connect instantly</h3><p>Run <code>ssh &lt;alias&gt;</code> in your own terminal. It reuses a warm connection — no password, no code, no waiting.</p></div>
+    <div class="step panel reveal"><div class="n">[01]</div><h3>Add a host</h3><p>Its ssh-config alias, your password, and your 2FA secret — stored in the macOS Keychain. A one-shot test login runs before saving.</p></div>
+    <div class="step panel reveal"><div class="n">[02]</div><h3>It stays warm</h3><p>The daemon keeps two SSH ControlMaster connections alive per host, and auto-recovers them after sleep, network changes, and reboots.</p></div>
+    <div class="step panel reveal"><div class="n">[03]</div><h3>Connect instantly</h3><p>Run <code>ssh &lt;alias&gt;</code> in your own terminal. It reuses a warm connection — no password, no code, no waiting.</p></div>
   </div>
 </div></section>
 
 <section id="features"><div class="wrap">
-  <div class="stag reveal"><span class="num">02</span> features</div>
-  <h2 class="sec-h reveal">Built for the connection you live in.</h2>
+  <div class="sec-head reveal"><div class="stag"><span class="num">02</span> features</div><h2>Built for the connection you live in.</h2></div>
   <div class="bento">
-    <div class="card brk flag span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div><h3>Stays logged in</h3><p>Two warm ControlMaster connections per host mean every <span class="mono">ssh</span>, <span class="mono">scp</span>, and editor remote reuses an open channel — instant, with no second factor to type.</p></div>
-    <div class="card brk span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Answers 2FA for you</h3><p>Submits your password and a fresh TOTP code at login — serialized so a shared Duo secret is never replayed inside its window.</p></div>
-    <div class="card brk span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div><h3>Self-healing</h3><p>Adopts live connections across restarts and rebuilds them after sleep / wake — zero re-login.</p></div>
-    <div class="card brk span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM port forwarding</h3><p>Optional: forward a local port to a running job's compute node (Jupyter, dashboards) with staleness detection.</p></div>
-    <div class="card brk span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><h3>Power-user honest</h3><p>Universal binary, 450+ tests, secrets in the Keychain, no telemetry — and a clear-eyed security model.</p></div>
-    <div class="card brk span6 reveal"><div class="stat-row">
-      <div class="stat"><div class="v">arm64+x86_64</div><div class="k">universal macOS binary</div></div>
+    <div class="card panel flag span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div><h3>Stays logged in</h3><p>Two warm ControlMaster connections per host mean every <span class="mono">ssh</span>, <span class="mono">scp</span>, and editor remote reuses an open channel — instant, with no second factor to type.</p></div>
+    <div class="card panel span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Answers 2FA for you</h3><p>Submits your password and a fresh TOTP code at login — serialized so a shared Duo secret is never replayed inside its window.</p></div>
+    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div><h3>Self-healing</h3><p>Adopts live connections across restarts and rebuilds them after sleep / wake — zero re-login.</p></div>
+    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM port forwarding</h3><p>Optional: forward a local port to a running job's compute node (Jupyter, dashboards) with staleness detection.</p></div>
+    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><h3>Power-user honest</h3><p>Universal binary, 450+ tests, secrets in the Keychain, no telemetry — and a clear-eyed security model.</p></div>
+    <div class="card panel span6 reveal"><div class="stat-row">
+      <div class="stat"><div class="v holo">arm64+x86_64</div><div class="k">universal macOS binary</div></div>
       <div class="stat"><div class="v"><span class="count" data-to="450">0</span>+</div><div class="k">automated tests · 9 hardening audits</div></div>
       <div class="stat"><div class="v"><span class="count" data-to="0">0</span></div><div class="k">codes typed after first login</div></div>
       <div class="stat"><div class="v">$0</div><div class="k">free &amp; open source (MIT)</div></div>
@@ -274,15 +265,14 @@
 </div></section>
 
 <section id="fit"><div class="wrap">
-  <div class="stag reveal"><span class="num">03</span> is it for you?</div>
-  <h2 class="sec-h reveal">Honest about the fit.</h2>
+  <div class="sec-head reveal"><div class="stag"><span class="num">03</span> is it for you?</div><h2>Honest about the fit.</h2></div>
   <div class="fit">
-    <div class="col brk reveal"><h3 class="amber">[ yes, if… ]</h3><ul>
+    <div class="col panel reveal"><h3 style="color:var(--cyan)">[ yes, if… ]</h3><ul>
       <li><span class="mk2 y">+</span> A host makes you type a <b>password + a 2FA code</b> on every login (Duo passcode, Google-Authenticator-style TOTP).</li>
       <li><span class="mk2 y">+</span> You want <b>persistent, instant</b> SSH to an HPC / SLURM cluster on a Mac.</li>
       <li><span class="mk2 y">+</span> You're tired of fragile <span class="mono">expect</span> + <span class="mono">oathtool</span> dotfiles doing this by hand.</li>
     </ul></div>
-    <div class="col brk reveal"><h3 style="color:#ff7a6b">[ not for… ]</h3><ul>
+    <div class="col panel reveal"><h3 style="color:#ff7a6b">[ not for… ]</h3><ul>
       <li><span class="mk2 n">−</span> Key-based logins — <span class="mono">ssh-agent</span> already handles those.</li>
       <li><span class="mk2 n">−</span> Push-only 2FA (approve-on-phone, no typed code).</li>
       <li><span class="mk2 n">−</span> A terminal replacement — you keep using your own terminal.</li>
@@ -291,19 +281,19 @@
 </div></section>
 
 <section id="security"><div class="wrap">
-  <div class="callout brk reveal">
+  <div class="callout reveal">
     <span class="ci"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span>
     <div><h3>Security, stated plainly</h3><p>SSH2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That's the convenience — but it means your "second factor" no longer protects you against someone with access to your unlocked Mac. Read the full <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p></div>
   </div>
 </div></section>
 
 <section id="support"><div class="wrap">
-  <div class="support brk reveal">
-    <div class="meter">GOAL ▸ $99 / year — the Apple Developer fee &nbsp; <span class="bar">[▓░░░░░░░░░]</span></div>
+  <div class="support reveal">
+    <div class="meter">GOAL ▸ $99 / YEAR — APPLE DEVELOPER FEE &nbsp; <span class="bar"><i></i></span></div>
     <h2>Help get SSH2FA notarized.</h2>
     <p>SSH2FA is free and open source. The one missing piece is an <b>Apple Developer membership ($99/year)</b> — with it, the app can be <b>notarized</b> so it installs with <b>zero Gatekeeper warnings</b> for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99.</p>
     <div class="support-btns">
-      <a class="btn btn-amber" href="https://ko-fi.com/shgao"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><path d="M6 1v3M10 1v3M14 1v3"/></svg>buy me a coffee</a>
+      <a class="btn btn-neon" href="https://ko-fi.com/shgao"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><path d="M6 1v3M10 1v3M14 1v3"/></svg>buy me a coffee</a>
       <a class="btn btn-ghost" href="https://github.com/sponsors/gasvn"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.6-4.7-10-9.4C.5 8.3 2 5 5.2 5c2 0 3.3 1.1 4.1 2.4l.7 1 .7-1C11.5 6.1 12.8 5 14.8 5 18 5 19.5 8.3 22 11.6 19.6 16.3 12 21 12 21z"/></svg>sponsor on github</a>
     </div>
     <div class="support-note">ko-fi (instant, 0% fee) or github sponsors · one-time or monthly · straight toward the $99</div>
@@ -311,16 +301,15 @@
 </div></section>
 
 <section id="install"><div class="wrap">
-  <div class="stag reveal"><span class="num">04</span> get started</div>
-  <h2 class="sec-h reveal">Up and running in a minute.</h2>
+  <div class="sec-head reveal"><div class="stag"><span class="num">04</span> get started</div><h2>Up and running in a minute.</h2></div>
   <div class="install">
-    <div class="ins brk reveal"><h3><span class="tag">DMG</span> download &amp; install</h3>
+    <div class="ins panel reveal"><h3><span class="tag">DMG</span> download &amp; install</h3>
       <div class="code"><span class="c"># grab SSH2FA.dmg from Releases, drag to /Applications</span>
 open <a href="https://github.com/gasvn/ssh2fa/releases">github.com/gasvn/ssh2fa/releases</a></div>
       <p>Un-notarized build? First launch: <b style="color:var(--text)">System Settings → Privacy &amp; Security → “Open Anyway,”</b> or:</p>
       <div class="code">xattr -dr com.apple.quarantine /Applications/SSH2FA.app</div>
     </div>
-    <div class="ins brk reveal"><h3><span class="tag">brew</span> homebrew</h3>
+    <div class="ins panel reveal"><h3><span class="tag">brew</span> homebrew</h3>
       <div class="code">brew install --cask gasvn/tap/ssh2fa</div>
       <p style="margin-top:18px"><b style="color:var(--text)">Or build it yourself</b> — a self-built app signed with your own free Apple ID has zero Gatekeeper friction:</p>
       <div class="code">git clone https://github.com/gasvn/ssh2fa
@@ -348,23 +337,17 @@ cd ssh2fa/auto2fa-mac && ./package-app.sh</div>
   const rm=matchMedia('(prefers-reduced-motion: reduce)').matches;
   const nav=document.getElementById('nav');
   addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>8),{passive:true});
-
-  // magnetic CTA
   const mag=document.getElementById('magnetic');
   if(!rm&&mag){mag.addEventListener('pointermove',e=>{const r=mag.getBoundingClientRect();mag.style.transform='translate('+((e.clientX-r.left-r.width/2)*.22)+'px,'+((e.clientY-r.top-r.height/2)*.35)+'px)';});mag.addEventListener('pointerleave',()=>mag.style.transform='');}
-
-  // reveal + count-up
   const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');e.target.querySelectorAll&&e.target.querySelectorAll('.count').forEach(cu);io.unobserve(e.target)}}),{threshold:.12,rootMargin:'0px 0px -40px 0px'});
   document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
   function cu(el){const to=+el.dataset.to;if(rm||to===0){el.textContent=to;return}let s=null;requestAnimationFrame(function f(t){s=s||t;const p=Math.min((t-s)/1100,1);el.textContent=Math.round(to*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(f)})}
-
-  // self-typing terminal
   const typed=document.getElementById('typed'),cur=document.getElementById('cur'),lines=[...document.querySelectorAll('#term [data-line]')];
   if(rm){typed.textContent='ssh gpu-04';lines.forEach(l=>l.classList.add('show'))}
   else{lines[0].classList.add('show');const cmd='ssh gpu-04';let i=0;
     const tk=()=>{if(i<=cmd.length){typed.textContent=cmd.slice(0,i++);setTimeout(tk,72)}else{cur.remove();rest(1)}};
     const rest=n=>{if(n<lines.length){lines[n].classList.add('show');setTimeout(()=>rest(n+1),n===3?170:520)}};
-    setTimeout(tk,2000)}
+    setTimeout(tk,1700)}
 </script>
 </body>
 </html>
