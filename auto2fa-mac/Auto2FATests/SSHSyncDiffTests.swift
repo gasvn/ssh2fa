@@ -21,19 +21,19 @@ final class SSHSyncDiffTests: XCTestCase {
 
     func testUnreachableFindsRegisteredMissingFromConfig() {
         XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a", "b"], configAliases: ["a"],
-                                               patterns: [], configHasIncludeOrMatch: false),
+                                               patterns: [], configIncompleteView: false),
                        ["b"])
     }
 
     func testUnreachableEmptyWhenAllPresent() {
         XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a"], configAliases: ["a", "z"],
-                                               patterns: [], configHasIncludeOrMatch: false), [])
+                                               patterns: [], configIncompleteView: false), [])
     }
 
     func testUnreachableSuppressedWhenConfigHasIncludeOrMatch() {
         // We can't see Included/Matched hosts → never false-alarm.
         XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a", "b"], configAliases: [],
-                                               patterns: [], configHasIncludeOrMatch: true), [])
+                                               patterns: [], configIncompleteView: true), [])
     }
 
     func testUnreachableSuppressedForWildcardCoveredHost() {
@@ -41,7 +41,7 @@ final class SSHSyncDiffTests: XCTestCase {
         XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["gpu-04", "lonely"],
                                                configAliases: [],
                                                patterns: ["gpu-*"],
-                                               configHasIncludeOrMatch: false),
+                                               configIncompleteView: false),
                        ["lonely"])
     }
 

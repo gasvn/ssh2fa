@@ -710,9 +710,10 @@ final class AppState: ObservableObject {
     /// Re-parse ~/.ssh/config into the in-memory cache. Cheap (small file) and
     /// the single disk read for everything config-derived below.
     func refreshConfigCache() {
-        let text = (try? String(contentsOfFile: SSHPaths.configFile(dir: SSHPaths.sshDir()),
-                                encoding: .utf8)) ?? ""
-        parsedConfig = SSHConfigParser.parseFull(text)
+        let dir = SSHPaths.sshDir()
+        // Follow Include directives so split configs (`Include config.d/*`) are
+        // discoverable too — not just top-level Host blocks.
+        parsedConfig = SSHConfigParser.parseConfig(at: SSHPaths.configFile(dir: dir), configDir: dir)
     }
 
     /// Hosts parsed from ~/.ssh/config (concrete Host blocks), from the cache.
@@ -724,13 +725,14 @@ final class AppState: ObservableObject {
     }
 
     /// Registered hosts that genuinely can't be reached from the config — kept
-    /// conservative (quiet under Include/Match, and for wildcard-covered hosts)
-    /// so it doesn't false-alarm on advanced configs.
+    /// conservative (quiet for wildcard-covered hosts, and when the view is
+    /// incomplete: Match blocks or an unresolved Include) so it doesn't
+    /// false-alarm on advanced configs.
     var unreachableRegisteredHosts: [String] {
         SSHSyncDiff.unreachable(registered: hosts.map { $0.host },
                                 configAliases: parsedConfig.hosts.map { $0.alias },
                                 patterns: parsedConfig.patterns,
-                                configHasIncludeOrMatch: parsedConfig.hasIncludeOrMatch)
+                                configIncompleteView: parsedConfig.incompleteView)
     }
 
     /// Regenerate ssh2fa.conf from the live host list — only when the user has

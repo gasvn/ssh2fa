@@ -27,8 +27,8 @@ enum SSHSyncDiff {
     static func unreachable(registered: [String],
                             configAliases: [String],
                             patterns: [String],
-                            configHasIncludeOrMatch: Bool) -> [String] {
-        if configHasIncludeOrMatch { return [] }
+                            configIncompleteView: Bool) -> [String] {
+        if configIncompleteView { return [] }
         let cfg = Set(configAliases)
         return registered.filter { alias in
             if cfg.contains(alias) { return false }
