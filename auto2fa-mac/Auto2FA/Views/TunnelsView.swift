@@ -25,6 +25,18 @@ struct TunnelsView: View {
         }
     }
 
+    private var noMatches: some View {
+        VStack(spacing: Spacing.s) {
+            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+            Text(appState.searchQuery.isEmpty
+                 ? "No tunnels with the selected tag."
+                 : "No tunnels match “\(appState.searchQuery)”")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Spacing.l)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             header
@@ -34,9 +46,13 @@ struct TunnelsView: View {
                 if !selection.isEmpty || !allTags.isEmpty {
                     filterBar
                 }
-                tunnelsList
-                    .controlSize(compactRows ? .small : .regular)
-                    .font(compactRows ? .caption : .body)
+                if visibleTunnels.isEmpty {
+                    noMatches
+                } else {
+                    tunnelsList
+                        .controlSize(compactRows ? .small : .regular)
+                        .font(compactRows ? .caption : .body)
+                }
             }
         }
         .padding(Spacing.m)

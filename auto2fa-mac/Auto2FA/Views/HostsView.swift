@@ -8,6 +8,8 @@ struct HostsView: View {
             header
             if appState.hosts.isEmpty {
                 emptyState
+            } else if visibleHosts.isEmpty {
+                noMatches
             } else {
                 hostsList
             }
@@ -17,6 +19,15 @@ struct HostsView: View {
 
     private var visibleHosts: [SSHHost] {
         appState.hosts.filter { SearchFilter.matches(query: appState.searchQuery, in: [$0.host]) }
+    }
+
+    private var noMatches: some View {
+        VStack(spacing: Spacing.s) {
+            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+            Text("No hosts match “\(appState.searchQuery)”").foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Spacing.l)
     }
 
     // MARK: - Header

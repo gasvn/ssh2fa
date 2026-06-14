@@ -39,6 +39,14 @@ struct TunnelRow: View {
         tunnel.displayState == .alive || tunnel.displayState == .starting
     }
 
+    /// A failure state where the user needs a recovery action (Retry / re-pick node).
+    private var isFailedState: Bool {
+        switch tunnel.displayState {
+        case .stale, .portBusy, .failed: return true
+        default: return false
+        }
+    }
+
     private var busyLabel: String {
         let msg = tunnel.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         return msg.isEmpty ? "Working…" : msg
@@ -94,11 +102,10 @@ struct TunnelRow: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(minWidth: 110, alignment: .leading)
 
-            // Node + via + metadata — shown at rest, ALL hidden on hover so the
-            // now-labeled action bar gets the full trailing width (otherwise the
-            // flexible node column squeezes the buttons and their text clips at
-            // the default window size).
-            if !hovering {
+            // Node + via + metadata — shown at rest, hidden on hover OR when the
+            // tunnel is failed (so the action bar / recovery buttons get the full
+            // trailing width without clipping).
+            if !hovering && !isFailedState {
                 // Node (secondary; "(no node)" tertiary) — flexible column.
                 Group {
                     if let n = tunnel.lastNode {
@@ -136,6 +143,19 @@ struct TunnelRow: View {
                     .transition(.opacity)
                 overflowMenu
                     .transition(.opacity)
+            } else if isFailedState {
+                // Failed → recovery actions at rest: Retry + re-pick Node.
+                Button { Task { await appState.toggleTunnel(tunnel) } } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                .disabled(appState.inFlightTunnels.contains(tunnel.name))
+                .transition(.opacity)
+                Button { appState.presentNodePicker(for: tunnel) } label: {
+                    Label("Node", systemImage: "list.bullet.rectangle")
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                .transition(.opacity)
             }
         }
         .padding(.vertical, compactRows ? 1 : 2)

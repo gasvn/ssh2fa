@@ -115,6 +115,16 @@ struct HostRow: View {
                     .transition(.opacity)
                 overflowMenu
                     .transition(.opacity)
+            } else if host.displayState == .failed {
+                // Failed → a prominent recovery action at rest (not hover-gated).
+                Button { Task { await appState.toggleHost(host) } } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(appState.inFlightHosts.contains(host.host))
+                .help("Retry connecting")
+                .transition(.opacity)
             }
         }
         .padding(.vertical, 2)

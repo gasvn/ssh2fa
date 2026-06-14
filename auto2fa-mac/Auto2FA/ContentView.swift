@@ -9,6 +9,7 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var showingWelcome = false
     @State private var showingPalette = false
+    @FocusState private var searchFocused: Bool
 
     // Body is broken into smaller pieces because the previous monolithic
     // chain of ~140 lines of modifiers tripped SourceKit's
@@ -57,6 +58,13 @@ struct ContentView: View {
         // Window is clear (wallpaper shows through, set in Auto2FAApp); the
         // host/tunnel lists carry their own real Liquid Glass cards.
         .toolbar { mainToolbar }
+        // ⌘F focuses the toolbar search field.
+        .background {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 
     @ToolbarContentBuilder
@@ -67,6 +75,7 @@ struct ContentView: View {
                 TextField("Search hosts & tunnels", text: $appState.searchQuery)
                     .textFieldStyle(.plain)
                     .frame(minWidth: 180)
+                    .focused($searchFocused)
             }
         }
         // Add Host / New Tunnel live in their section headers; Logs / Export /

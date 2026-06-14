@@ -23,6 +23,7 @@ struct AddHostSheet: View {
     @State private var testing = false
     @State private var testResult: (ok: Bool, message: String)? = nil
     @State private var error: String?
+    @State private var qrError: String?
     @State private var showOTPHelp = false
     /// nil = not checked / empty; false = typed alias isn't a Host in ssh config.
     @State private var hostInConfig: Bool? = nil
@@ -130,7 +131,24 @@ struct AddHostSheet: View {
                         TextField("otpauth://totp/…?secret=…   — or just the secret key",
                                   text: $otpauthURL)
                             .focused($focused, equals: .otpauth)
-                        Text("Paste the full otpauth:// URL or the bare base32 secret — either works.")
+                        HStack(spacing: Spacing.s) {
+                            Button {
+                                if let payload = QRDecoder.decodeFromClipboard() {
+                                    otpauthURL = payload; qrError = nil
+                                } else {
+                                    qrError = "No QR on the clipboard — screenshot the QR (⌘⇧⌃4 copies it to the clipboard), then click again."
+                                }
+                            } label: {
+                                Label("Scan QR from clipboard", systemImage: "qrcode.viewfinder")
+                            }
+                            .controlSize(.small)
+                            Spacer()
+                        }
+                        if let qrError {
+                            Text(qrError).font(.caption2).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text("Paste the full otpauth:// URL or the bare base32 secret — either works. Or screenshot the QR and click “Scan QR”.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         DisclosureGroup(isExpanded: $showOTPHelp) {

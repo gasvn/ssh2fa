@@ -859,6 +859,7 @@ final class AppState: ObservableObject {
         defer { inFlightTunnels.remove(tunnelName) }
         do {
             try await client.setTunnelNode(tunnelName, node: node, user: user)
+            RecentNodes.record(node)
             dismissSheet()
             await reloadAll()
             return nil
