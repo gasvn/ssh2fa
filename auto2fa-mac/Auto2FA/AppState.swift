@@ -12,7 +12,7 @@ enum ActiveSheet: Identifiable, Equatable {
     case nodePicker(tunnelName: String)
     case customNode(tunnelName: String)
     case confirmDelete(tunnelName: String)
-    case addHost
+    case addHost(prefillAlias: String?)
 
     var id: String {
         switch self {
@@ -20,7 +20,7 @@ enum ActiveSheet: Identifiable, Equatable {
         case .nodePicker(let n): return "nodePicker:\(n)"
         case .customNode(let n): return "customNode:\(n)"
         case .confirmDelete(let n): return "confirmDelete:\(n)"
-        case .addHost: return "addHost"
+        case .addHost(let a): return "addHost:\(a ?? "")"
         }
     }
 }
@@ -695,7 +695,7 @@ final class AppState: ObservableObject {
     func presentNodePicker(for tunnel: Tunnel) { activeSheet = .nodePicker(tunnelName: tunnel.name) }
     func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
-    func presentAddHost() { activeSheet = .addHost }
+    func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
     func dismissSheet() { activeSheet = nil }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error

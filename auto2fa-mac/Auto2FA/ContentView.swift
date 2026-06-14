@@ -151,8 +151,8 @@ struct ContentView: View {
             NodePickerSheet(tunnelName: name).environmentObject(appState)
         case .customNode(let name):
             CustomNodeSheet(tunnelName: name).environmentObject(appState)
-        case .addHost:
-            AddHostSheet().environmentObject(appState)
+        case .addHost(let alias):
+            AddHostSheet(prefillAlias: alias).environmentObject(appState)
         case .confirmDelete:
             EmptyView()  // unreachable — sheetBinding filters this case to nil
         }

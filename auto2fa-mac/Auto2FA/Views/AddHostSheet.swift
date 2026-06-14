@@ -28,6 +28,13 @@ struct AddHostSheet: View {
     /// nil = not checked / empty; false = typed alias isn't a Host in ssh config.
     @State private var hostInConfig: Bool? = nil
 
+    let prefillAlias: String?
+
+    init(prefillAlias: String? = nil) {
+        self.prefillAlias = prefillAlias
+        _hostname = State(initialValue: prefillAlias ?? "")
+    }
+
     /// True iff `alias` appears as a token on a `Host` line in ~/.ssh/config
     /// (respecting SSH_CONFIG_PATH). Returns true for an empty alias (nothing to
     /// warn about yet) and when there's no config file (can't disprove it).
