@@ -27,7 +27,11 @@ struct TunnelDetailsPopover: View {
     @State private var pollTask: Task<Void, Never>?
     @State private var postConnectDraft: String = ""
     @State private var urlPathDraft: String = ""
-    @State private var saveStatus: String?
+    // Per-section transient "Saved"/"Cleared" confirmation (auto-clears after a
+    // beat). Separate vars so a URL-path save never flashes its status next to
+    // the run-on-connect button (they're different sections).
+    @State private var urlSaveStatus: String?
+    @State private var cmdSaveStatus: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -119,10 +123,15 @@ struct TunnelDetailsPopover: View {
                             let trimmed = urlPathDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                             await appState.setUrlPath(for: tunnel,
                                 path: trimmed.isEmpty ? nil : trimmed)
-                            saveStatus = "Saved"
+                            urlSaveStatus = "Saved"
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            urlSaveStatus = nil
                         }
                     }
                     .disabled(urlPathDraft == (tunnel.urlPath ?? ""))
+                    if let s = urlSaveStatus {
+                        Text(s).font(.countBadge).foregroundStyle(.secondary)
+                    }
                 }
                 Text("Preview: ").font(.caption).foregroundStyle(.secondary) +
                 Text(previewURL()).font(.caption.monospaced())
@@ -147,19 +156,23 @@ struct TunnelDetailsPopover: View {
                         postConnectDraft = ""
                         Task {
                             await appState.setPostConnect(for: tunnel, cmd: nil)
-                            saveStatus = "Cleared"
+                            cmdSaveStatus = "Cleared"
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            cmdSaveStatus = nil
                         }
                     }
                     .disabled(postConnectDraft.isEmpty && tunnel.postConnectCmd == nil)
                     Spacer()
-                    if let s = saveStatus {
+                    if let s = cmdSaveStatus {
                         Text(s).font(.countBadge).foregroundStyle(.secondary)
                     }
                     Button("Save") {
                         Task {
                             let trimmed = postConnectDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                             await appState.setPostConnect(for: tunnel, cmd: trimmed.isEmpty ? nil : trimmed)
-                            saveStatus = "Saved"
+                            cmdSaveStatus = "Saved"
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            cmdSaveStatus = nil
                         }
                     }
                     .keyboardShortcut(.defaultAction)

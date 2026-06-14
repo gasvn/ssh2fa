@@ -205,7 +205,7 @@ struct NodePickerSheet: View {
             loading = false
         } catch {
             self.error = (error as? BackendClient.ClientError)?.errorDescription
-                       ?? error.localizedDescription
+                       ?? FriendlyText.friendlyError(error.localizedDescription)
             loading = false
         }
     }

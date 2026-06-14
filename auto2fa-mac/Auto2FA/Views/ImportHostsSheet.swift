@@ -54,5 +54,6 @@ struct ImportHostsSheet: View {
         }
         .padding(Spacing.xl)
         .frame(width: 560)
+        .onExitCommand { appState.dismissSheet() }   // Esc dismisses
     }
 }

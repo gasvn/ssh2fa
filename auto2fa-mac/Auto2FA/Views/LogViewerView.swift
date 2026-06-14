@@ -10,6 +10,7 @@ struct LogViewerView: View {
     @State private var filter = ""
     @State private var autoScroll = true
     @State private var error: String?
+    @State private var didLoad = false
     @State private var pollTask: Task<Void, Never>?
     /// How many lines the poll fetches. Reload bumps it so "see more history"
     /// isn't overwritten back to 500 on the next 2s tick.
@@ -49,6 +50,19 @@ struct LogViewerView: View {
                     .padding(8)
             }
 
+            if !didLoad && lines.isEmpty && error == nil {
+                VStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading log…").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if didLoad && filtered.isEmpty && error == nil {
+                Text(filter.isEmpty
+                     ? "No log output yet."
+                     : "No lines match “\(filter)”.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -72,6 +86,7 @@ struct LogViewerView: View {
                         proxy.scrollTo(filtered.count - 1, anchor: .bottom)
                     }
                 }
+            }
             }
         }
         .frame(minWidth: 700, minHeight: 400)
@@ -131,10 +146,12 @@ struct LogViewerView: View {
                     self.scrollTrigger &+= 1
                 }
                 self.error = nil
+                self.didLoad = true
             }
         } catch {
             await MainActor.run {
                 self.error = "Could not read log: \(error.localizedDescription)"
+                self.didLoad = true
             }
         }
     }

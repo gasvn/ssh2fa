@@ -16,6 +16,9 @@ struct NewTunnelSheet: View {
     @State private var parsedRemotePort: Int? = nil
     @State private var autoStart = false
     @State private var error: String?
+    /// Non-error confirmation of what a pasted SSH command parsed to. Kept
+    /// separate from `error` so it renders calm/secondary, not alarming red.
+    @State private var pasteHint: String?
     @State private var submitting = false
     @State private var suggestingPort = false
     @FocusState private var focused: Field?
@@ -125,6 +128,11 @@ struct NewTunnelSheet: View {
                     .foregroundStyle(.red)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let pasteHint {
+                Label(pasteHint, systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -205,6 +213,7 @@ struct NewTunnelSheet: View {
         let pb = NSPasteboard.general.string(forType: .string) ?? ""
         guard let parsed = SSHCommandParser.parse(pb) else {
             error = "Clipboard doesn't look like an SSH command or localhost URL."
+            pasteHint = nil
             return
         }
         error = nil
@@ -220,11 +229,9 @@ struct NewTunnelSheet: View {
         if let user = parsed.user { bits.append("user=\(user)") }
         if let lp = parsed.localPort { bits.append("local=\(lp)") }
         if let rp = parsed.remotePort { bits.append("remote=\(rp)") }
-        if !bits.isEmpty {
-            // Use error label as transient hint (yellow could be better but
-            // the slot is single-purpose). Briefly clear.
-            error = "Parsed: " + bits.joined(separator: ", ")
-        }
+        // Surface what we extracted as a calm secondary hint (not the red error
+        // label) so a successful paste never reads as a failure.
+        pasteHint = bits.isEmpty ? nil : "Parsed: " + bits.joined(separator: ", ")
     }
 
     private func submit() {

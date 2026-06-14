@@ -8,6 +8,7 @@ struct TunnelsView: View {
     @State private var activeTagFilter: String? = nil
     @State private var renamingTunnel: Tunnel? = nil
     @State private var renameDraft: String = ""
+    @State private var renameError: String?
 
     /// All distinct tags currently in use, sorted, for the filter chips.
     private var allTags: [String] {
@@ -255,6 +256,7 @@ struct TunnelsView: View {
                 }
                 Button("Rename…") {
                     renameDraft = t.name
+                    renameError = nil
                     renamingTunnel = t
                 }
                 Menu("Tags") {
@@ -333,6 +335,12 @@ struct TunnelsView: View {
             Text("Currently: \(t.name)").font(.caption).foregroundStyle(.secondary)
             TextField("new-name", text: $renameDraft)
                 .textFieldStyle(.roundedBorder)
+                .onChange(of: renameDraft) { _, _ in renameError = nil }
+            if let renameError {
+                Text(renameError)
+                    .font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { renamingTunnel = nil }
@@ -341,8 +349,13 @@ struct TunnelsView: View {
                     let target = t
                     let newName = renameDraft
                     Task {
-                        _ = await appState.renameTunnel(target, to: newName)
-                        renamingTunnel = nil
+                        // Keep the sheet open on failure (e.g. duplicate name)
+                        // so the user sees why instead of it silently closing.
+                        if let err = await appState.renameTunnel(target, to: newName) {
+                            renameError = err
+                        } else {
+                            renamingTunnel = nil
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)

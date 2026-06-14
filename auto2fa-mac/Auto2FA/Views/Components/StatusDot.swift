@@ -3,7 +3,8 @@ import SwiftUI
 /// A small status indicator dot. Shows:
 /// - A pulsing filled circle for `working` states (connecting / starting).
 /// - An exclamation-mark triangle for `attention` states (failed / stale / portBusy).
-/// - A plain filled circle for `ok` (connected / alive) and `idle` states.
+/// - A filled circle for `ok` (connected / alive); a hollow (stroked) circle
+///   for `idle` (stopped) — so the two differ by shape, not colour alone.
 ///
 /// This is the single shared status indicator for the whole app (it replaced
 /// the per-view `PulsingDot` implementations).
@@ -65,9 +66,17 @@ struct StatusDot: View {
                     )
                     .onAppear { phase = true }
 
-            case .ok, .idle:
+            case .ok:
                 Circle()
                     .fill(color)
+
+            case .idle:
+                // Hollow (stroked) so a stopped/idle host is distinguishable
+                // from a connected one by SHAPE, not colour alone — matters on
+                // glass surfaces and for colour-blind users (mirrors the
+                // solid-vs-hollow convention used by the per-host master dot).
+                Circle()
+                    .strokeBorder(color, lineWidth: 1.5)
             }
         }
         .frame(width: RowMetric.iconSize, height: RowMetric.iconSize)
