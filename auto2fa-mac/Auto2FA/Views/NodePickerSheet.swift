@@ -12,6 +12,27 @@ struct NodePickerSheet: View {
     @State private var error: String?
     @State private var selection: SqueueJob.ID?
     @State private var loadedJumpName: String?
+    @State private var filter: String = ""
+
+    /// Jobs passing the filter, RUNNING (state R) first, then by JobID.
+    private var visibleJobs: [SqueueJob] {
+        jobs
+            .filter { SearchFilter.matches(query: filter,
+                                           in: [$0.jobid, $0.partition, $0.name, $0.node, $0.state]) }
+            .sorted { a, b in
+                let ar = a.state.uppercased().hasPrefix("R")
+                let br = b.state.uppercased().hasPrefix("R")
+                if ar != br { return ar }
+                return a.jobid < b.jobid
+            }
+    }
+
+    /// Recently-used nodes that are still running in the loaded list — one-click
+    /// re-select.
+    private var recentRunningNodes: [String] {
+        let live = Set(jobs.map { $0.node })
+        return RecentNodes.all().filter { live.contains($0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.l) {
@@ -25,6 +46,37 @@ struct NodePickerSheet: View {
                         .font(.callout)
                 }
                 Spacer()
+            }
+
+            // Recent nodes (still running) — one-click re-select.
+            if !recentRunningNodes.isEmpty {
+                HStack(spacing: Spacing.xs) {
+                    Text("Recent:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(recentRunningNodes, id: \.self) { node in
+                        Button {
+                            if let job = jobs.first(where: { $0.node == node }) { selection = job.id }
+                        } label: {
+                            Text(node).font(.caption.monospaced())
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Select the job on \(node)")
+                    }
+                    Spacer()
+                }
+            }
+
+            // Filter — squeue can return dozens of jobs.
+            if !loading && error == nil && !jobs.isEmpty {
+                HStack(spacing: Spacing.s) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Filter by job, partition, name, node…", text: $filter)
+                        .textFieldStyle(.roundedBorder)
+                    if !filter.isEmpty {
+                        Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                    }
+                }
             }
 
             // Table / state container — opaque grouped surface inside the
@@ -53,8 +105,19 @@ struct NodePickerSheet: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, Spacing.xl)
+                } else if visibleJobs.isEmpty {
+                    Text("No jobs match “\(filter)”.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, Spacing.xl)
                 } else {
-                    Table(jobs, selection: $selection) {
+                    Table(visibleJobs, selection: $selection) {
+                        TableColumn("State") { job in
+                            Text(job.state)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(job.state.uppercased().hasPrefix("R") ? Color.green : Color.secondary)
+                        }
+                        .width(min: 44, ideal: 54)
                         TableColumn("JobID") { Text($0.jobid).fontDesign(.monospaced) }
                             .width(min: 70)
                         TableColumn("Partition") { Text($0.partition) }
@@ -163,6 +226,13 @@ struct NodePickerSheet: View {
             ) {
                 error = errMsg  // surface in the picker; don't dismiss
                 submitting = false
+            } else {
+                // Success → record the allocation's expiry for the row countdown.
+                if let tl = job.timeLeft, let secs = SlurmTime.seconds(tl) {
+                    TunnelDeadlines.set(tunnelName, endsAt: Date().addingTimeInterval(secs))
+                } else {
+                    TunnelDeadlines.clear(tunnelName)   // unlimited / unknown → no countdown
+                }
             }
             // on success: appState.pickNode dismisses the sheet, no need to clear submitting
         }

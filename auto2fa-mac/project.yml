@@ -66,6 +66,13 @@ targets:
       - path: Auto2FATests
       - path: Auto2FA/SyncCore.swift
       - path: Auto2FA/SearchFilter.swift
+      - path: Auto2FA/RecentNodes.swift
+      - path: Auto2FA/SlurmTime.swift
+      - path: Auto2FA/SSHPaths.swift
+      - path: Auto2FA/SSHConfigParser.swift
+      - path: Auto2FA/SSHSyncDiff.swift
+      - path: Auto2FA/ControlPathResolver.swift
+      - path: Auto2FA/SSHConfigManager.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

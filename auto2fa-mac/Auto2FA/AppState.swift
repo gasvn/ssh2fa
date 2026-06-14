@@ -12,7 +12,8 @@ enum ActiveSheet: Identifiable, Equatable {
     case nodePicker(tunnelName: String)
     case customNode(tunnelName: String)
     case confirmDelete(tunnelName: String)
-    case addHost
+    case addHost(prefillAlias: String?)
+    case importHosts
 
     var id: String {
         switch self {
@@ -20,7 +21,8 @@ enum ActiveSheet: Identifiable, Equatable {
         case .nodePicker(let n): return "nodePicker:\(n)"
         case .customNode(let n): return "customNode:\(n)"
         case .confirmDelete(let n): return "confirmDelete:\(n)"
-        case .addHost: return "addHost"
+        case .addHost(let a): return "addHost:\(a ?? "")"
+        case .importHosts: return "importHosts"
         }
     }
 }
@@ -203,6 +205,7 @@ final class AppState: ObservableObject {
             self.hosts = try await client.listHosts()
             self.tunnels = try await client.listTunnels()
             updateDockBadge()
+            checkDeadlines()
             // On the very first reload at app launch, seed the dedup map
             // with every tunnel's current status — otherwise the first
             // batch of TUNNEL_STATUS_CHANGED events would each be treated
@@ -218,6 +221,7 @@ final class AppState: ObservableObject {
             // banner and reset the failure streak.
             reloadFailStreak = 0
             if connectionError != nil { connectionError = nil }
+            syncSSHConfigIfEnabled()
         } catch {
             // A single background-poll timeout is almost always a transient blip
             // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
@@ -229,6 +233,38 @@ final class AppState: ObservableObject {
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if reloadFailStreak >= 3 {
                 connectionError = "Daemon is slow to respond — retrying…"
+            }
+        }
+    }
+
+    // MARK: - Compute-allocation expiry warnings
+
+    /// Tunnel names already warned about imminent expiry (re-armed when the
+    /// deadline moves back out past the threshold or is cleared).
+    private var warnedDeadlines: Set<String> = []
+
+    /// Fire a one-time notch warning ~10 min before a running tunnel's compute
+    /// allocation expires. Called on every reload (≤5s cadence).
+    private func checkDeadlines() {
+        let now = Date()
+        let warnWindow: TimeInterval = 600   // 10 min
+        for t in tunnels {
+            let on = (t.displayState == .alive || t.displayState == .starting)
+            guard on, let endsAt = TunnelDeadlines.endsAt(t.name) else {
+                warnedDeadlines.remove(t.name)
+                continue
+            }
+            let remaining = endsAt.timeIntervalSince(now)
+            if remaining > warnWindow {
+                warnedDeadlines.remove(t.name)        // re-arm
+            } else if remaining > 0, !warnedDeadlines.contains(t.name) {
+                warnedDeadlines.insert(t.name)
+                notchPresenter.show(
+                    systemImage: "hourglass.bottomhalf.filled",
+                    title: "\(t.name): ~\(max(1, Int(remaining / 60))) min left",
+                    description: "Compute allocation expiring soon",
+                    tint: .orange
+                )
             }
         }
     }
@@ -662,8 +698,35 @@ final class AppState: ObservableObject {
     func presentNodePicker(for tunnel: Tunnel) { activeSheet = .nodePicker(tunnelName: tunnel.name) }
     func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
-    func presentAddHost() { activeSheet = .addHost }
+    func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
+    func presentImport() { activeSheet = .importHosts }
     func dismissSheet() { activeSheet = nil }
+
+    /// Hosts parsed from ~/.ssh/config (concrete Host blocks).
+    var configHosts: [ConfigHost] {
+        let dir = SSHPaths.sshDir()
+        let text = (try? String(contentsOfFile: SSHPaths.configFile(dir: dir), encoding: .utf8)) ?? ""
+        return SSHConfigParser.parse(text)
+    }
+
+    /// Config hosts not yet registered — fuel for the import sheet.
+    var importableHosts: [ConfigHost] {
+        SSHSyncDiff.importable(configHosts: configHosts, registered: hosts.map { $0.host })
+    }
+
+    /// Registered hosts that vanished from ~/.ssh/config — they can't connect.
+    var unreachableRegisteredHosts: [String] {
+        SSHSyncDiff.unreachable(registered: hosts.map { $0.host },
+                                configAliases: configHosts.map { $0.alias })
+    }
+
+    /// Regenerate ssh2fa.conf from the live host list — only when the user has
+    /// opted into warm reuse. No-op otherwise. Safe to call on every reload
+    /// (writeManagedConf skips unchanged content).
+    func syncSSHConfigIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: SettingsKey.warmReuseEnabled) else { return }
+        try? SSHConfigManager.writeManagedConf(aliases: hosts.map { $0.host }, dir: SSHPaths.sshDir())
+    }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error
     /// message on failure (so the sheet can show it inline rather than
@@ -844,6 +907,7 @@ final class AppState: ObservableObject {
                                          otpauthURL: otpauthURL,
                                          autoConnect: autoConnect)
             await reloadAll()
+            WarmReuseConsent.offerIfNeeded(currentAliases: hosts.map { $0.host })
             return nil
         } catch {
             return (error as? BackendClient.ClientError)?.errorDescription
@@ -859,6 +923,7 @@ final class AppState: ObservableObject {
         defer { inFlightTunnels.remove(tunnelName) }
         do {
             try await client.setTunnelNode(tunnelName, node: node, user: user)
+            RecentNodes.record(node)
             dismissSheet()
             await reloadAll()
             return nil

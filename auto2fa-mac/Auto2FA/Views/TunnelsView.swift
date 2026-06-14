@@ -25,6 +25,18 @@ struct TunnelsView: View {
         }
     }
 
+    private var noMatches: some View {
+        VStack(spacing: Spacing.s) {
+            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+            Text(appState.searchQuery.isEmpty
+                 ? "No tunnels with the selected tag."
+                 : "No tunnels match “\(appState.searchQuery)”")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Spacing.l)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             header
@@ -34,9 +46,13 @@ struct TunnelsView: View {
                 if !selection.isEmpty || !allTags.isEmpty {
                     filterBar
                 }
-                tunnelsList
-                    .controlSize(compactRows ? .small : .regular)
-                    .font(compactRows ? .caption : .body)
+                if visibleTunnels.isEmpty {
+                    noMatches
+                } else {
+                    tunnelsList
+                        .controlSize(compactRows ? .small : .regular)
+                        .font(compactRows ? .caption : .body)
+                }
             }
         }
         .padding(Spacing.m)
@@ -70,10 +86,9 @@ struct TunnelsView: View {
             countPill(appState.tunnels.count)
             Spacer()
             Button { appState.presentNewTunnel() } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
+                Label("New Tunnel", systemImage: "plus")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.glass)
             .help("New tunnel (⌘N)")
         }
     }
@@ -200,8 +215,7 @@ struct TunnelsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
-        // Content sits at the BASE layer in a quiet OPAQUE grouped surface —
-        // no glass. Rows read crisply against the solid control background.
+        // Rows float directly on the window's frosted glass (no separate card).
         .groupedContent()
         .sheet(item: $detailsForTunnel) { t in
             TunnelDetailsPopover(tunnel: t)

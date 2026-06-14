@@ -39,6 +39,34 @@ struct TunnelRow: View {
         tunnel.displayState == .alive || tunnel.displayState == .starting
     }
 
+    /// A failure state where the user needs a recovery action (Retry / re-pick node).
+    private var isFailedState: Bool {
+        switch tunnel.displayState {
+        case .stale, .portBusy, .failed: return true
+        default: return false
+        }
+    }
+
+    private func countdownColor(_ remaining: TimeInterval) -> Color {
+        if remaining < 300 { return .red }      // < 5 min (incl. expired)
+        if remaining < 1800 { return .orange }  // < 30 min
+        return .secondary
+    }
+
+    /// Live compute-allocation countdown (SLURM walltime remaining).
+    @ViewBuilder
+    private func countdownView(endsAt: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let remaining = endsAt.timeIntervalSince(ctx.date)
+            Label(SlurmTime.format(remaining: remaining), systemImage: "hourglass")
+                .labelStyle(.titleAndIcon)
+                .font(.rowMeta)
+                .foregroundStyle(countdownColor(remaining))
+                .lineLimit(1)
+                .help("Compute allocation time left")
+        }
+    }
+
     private var busyLabel: String {
         let msg = tunnel.lastMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         return msg.isEmpty ? "Working…" : msg
@@ -94,27 +122,29 @@ struct TunnelRow: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(minWidth: 110, alignment: .leading)
 
-            // Node (secondary; "(no node)" tertiary) — flexible column.
-            Group {
-                if let n = tunnel.lastNode {
-                    Text(n)
-                        .font(.rowIdentifier)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    Text("(no node)")
-                        .font(.rowMeta)
-                        .foregroundStyle(.tertiary)
-                        .italic()
-                        .lineLimit(1)
+            // Node + via + metadata — shown at rest, hidden on hover OR when the
+            // tunnel is failed (so the action bar / recovery buttons get the full
+            // trailing width without clipping).
+            if !hovering && !isFailedState {
+                // Node (secondary; "(no node)" tertiary) — flexible column.
+                Group {
+                    if let n = tunnel.lastNode {
+                        Text(n)
+                            .font(.rowIdentifier)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text("(no node)")
+                            .font(.rowMeta)
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                            .lineLimit(1)
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            // via <jump> — the existing clickable jump-host Menu, compact.
-            // Hidden on hover (it lives in the `⋯` overflow as "Use jump host").
-            if !hovering {
+                // via <jump> — clickable jump-host Menu (also in the ⋯ overflow).
                 viaMenu
                     .frame(width: 70, alignment: .leading)
 
@@ -133,6 +163,19 @@ struct TunnelRow: View {
                     .transition(.opacity)
                 overflowMenu
                     .transition(.opacity)
+            } else if isFailedState {
+                // Failed → recovery actions at rest: Retry + re-pick Node.
+                Button { Task { await appState.toggleTunnel(tunnel) } } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                .disabled(appState.inFlightTunnels.contains(tunnel.name))
+                .transition(.opacity)
+                Button { appState.presentNodePicker(for: tunnel) } label: {
+                    Label("Node", systemImage: "list.bullet.rectangle")
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                .transition(.opacity)
             }
         }
         .padding(.vertical, compactRows ? 1 : 2)
@@ -187,7 +230,9 @@ struct TunnelRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
-                if let aliveTxt = tunnel.aliveSince() {
+                if tunnelIsOn, let endsAt = TunnelDeadlines.endsAt(tunnel.name) {
+                    countdownView(endsAt: endsAt)
+                } else if let aliveTxt = tunnel.aliveSince() {
                     Text(aliveTxt)
                         .font(.rowMeta)
                         .foregroundStyle(.secondary)
@@ -270,6 +315,7 @@ struct TunnelRow: View {
         @ViewBuilder label: () -> L
     ) -> some View {
         Button(action: action, label: label)
+            .labelStyle(.titleAndIcon)
             .buttonStyle(.plain)
             .font(.caption)
             .padding(.horizontal, 8)

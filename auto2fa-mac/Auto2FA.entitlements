@@ -14,5 +14,11 @@
 -->
 <plist version="1.0">
 <dict>
+    <!-- Required so the hardened-runtime app can drive Terminal.app via
+         AppleScript (the "Open Terminal" host action). Without this, Apple
+         Events are blocked outright under hardened runtime. The user still
+         grants per-target consent via the Automation TCC prompt. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

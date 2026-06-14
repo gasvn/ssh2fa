@@ -6,8 +6,10 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var showingWelcome = false
     @State private var showingPalette = false
+    @FocusState private var searchFocused: Bool
 
     // Body is broken into smaller pieces because the previous monolithic
     // chain of ~140 lines of modifiers tripped SourceKit's
@@ -41,6 +43,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .a2fShowLogs)) { _ in
                 openWindow(id: "logs")
             }
+            .onReceive(NotificationCenter.default.publisher(for: .a2fShowSettings)) { _ in
+                openSettings()
+            }
     }
 
     private var mainStack: some View {
@@ -50,12 +55,16 @@ struct ContentView: View {
         }
         .padding(Spacing.l)
         .frame(minWidth: 700, minHeight: 400)
-        // Full Liquid Glass: a frosted pane that blurs the desktop, on a
-        // genuinely transparent window. Content floats on the frost (legible
-        // via vibrancy); no opaque gray surfaces.
-        .windowGlassBackground()
-        .transparentWindow()
+        // Window is clear (wallpaper shows through, set in Auto2FAApp); the
+        // host/tunnel lists carry their own real Liquid Glass cards.
         .toolbar { mainToolbar }
+        // ⌘F focuses the toolbar search field.
+        .background {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 
     @ToolbarContentBuilder
@@ -66,42 +75,17 @@ struct ContentView: View {
                 TextField("Search hosts & tunnels", text: $appState.searchQuery)
                     .textFieldStyle(.plain)
                     .frame(minWidth: 180)
+                    .focused($searchFocused)
             }
         }
-        ToolbarItemGroup(placement: .primaryAction) {
-            Button { appState.presentAddHost() } label: {
-                Label("Add Host", systemImage: "server.rack")
+        // Add Host / New Tunnel live in their section headers; Logs / Export /
+        // Import live in the menu bar (Window / File). The toolbar gets a DIRECT
+        // Settings button — one click opens it, no dropdown.
+        ToolbarItem(placement: .primaryAction) {
+            Button { openSettings() } label: {
+                Label("Settings", systemImage: "gearshape")
             }
-            .buttonStyle(.glass)
-
-            Button { appState.presentNewTunnel() } label: {
-                Label("New Tunnel", systemImage: "plus")
-            }
-            .buttonStyle(.glassProminent)
-
-            Menu {
-                Button("Settings…") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                }
-                Button("Show Logs…") { openWindow(id: "logs") }
-                Divider()
-                Button("Export Tunnels…") {
-                    if let err = TunnelExportImport.exportToFile(appState.tunnels),
-                       err != "cancelled" {
-                        appState.showActionError("Export failed: \(err)")
-                    }
-                }
-                Button("Import Tunnels…") {
-                    let (imported, err) = TunnelExportImport.importFromFile()
-                    if let imported, !imported.isEmpty {
-                        Task { _ = await appState.importTunnels(imported) }
-                    } else if let err, err != "cancelled" {
-                        appState.showActionError(err)
-                    }
-                }
-            } label: {
-                Label("More", systemImage: "ellipsis.circle")
-            }
+            .help("Settings (⌘,)")
         }
     }
 
@@ -167,8 +151,10 @@ struct ContentView: View {
             NodePickerSheet(tunnelName: name).environmentObject(appState)
         case .customNode(let name):
             CustomNodeSheet(tunnelName: name).environmentObject(appState)
-        case .addHost:
-            AddHostSheet().environmentObject(appState)
+        case .addHost(let alias):
+            AddHostSheet(prefillAlias: alias).environmentObject(appState)
+        case .importHosts:
+            ImportHostsSheet().environmentObject(appState)
         case .confirmDelete:
             EmptyView()  // unreachable — sheetBinding filters this case to nil
         }
@@ -216,7 +202,7 @@ struct ContentView: View {
             get: {
                 switch appState.activeSheet {
                 case .confirmDelete, nil: return nil
-                case .newTunnel, .nodePicker, .customNode, .addHost: return appState.activeSheet
+                case .newTunnel, .nodePicker, .customNode, .addHost, .importHosts: return appState.activeSheet
                 }
             },
             set: { newValue in if newValue == nil { appState.dismissSheet() } }

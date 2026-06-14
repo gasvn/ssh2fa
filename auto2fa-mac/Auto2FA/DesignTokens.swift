@@ -195,6 +195,16 @@ extension View {
             )
     }
 
+    /// Real Liquid Glass CONTENT card — the main hosts/tunnels lists sit in
+    /// this (refractive frosted glass, legible) floating over the clear
+    /// wallpaper window. Sheets keep the transparent `groupedContent` to avoid
+    /// glass-on-glass over the sheet's own system glass.
+    func glassContent(cornerRadius: CGFloat = Radius.card) -> some View {
+        self
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
+    }
+
     /// Lighter glass for floating chrome — bars / palettes.
     func glassChrome(cornerRadius: CGFloat = Radius.control) -> some View {
         self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius, style: .continuous))
@@ -206,14 +216,14 @@ extension View {
         return self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    /// Frosted glass window pane — blurs the DESKTOP behind the window (needs
-    /// `transparentWindow()` so the NSWindow is non-opaque, else it samples a
-    /// flat gray backing). This frosted pane is the single glass surface the
-    /// whole UI floats on.
+    /// Real Liquid Glass window backing — the actual `.glassEffect` material
+    /// full-bleed (bright, refractive), NOT the flat-gray NSVisualEffect
+    /// vibrancy (which reads gray in Light mode). Pairs with `transparentWindow()`
+    /// so the glass refracts the desktop instead of a gray window backing.
     func windowGlassBackground() -> some View {
         self.background(
-            VisualEffectBackground(material: .underWindowBackground,
-                                   blending: .behindWindow)
+            Color.clear
+                .glassEffect(.regular, in: Rectangle())
                 .ignoresSafeArea()
         )
     }

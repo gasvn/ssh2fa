@@ -11,4 +11,8 @@ extension Notification.Name {
     static let a2fShowLogs = Notification.Name("auto2fa.showLogs")
     /// Open the per-tunnel details popover. userInfo["name"] = tunnel name.
     static let a2fShowTunnelDetails = Notification.Name("auto2fa.showTunnelDetails")
+    /// Open the SwiftUI Settings scene. The legacy `showSettingsWindow:`
+    /// selector is a no-op on macOS 26, so AppKit (MenuBarController) posts this
+    /// for a SwiftUI view to handle via `@Environment(\.openSettings)`.
+    static let a2fShowSettings = Notification.Name("auto2fa.showSettings")
 }

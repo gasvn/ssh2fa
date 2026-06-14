@@ -8,6 +8,8 @@ struct HostsView: View {
             header
             if appState.hosts.isEmpty {
                 emptyState
+            } else if visibleHosts.isEmpty {
+                noMatches
             } else {
                 hostsList
             }
@@ -17,6 +19,15 @@ struct HostsView: View {
 
     private var visibleHosts: [SSHHost] {
         appState.hosts.filter { SearchFilter.matches(query: appState.searchQuery, in: [$0.host]) }
+    }
+
+    private var noMatches: some View {
+        VStack(spacing: Spacing.s) {
+            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+            Text("No hosts match “\(appState.searchQuery)”").foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(Spacing.l)
     }
 
     // MARK: - Header
@@ -30,11 +41,15 @@ struct HostsView: View {
             countPill(appState.hosts.count)
             Spacer()
             Button { appState.presentAddHost() } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
+                Label("Add Host", systemImage: "plus")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.glass)
             .help("Add a host (register SSH + 2FA)")
+            Button { appState.presentImport() } label: {
+                Label("Add from ~/.ssh/config", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.glass)
+            .help("Import hosts from your SSH config file")
         }
     }
 
@@ -64,8 +79,7 @@ struct HostsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environmentObject(appState)
-        // Content sits at the BASE layer in a quiet OPAQUE grouped surface —
-        // no glass. Rows read crisply against the solid control background.
+        // Rows float directly on the window's frosted glass (no separate card).
         .groupedContent()
     }
 
@@ -82,6 +96,15 @@ struct HostsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            if !appState.importableHosts.isEmpty {
+                Button {
+                    appState.presentImport()
+                } label: {
+                    Label("Found \(appState.importableHosts.count) host(s) in ~/.ssh/config — pick which to protect",
+                          systemImage: "sparkles")
+                }
+                .buttonStyle(.glassProminent)
+            }
             Button {
                 appState.presentAddHost()
             } label: {

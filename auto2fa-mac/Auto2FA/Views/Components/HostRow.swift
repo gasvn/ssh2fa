@@ -59,6 +59,12 @@ struct HostRow: View {
                 .truncationMode(.tail)
                 .frame(minWidth: 56, alignment: .leading)
 
+            if appState.unreachableRegisteredHosts.contains(host.host) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("\"\(host.host)\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back, or remove this registration.")
+            }
+
             // Spinner + progress text while busy, else flexible hostname column.
             if isBusy {
                 HStack(spacing: Spacing.xs) {
@@ -115,6 +121,16 @@ struct HostRow: View {
                     .transition(.opacity)
                 overflowMenu
                     .transition(.opacity)
+            } else if host.displayState == .failed {
+                // Failed → a prominent recovery action at rest (not hover-gated).
+                Button { Task { await appState.toggleHost(host) } } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(appState.inFlightHosts.contains(host.host))
+                .help("Retry connecting")
+                .transition(.opacity)
             }
         }
         .padding(.vertical, 2)
@@ -198,6 +214,7 @@ struct HostRow: View {
         @ViewBuilder label: () -> L
     ) -> some View {
         Button(action: action, label: label)
+            .labelStyle(.titleAndIcon)
             .buttonStyle(.plain)
             .font(.caption)
             .padding(.horizontal, 8)
@@ -269,28 +286,9 @@ struct HostRow: View {
 
     // MARK: - Terminal (verbatim from old HostsView)
 
-    /// Pop a Terminal.app window running `ssh <host>` over the warm
-    /// ControlMaster — instantaneous, no 2FA prompt.
+    /// Open `ssh <host>` in the user's chosen terminal (first-time picker, then
+    /// remembered — see `TerminalLauncher`). No Automation permission needed.
     private func openTerminal(for host: SSHHost) {
-        // Escape for the AppleScript string literal (defense-in-depth — the
-        // daemon restricts host names to [A-Za-z0-9._-] at add time, but a
-        // hand-edited passwords.json could contain a quote that would break
-        // out of the literal).
-        let safeHost = host.host
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "ssh \(safeHost)"
-        end tell
-        """
-        var error: NSDictionary?
-        if let scriptObj = NSAppleScript(source: script) {
-            scriptObj.executeAndReturnError(&error)
-            if let error {
-                NSLog("[SSH2FA] openTerminal AppleScript error: \(error)")
-            }
-        }
+        TerminalLauncher.openSSH(host: host.host)
     }
 }
