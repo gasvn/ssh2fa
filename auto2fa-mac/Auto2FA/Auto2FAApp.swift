@@ -23,7 +23,7 @@ struct Auto2FAApp: App {
             // that blurs the actual desktop. Needs the window to be non-opaque,
             // which `.containerBackground(.clear, for: .window)` guarantees.
             .windowGlassBackground()
-            .containerBackground(.clear, for: .window)
+            .transparentWindow()
             .onAppear {
                 SingleInstance.enforceOrExit()
                 installMenuBarOnce()
