@@ -9,6 +9,14 @@ enum SSHConfigManager {
     static let endMarker   = "# <<< SSH2FA managed (Include) <<<"
     static let includeLine = "Include ssh2fa.conf"
 
+    /// Normalize line endings to LF before splitting — Swift treats "\r\n" as
+    /// ONE Character grapheme, so split(separator: "\n") wouldn't break CRLF
+    /// lines and marker detection would miss (→ duplicate Include). We rewrite
+    /// the whole config anyway (with a backup), so emitting LF is fine.
+    private static func lf(_ s: String) -> String {
+        s.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+
     // MARK: - Pure transforms
 
     /// The full ssh2fa.conf body for a set of aliases (sorted → stable output).
@@ -31,8 +39,8 @@ enum SSHConfigManager {
     /// True if the config text already contains an `Include ssh2fa.conf` line
     /// (marked region OR a bare line).
     static func hasInclude(_ configText: String) -> Bool {
-        for raw in configText.split(separator: "\n") {
-            if raw.trimmingCharacters(in: .whitespaces).lowercased() == includeLine.lowercased() {
+        for raw in lf(configText).split(separator: "\n") {
+            if raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == includeLine.lowercased() {
                 return true
             }
         }
@@ -45,17 +53,17 @@ enum SSHConfigManager {
     static func ensureInclude(in configText: String) -> String {
         var kept: [String] = []
         var inRegion = false
-        for raw in configText.split(separator: "\n", omittingEmptySubsequences: false) {
+        for raw in lf(configText).split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
-            let t = line.trimmingCharacters(in: .whitespaces)
+            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if t == beginMarker { inRegion = true; continue }
             if t == endMarker { inRegion = false; continue }
             if inRegion { continue }
             if t.lowercased() == includeLine.lowercased() { continue }
             kept.append(line)
         }
-        while kept.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeFirst() }
-        while kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeLast() }
+        while kept.first?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { kept.removeFirst() }
+        while kept.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { kept.removeLast() }
         let region = "\(beginMarker)\n\(includeLine)\n\(endMarker)\n"
         if kept.isEmpty { return region }
         return region + "\n" + kept.joined(separator: "\n") + "\n"
@@ -105,15 +113,15 @@ enum SSHConfigManager {
         if let original = try? String(contentsOfFile: cfgPath, encoding: .utf8) {
             var kept: [String] = []
             var inRegion = false
-            for raw in original.split(separator: "\n", omittingEmptySubsequences: false) {
-                let t = raw.trimmingCharacters(in: .whitespaces)
+            for raw in lf(original).split(separator: "\n", omittingEmptySubsequences: false) {
+                let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 if t == beginMarker { inRegion = true; continue }
                 if t == endMarker { inRegion = false; continue }
                 if inRegion { continue }
                 if t.lowercased() == includeLine.lowercased() { continue }
                 kept.append(String(raw))
             }
-            while kept.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeFirst() }
+            while kept.first?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { kept.removeFirst() }
             try atomicWrite(kept.joined(separator: "\n") + (kept.isEmpty ? "" : "\n"),
                             to: cfgPath, perms: 0o600)
         }
@@ -122,6 +130,10 @@ enum SSHConfigManager {
 
     private static func atomicWrite(_ content: String, to path: String, perms: Int) throws {
         let tmp = path + ".ssh2fa-tmp"
+        // Never strand a partial temp file: on a mid-write failure the deferred
+        // remove cleans it up; on success the move/replace already consumed it
+        // so the remove is a harmless no-op.
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
         try content.write(toFile: tmp, atomically: false, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: perms], ofItemAtPath: tmp)
         if FileManager.default.fileExists(atPath: path) {

@@ -45,6 +45,16 @@ final class SSHConfigManagerTests: XCTestCase {
         XCTAssertEqual(out, "\(SSHConfigManager.beginMarker)\nInclude ssh2fa.conf\n\(SSHConfigManager.endMarker)\n")
     }
 
+    func testEnsureIncludeIdempotentOnCRLFConfig() {
+        // A CRLF config that already has the managed region must be detected
+        // (CR trimmed in comparison) and not duplicated.
+        let once = SSHConfigManager.ensureInclude(in: "Host k\n")
+        let crlf = once.replacingOccurrences(of: "\n", with: "\r\n")
+        let again = SSHConfigManager.ensureInclude(in: crlf)
+        XCTAssertEqual(again.components(separatedBy: "Include ssh2fa.conf").count - 1, 1)
+        XCTAssertTrue(again.hasPrefix(SSHConfigManager.beginMarker))
+    }
+
     private func tempDir() -> String {
         let d = NSTemporaryDirectory() + "ssh2fa-test-" + UUID().uuidString
         try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)

@@ -55,4 +55,35 @@ final class SSHConfigParserTests: XCTestCase {
         XCTAssertEqual(SSHConfigParser.parse("Host bare\n"),
                        [ConfigHost(alias: "bare", hostName: nil, user: nil)])
     }
+
+    // MARK: - parseFull (patterns + Include/Match detection + CRLF)
+
+    func testParseFullRecordsWildcardPatternsAndConcreteHosts() {
+        let cfg = """
+        Host gpu-*
+            User u
+        Host login
+            HostName login.rc.edu
+        """
+        let r = SSHConfigParser.parseFull(cfg)
+        XCTAssertEqual(r.hosts, [ConfigHost(alias: "login", hostName: "login.rc.edu", user: nil)])
+        XCTAssertEqual(r.patterns, ["gpu-*"])
+        XCTAssertFalse(r.hasIncludeOrMatch)
+    }
+
+    func testParseFullDetectsInclude() {
+        let r = SSHConfigParser.parseFull("Include ~/.ssh/config.d/*\nHost a\n")
+        XCTAssertTrue(r.hasIncludeOrMatch)
+        XCTAssertEqual(r.hosts, [ConfigHost(alias: "a", hostName: nil, user: nil)])
+    }
+
+    func testParseFullDetectsMatch() {
+        XCTAssertTrue(SSHConfigParser.parseFull("Match host bar\n    User u\n").hasIncludeOrMatch)
+    }
+
+    func testParseToleratesCRLF() {
+        let cfg = "Host box\r\n    HostName 1.2.3.4\r\n"
+        XCTAssertEqual(SSHConfigParser.parse(cfg),
+                       [ConfigHost(alias: "box", hostName: "1.2.3.4", user: nil)])
+    }
 }

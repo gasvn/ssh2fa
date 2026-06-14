@@ -40,6 +40,10 @@ final class AppState: ObservableObject {
     @Published var notchPresenter: NotchPresenter = NotchPresenter()
     let persistentNotch: PersistentNotchController = PersistentNotchController()
     @Published var activeSheet: ActiveSheet?
+    /// Cached parse of ~/.ssh/config. Refreshed on each reloadAll + when the
+    /// import sheet opens, so the per-row drift check and the import list read
+    /// memory instead of hitting disk on every SwiftUI render pass.
+    @Published private(set) var parsedConfig: ParsedSSHConfig = .empty
     /// Names of hosts/tunnels with an action currently in flight (toggle,
     /// pick_node, delete). UI uses this to swap the action button for a
     /// spinner and overlay a "Working…" status so the user sees that their
@@ -221,6 +225,7 @@ final class AppState: ObservableObject {
             // banner and reset the failure streak.
             reloadFailStreak = 0
             if connectionError != nil { connectionError = nil }
+            refreshConfigCache()
             syncSSHConfigIfEnabled()
         } catch {
             // A single background-poll timeout is almost always a transient blip
@@ -699,25 +704,33 @@ final class AppState: ObservableObject {
     func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
     func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
-    func presentImport() { activeSheet = .importHosts }
+    func presentImport() { refreshConfigCache(); activeSheet = .importHosts }
     func dismissSheet() { activeSheet = nil }
 
-    /// Hosts parsed from ~/.ssh/config (concrete Host blocks).
-    var configHosts: [ConfigHost] {
-        let dir = SSHPaths.sshDir()
-        let text = (try? String(contentsOfFile: SSHPaths.configFile(dir: dir), encoding: .utf8)) ?? ""
-        return SSHConfigParser.parse(text)
+    /// Re-parse ~/.ssh/config into the in-memory cache. Cheap (small file) and
+    /// the single disk read for everything config-derived below.
+    func refreshConfigCache() {
+        let text = (try? String(contentsOfFile: SSHPaths.configFile(dir: SSHPaths.sshDir()),
+                                encoding: .utf8)) ?? ""
+        parsedConfig = SSHConfigParser.parseFull(text)
     }
+
+    /// Hosts parsed from ~/.ssh/config (concrete Host blocks), from the cache.
+    var configHosts: [ConfigHost] { parsedConfig.hosts }
 
     /// Config hosts not yet registered — fuel for the import sheet.
     var importableHosts: [ConfigHost] {
-        SSHSyncDiff.importable(configHosts: configHosts, registered: hosts.map { $0.host })
+        SSHSyncDiff.importable(configHosts: parsedConfig.hosts, registered: hosts.map { $0.host })
     }
 
-    /// Registered hosts that vanished from ~/.ssh/config — they can't connect.
+    /// Registered hosts that genuinely can't be reached from the config — kept
+    /// conservative (quiet under Include/Match, and for wildcard-covered hosts)
+    /// so it doesn't false-alarm on advanced configs.
     var unreachableRegisteredHosts: [String] {
         SSHSyncDiff.unreachable(registered: hosts.map { $0.host },
-                                configAliases: configHosts.map { $0.alias })
+                                configAliases: parsedConfig.hosts.map { $0.alias },
+                                patterns: parsedConfig.patterns,
+                                configHasIncludeOrMatch: parsedConfig.hasIncludeOrMatch)
     }
 
     /// Regenerate ssh2fa.conf from the live host list — only when the user has

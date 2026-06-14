@@ -20,11 +20,38 @@ final class SSHSyncDiffTests: XCTestCase {
     }
 
     func testUnreachableFindsRegisteredMissingFromConfig() {
-        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a", "b"], configAliases: ["a"]),
+        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a", "b"], configAliases: ["a"],
+                                               patterns: [], configHasIncludeOrMatch: false),
                        ["b"])
     }
 
     func testUnreachableEmptyWhenAllPresent() {
-        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a"], configAliases: ["a", "z"]), [])
+        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a"], configAliases: ["a", "z"],
+                                               patterns: [], configHasIncludeOrMatch: false), [])
+    }
+
+    func testUnreachableSuppressedWhenConfigHasIncludeOrMatch() {
+        // We can't see Included/Matched hosts → never false-alarm.
+        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["a", "b"], configAliases: [],
+                                               patterns: [], configHasIncludeOrMatch: true), [])
+    }
+
+    func testUnreachableSuppressedForWildcardCoveredHost() {
+        // gpu-04 isn't a literal Host, but `Host gpu-*` covers it → reachable.
+        XCTAssertEqual(SSHSyncDiff.unreachable(registered: ["gpu-04", "lonely"],
+                                               configAliases: [],
+                                               patterns: ["gpu-*"],
+                                               configHasIncludeOrMatch: false),
+                       ["lonely"])
+    }
+
+    func testGlobMatches() {
+        XCTAssertTrue(SSHSyncDiff.globMatches(pattern: "gpu-*", name: "gpu-04"))
+        XCTAssertTrue(SSHSyncDiff.globMatches(pattern: "*", name: "anything"))
+        XCTAssertTrue(SSHSyncDiff.globMatches(pattern: "node?", name: "node7"))
+        XCTAssertTrue(SSHSyncDiff.globMatches(pattern: "*.rc.edu", name: "login.rc.edu"))
+        XCTAssertFalse(SSHSyncDiff.globMatches(pattern: "gpu-*", name: "cpu-04"))
+        XCTAssertFalse(SSHSyncDiff.globMatches(pattern: "node?", name: "node12"))
+        XCTAssertFalse(SSHSyncDiff.globMatches(pattern: "exact", name: "exacts"))
     }
 }
