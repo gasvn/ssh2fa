@@ -59,6 +59,12 @@ struct HostRow: View {
                 .truncationMode(.tail)
                 .frame(minWidth: 56, alignment: .leading)
 
+            if appState.unreachableRegisteredHosts.contains(host.host) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("\"\(host.host)\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back, or remove this registration.")
+            }
+
             // Spinner + progress text while busy, else flexible hostname column.
             if isBusy {
                 HStack(spacing: Spacing.xs) {
