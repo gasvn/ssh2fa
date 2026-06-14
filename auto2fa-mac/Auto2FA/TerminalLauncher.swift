@@ -23,8 +23,10 @@ enum TerminalLauncher {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: iTermBundleID) != nil
     }
 
-    /// Open `ssh <host>` in the chosen terminal. First call (preference empty)
-    /// shows the one-time picker.
+    /// Open `ssh <host>` in the chosen terminal, attaching to the daemon's warm
+    /// master so there's no second 2FA prompt. First call (preference empty)
+    /// shows the one-time picker (on the main thread); the `ssh -G` ControlPath
+    /// resolution runs OFF the main thread (it can be slow / wedge).
     static func openSSH(host: String) {
         let stored = UserDefaults.standard.string(forKey: prefKey) ?? ""
         let choice: String
@@ -35,7 +37,10 @@ enum TerminalLauncher {
         } else {
             choice = stored
         }
-        launch(host: host, choice: choice)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let controlPath = ControlPathResolver.resolve(alias: host)
+            DispatchQueue.main.async { launch(host: host, choice: choice, controlPath: controlPath) }
+        }
     }
 
     /// Returns "system" or a bundle id; nil if the alert was dismissed.
@@ -54,14 +59,20 @@ enum TerminalLauncher {
         return options[idx].value
     }
 
-    private static func launch(host: String, choice: String) {
+    private static func launch(host: String, choice: String, controlPath: String) {
         // Defense-in-depth: the daemon restricts host names to [A-Za-z0-9._-],
         // so both the filename and the shell literal are safe; escape anyway.
         let safeHost = host
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        let safeCP = controlPath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let path = "/tmp/ssh2fa-\(host).command"
-        let body = "#!/bin/bash\nexec ssh \"\(safeHost)\"\n"
+        // ControlMaster=no → attach to the live master only, never try to BECOME
+        // one from the terminal. If no socket exists ssh just opens a normal
+        // connection. ControlPath matches what the daemon's master binds.
+        let body = "#!/bin/bash\nexec ssh -o ControlMaster=no -o ControlPath=\"\(safeCP)\" \"\(safeHost)\"\n"
         do {
             try body.write(toFile: path, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755],
@@ -74,7 +85,7 @@ enum TerminalLauncher {
             } else {
                 NSWorkspace.shared.open(fileURL)  // system default .command handler
             }
-            NSLog("[SSH2FA] openSSH host=\(host) via=\(choice.isEmpty ? "default" : choice)")
+            NSLog("[SSH2FA] openSSH host=\(host) via=\(choice.isEmpty ? "default" : choice) cp=\(controlPath)")
         } catch {
             NSLog("[SSH2FA] openSSH failed: \(error.localizedDescription)")
         }
