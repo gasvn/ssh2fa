@@ -31,6 +31,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
     @AppStorage(SettingsKey.terminalApp) private var terminalApp = ""
+    @AppStorage(SettingsKey.warmReuseEnabled) private var warmReuseEnabled = false
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
     // launch-at-login state isn't a persisted preference (it's owned by
@@ -81,6 +82,21 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Terminal") }
+
+                Section {
+                    Text(warmReuseEnabled
+                         ? "On — `ssh <host>` in your own Terminal reuses SSH2FA's connection (one `Include` line in ~/.ssh/config)."
+                         : "Off — the app's \"Open Terminal\" still reuses the connection; this also makes your own `ssh <host>` skip 2FA.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if warmReuseEnabled {
+                        Button("Turn off & remove the Include") { WarmReuseConsent.revert() }
+                    } else {
+                        Button("Turn on (backs up config, adds one Include line)") {
+                            WarmReuseConsent.apply(currentAliases: [])
+                            // Re-sync from the live host list happens on next reloadAll.
+                        }
+                    }
+                } header: { Text("Warm connection reuse") }
 
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)

@@ -907,6 +907,7 @@ final class AppState: ObservableObject {
                                          otpauthURL: otpauthURL,
                                          autoConnect: autoConnect)
             await reloadAll()
+            WarmReuseConsent.offerIfNeeded(currentAliases: hosts.map { $0.host })
             return nil
         } catch {
             return (error as? BackendClient.ClientError)?.errorDescription
