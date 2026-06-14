@@ -70,6 +70,7 @@ targets:
       - path: Auto2FA/SlurmTime.swift
       - path: Auto2FA/SSHPaths.swift
       - path: Auto2FA/SSHConfigParser.swift
+      - path: Auto2FA/SSHSyncDiff.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
