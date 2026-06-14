@@ -68,6 +68,7 @@ targets:
       - path: Auto2FA/SearchFilter.swift
       - path: Auto2FA/RecentNodes.swift
       - path: Auto2FA/SlurmTime.swift
+      - path: Auto2FA/SSHPaths.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
