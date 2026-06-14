@@ -209,12 +209,12 @@
   <h1 class="disp" aria-label="Your cluster, always one keystroke away.">
     <span class="w" style="animation-delay:.1s">Your</span> <span class="w" style="animation-delay:.18s">cluster,</span> <span class="w" style="animation-delay:.28s">always</span> <span class="w glow holo" style="animation-delay:.4s">one</span> <span class="w glow holo" style="animation-delay:.48s">keystroke</span> <span class="w" style="animation-delay:.58s">away.</span>
   </h1>
-  <p class="sub">Type your Duo / TOTP code <b>once</b>. SSH2FA keeps a warm ControlMaster connection to every host and answers the login for you — so <span class="mono" style="color:var(--cyan)">ssh</span>, <span class="mono" style="color:var(--cyan)">scp</span>, and your editor connect <b>instantly</b> and stay live through sleep, Wi-Fi changes, and reboots.</p>
+  <p class="sub">Type your Duo / TOTP code <b>once</b>. SSH2FA imports your <span class="mono" style="color:var(--cyan)">~/.ssh/config</span>, keeps a warm ControlMaster connection to every host, and answers the login for you — so even your <b>own</b> <span class="mono" style="color:var(--cyan)">ssh</span>, <span class="mono" style="color:var(--cyan)">scp</span>, and editor reuse it <b>instantly</b>, with <b>no 2FA re-prompt</b> and <b>zero ssh-config editing</b>.</p>
   <div class="cta">
     <a class="btn btn-neon" id="magnetic" href="#install">get ssh2fa →</a>
     <a class="btn btn-ghost" href="https://github.com/gasvn/ssh2fa">view source ↗</a>
   </div>
-  <div class="micro">free &amp; open source · apple silicon + intel · macOS 13+ · MIT</div>
+  <div class="micro">free &amp; open source · apple silicon + intel · macOS 26 (Tahoe) · MIT</div>
 
   <div class="stage">
     <div class="glasswrap"><div class="glass">
@@ -241,9 +241,9 @@
 <section id="how"><div class="wrap">
   <div class="sec-head reveal"><div class="stag"><span class="num">01</span> how it works</div><h2>Type your 2FA once. Then just <span class="holo">ssh</span>.</h2></div>
   <div class="steps">
-    <div class="step panel reveal"><div class="n">[01]</div><h3>Add a host</h3><p>Its ssh-config alias, your password, and your 2FA secret — stored in the macOS Keychain. A one-shot test login runs before saving.</p></div>
+    <div class="step panel reveal"><div class="n">[01]</div><h3>Import your hosts</h3><p>SSH2FA reads your <code>~/.ssh/config</code> and lets you enable hosts in one click — or add one by hand and <b>scan its 2FA QR</b>. Credentials live in the macOS Keychain; a test login runs before saving.</p></div>
     <div class="step panel reveal"><div class="n">[02]</div><h3>It stays warm</h3><p>The daemon keeps two SSH ControlMaster connections alive per host, and auto-recovers them after sleep, network changes, and reboots.</p></div>
-    <div class="step panel reveal"><div class="n">[03]</div><h3>Connect instantly</h3><p>Run <code>ssh &lt;alias&gt;</code> in your own terminal. It reuses a warm connection — no password, no code, no waiting.</p></div>
+    <div class="step panel reveal"><div class="n">[03]</div><h3>Connect instantly</h3><p>Run <code>ssh &lt;alias&gt;</code> in <b>your own terminal</b> — it reuses the warm connection, no password, no code. SSH2FA wires up the reuse for you (one consented line in your ssh config); you edit nothing.</p></div>
   </div>
 </div></section>
 
@@ -251,10 +251,12 @@
   <div class="sec-head reveal"><div class="stag"><span class="num">02</span> features</div><h2>Built for the connection you live in.</h2></div>
   <div class="bento">
     <div class="card panel flag span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div><h3>Stays logged in</h3><p>Two warm ControlMaster connections per host mean every <span class="mono">ssh</span>, <span class="mono">scp</span>, and editor remote reuses an open channel — instant, with no second factor to type.</p></div>
-    <div class="card panel span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Answers 2FA for you</h3><p>Submits your password and a fresh TOTP code at login — serialized so a shared Duo secret is never replayed inside its window.</p></div>
+    <div class="card panel span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l5-5-5-5M13 19h7"/></svg></div><h3>Your terminal — zero config</h3><p>Your own <span class="mono">ssh &lt;alias&gt;</span> reuses the warm master too, with no 2FA re-prompt. SSH2FA wires it up via <b>one consented, backed-up line</b> in your ssh config — and never touches your own <span class="mono">Host</span> blocks.</p></div>
+    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Answers 2FA for you</h3><p>Submits your password and a fresh TOTP code at login — serialized so a shared Duo secret is never replayed inside its window.</p></div>
+    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></div><h3>Imports your ssh config</h3><p>Reads <span class="mono">~/.ssh/config</span> and lets you enable existing hosts in one click — or scan a 2FA QR to add the secret. No double entry.</p></div>
     <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div><h3>Self-healing</h3><p>Adopts live connections across restarts and rebuilds them after sleep / wake — zero re-login.</p></div>
-    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM port forwarding</h3><p>Optional: forward a local port to a running job's compute node (Jupyter, dashboards) with staleness detection.</p></div>
-    <div class="card panel span2 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><h3>Power-user honest</h3><p>Universal binary, 450+ tests, secrets in the Keychain, no telemetry — and a clear-eyed security model.</p></div>
+    <div class="card panel span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM forwarding + live countdown</h3><p>Forward a local port to a running job's compute node (Jupyter, dashboards) — with a live, color-coded <b>expiry countdown</b> from <span class="mono">squeue</span> and a heads-up before your allocation ends.</p></div>
+    <div class="card panel span3 reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><h3>Power-user honest</h3><p>Universal binary, native <b>macOS 26 Liquid Glass</b> UI, 450+ tests, secrets in the Keychain, no telemetry — and a clear-eyed security model.</p></div>
     <div class="card panel span6 reveal"><div class="stat-row">
       <div class="stat"><div class="v holo">arm64+x86_64</div><div class="k">universal macOS binary</div></div>
       <div class="stat"><div class="v"><span class="count" data-to="450">0</span>+</div><div class="k">automated tests · 9 hardening audits</div></div>
