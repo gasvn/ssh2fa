@@ -18,6 +18,8 @@ enum SettingsKey {
     /// "" = ask the first time; "system" = default .command handler; else a
     /// terminal app bundle id. Used by TerminalLauncher (host "Open Terminal").
     static let terminalApp = "auto2fa.terminalApp"
+    static let warmReuseEnabled = "auto2fa.warmReuseInclude"
+    static let warmReuseAsked   = "auto2fa.warmReuseAsked"
 }
 
 struct SettingsView: View {

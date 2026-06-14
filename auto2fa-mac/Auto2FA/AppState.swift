@@ -219,6 +219,7 @@ final class AppState: ObservableObject {
             // banner and reset the failure streak.
             reloadFailStreak = 0
             if connectionError != nil { connectionError = nil }
+            syncSSHConfigIfEnabled()
         } catch {
             // A single background-poll timeout is almost always a transient blip
             // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
@@ -697,6 +698,32 @@ final class AppState: ObservableObject {
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
     func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
     func dismissSheet() { activeSheet = nil }
+
+    /// Hosts parsed from ~/.ssh/config (concrete Host blocks).
+    var configHosts: [ConfigHost] {
+        let dir = SSHPaths.sshDir()
+        let text = (try? String(contentsOfFile: SSHPaths.configFile(dir: dir), encoding: .utf8)) ?? ""
+        return SSHConfigParser.parse(text)
+    }
+
+    /// Config hosts not yet registered — fuel for the import sheet.
+    var importableHosts: [ConfigHost] {
+        SSHSyncDiff.importable(configHosts: configHosts, registered: hosts.map { $0.host })
+    }
+
+    /// Registered hosts that vanished from ~/.ssh/config — they can't connect.
+    var unreachableRegisteredHosts: [String] {
+        SSHSyncDiff.unreachable(registered: hosts.map { $0.host },
+                                configAliases: configHosts.map { $0.alias })
+    }
+
+    /// Regenerate ssh2fa.conf from the live host list — only when the user has
+    /// opted into warm reuse. No-op otherwise. Safe to call on every reload
+    /// (writeManagedConf skips unchanged content).
+    func syncSSHConfigIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: SettingsKey.warmReuseEnabled) else { return }
+        try? SSHConfigManager.writeManagedConf(aliases: hosts.map { $0.host }, dir: SSHPaths.sshDir())
+    }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error
     /// message on failure (so the sheet can show it inline rather than
