@@ -44,4 +44,74 @@ final class SSHConfigManagerTests: XCTestCase {
         let out = SSHConfigManager.ensureInclude(in: "")
         XCTAssertEqual(out, "\(SSHConfigManager.beginMarker)\nInclude ssh2fa.conf\n\(SSHConfigManager.endMarker)\n")
     }
+
+    private func tempDir() -> String {
+        let d = NSTemporaryDirectory() + "ssh2fa-test-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    func testWriteManagedConfCreatesFileWithPerms() throws {
+        let dir = tempDir()
+        let wrote = try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir)
+        XCTAssertTrue(wrote)
+        let path = SSHPaths.managedConfFile(dir: dir)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        let attrs = try FileManager.default.attributesOfItem(atPath: path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testWriteManagedConfSkipsUnchanged() throws {
+        let dir = tempDir()
+        XCTAssertTrue(try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir))
+        XCTAssertFalse(try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir))
+    }
+
+    func testEnableIncludeBacksUpAndAddsRegion() throws {
+        let dir = tempDir()
+        let cfg = SSHPaths.configFile(dir: dir)
+        try "Host kempner\n    User shgao\n".write(toFile: cfg, atomically: true, encoding: .utf8)
+        try SSHConfigManager.enableInclude(dir: dir, timestamp: "TS")
+        let after = try String(contentsOfFile: cfg, encoding: .utf8)
+        XCTAssertTrue(after.hasPrefix(SSHConfigManager.beginMarker))
+        XCTAssertTrue(after.contains("Host kempner"))
+        let backup = try String(contentsOfFile: SSHPaths.backupFile(dir: dir, timestamp: "TS"),
+                                encoding: .utf8)
+        XCTAssertEqual(backup, "Host kempner\n    User shgao\n")
+    }
+
+    func testEnableIncludeCreatesMissingConfig() throws {
+        let dir = tempDir()
+        try SSHConfigManager.enableInclude(dir: dir, timestamp: "TS")
+        let after = try String(contentsOfFile: SSHPaths.configFile(dir: dir), encoding: .utf8)
+        XCTAssertTrue(after.contains("Include ssh2fa.conf"))
+        // No original content → no backup file.
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: SSHPaths.backupFile(dir: dir, timestamp: "TS")))
+    }
+
+    func testEnableIncludeTwiceIsStable() throws {
+        let dir = tempDir()
+        let cfg = SSHPaths.configFile(dir: dir)
+        try "Host k\n".write(toFile: cfg, atomically: true, encoding: .utf8)
+        try SSHConfigManager.enableInclude(dir: dir, timestamp: "T1")
+        let firstPass = try String(contentsOfFile: cfg, encoding: .utf8)
+        try SSHConfigManager.enableInclude(dir: dir, timestamp: "T2")
+        let secondPass = try String(contentsOfFile: cfg, encoding: .utf8)
+        XCTAssertEqual(firstPass, secondPass)
+        XCTAssertEqual(secondPass.components(separatedBy: "Include ssh2fa.conf").count - 1, 1)
+    }
+
+    func testDisableIncludeRevertsAndRemovesConf() throws {
+        let dir = tempDir()
+        let cfg = SSHPaths.configFile(dir: dir)
+        try "Host k\n".write(toFile: cfg, atomically: true, encoding: .utf8)
+        try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir)
+        try SSHConfigManager.enableInclude(dir: dir, timestamp: "T1")
+        try SSHConfigManager.disableInclude(dir: dir)
+        let after = try String(contentsOfFile: cfg, encoding: .utf8)
+        XCTAssertFalse(after.contains("Include ssh2fa.conf"))
+        XCTAssertTrue(after.contains("Host k"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: SSHPaths.managedConfFile(dir: dir)))
+    }
 }
