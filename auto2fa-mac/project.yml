@@ -69,6 +69,7 @@ targets:
       - path: Auto2FA/RecentNodes.swift
       - path: Auto2FA/SlurmTime.swift
       - path: Auto2FA/SSHPaths.swift
+      - path: Auto2FA/SSHConfigParser.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
