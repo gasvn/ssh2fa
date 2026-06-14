@@ -153,6 +153,8 @@ struct ContentView: View {
             CustomNodeSheet(tunnelName: name).environmentObject(appState)
         case .addHost(let alias):
             AddHostSheet(prefillAlias: alias).environmentObject(appState)
+        case .importHosts:
+            ImportHostsSheet().environmentObject(appState)
         case .confirmDelete:
             EmptyView()  // unreachable — sheetBinding filters this case to nil
         }
@@ -200,7 +202,7 @@ struct ContentView: View {
             get: {
                 switch appState.activeSheet {
                 case .confirmDelete, nil: return nil
-                case .newTunnel, .nodePicker, .customNode, .addHost: return appState.activeSheet
+                case .newTunnel, .nodePicker, .customNode, .addHost, .importHosts: return appState.activeSheet
                 }
             },
             set: { newValue in if newValue == nil { appState.dismissSheet() } }

@@ -45,6 +45,11 @@ struct HostsView: View {
             }
             .buttonStyle(.glass)
             .help("Add a host (register SSH + 2FA)")
+            Button { appState.presentImport() } label: {
+                Label("Add from ~/.ssh/config", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.glass)
+            .help("Import hosts from your SSH config file")
         }
     }
 
@@ -91,6 +96,15 @@ struct HostsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            if !appState.importableHosts.isEmpty {
+                Button {
+                    appState.presentImport()
+                } label: {
+                    Label("Found \(appState.importableHosts.count) host(s) in ~/.ssh/config — pick which to protect",
+                          systemImage: "sparkles")
+                }
+                .buttonStyle(.glassProminent)
+            }
             Button {
                 appState.presentAddHost()
             } label: {

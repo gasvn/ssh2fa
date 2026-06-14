@@ -13,6 +13,7 @@ enum ActiveSheet: Identifiable, Equatable {
     case customNode(tunnelName: String)
     case confirmDelete(tunnelName: String)
     case addHost(prefillAlias: String?)
+    case importHosts
 
     var id: String {
         switch self {
@@ -21,6 +22,7 @@ enum ActiveSheet: Identifiable, Equatable {
         case .customNode(let n): return "customNode:\(n)"
         case .confirmDelete(let n): return "confirmDelete:\(n)"
         case .addHost(let a): return "addHost:\(a ?? "")"
+        case .importHosts: return "importHosts"
         }
     }
 }
@@ -697,6 +699,7 @@ final class AppState: ObservableObject {
     func presentCustomNode(for tunnelName: String) { activeSheet = .customNode(tunnelName: tunnelName) }
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
     func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
+    func presentImport() { activeSheet = .importHosts }
     func dismissSheet() { activeSheet = nil }
 
     /// Hosts parsed from ~/.ssh/config (concrete Host blocks).
