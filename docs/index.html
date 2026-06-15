@@ -96,6 +96,11 @@
   .f h3{font-size:18px;font-weight:700;letter-spacing:-.02em;margin-bottom:9px}
   .f p{color:var(--muted);font-size:15px}
   .f p .mono{color:var(--ink);font-size:.92em}
+  .more{display:grid;grid-template-columns:repeat(3,1fr);gap:17px 32px;margin-top:52px;padding-top:44px;border-top:1px solid var(--line)}
+  .m{display:flex;gap:11px;font-size:14.5px;color:var(--muted);line-height:1.45}
+  .m b{color:var(--ink);font-weight:600}
+  .ck{color:var(--accent);font-weight:700;flex:none;font-family:'JetBrains Mono',monospace}
+  @media(max-width:820px){.more{grid-template-columns:1fr;gap:14px}}
 
   .callout{max-width:780px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-left:3px solid #f5a623;border-radius:14px;padding:30px 34px;box-shadow:var(--shadow-sm)}
   .callout h3{font-size:18px;font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:10px}
@@ -179,14 +184,28 @@
 </div></section>
 
 <section id="features" class="soft"><div class="wrap">
-  <div class="head reveal"><div class="kick">Features</div><h2>Built for the connection you live in.</h2></div>
+  <div class="head reveal"><div class="kick">Features</div><h2>Far more than auto-login.</h2><p>Everything you need to set up, stay connected, and run your cluster — from your Mac.</p></div>
   <div class="feat">
-    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div><h3>Stays logged in</h3><p>Warm ControlMaster connections mean every <span class="mono">ssh</span>, <span class="mono">scp</span>, and editor remote reuses an open channel — instant, no second factor to type.</p></div>
+    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div><h3>No-retype 2FA login</h3><p>Keeps a warm ControlMaster per host and auto-submits your password + a fresh TOTP code — so every <span class="mono">ssh</span>, <span class="mono">scp</span>, and editor remote connects instantly.</p></div>
     <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l5-5-5-5M13 19h7"/></svg></div><h3>Your terminal, zero config</h3><p>Your own <span class="mono">ssh</span> reuses the warm master too — via one consented, backed-up line. It never touches your own <span class="mono">Host</span> blocks.</p></div>
-    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Answers 2FA for you</h3><p>Submits your password and a fresh TOTP code at login — serialized so a shared Duo secret is never replayed in its window.</p></div>
-    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></div><h3>Imports your ssh config</h3><p>Reads <span class="mono">~/.ssh/config</span> for one-click host enablement, with QR-scan 2FA entry. No double entry.</p></div>
-    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM forwarding + countdown</h3><p>Forward a port to a job's compute node, with a live <span class="mono">squeue</span> expiry countdown and a heads-up before your allocation ends.</p></div>
-    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div><h3>Quietly trustworthy</h3><p>Universal binary, native macOS 26 design, secrets in the Keychain, no telemetry — and a clear-eyed security model.</p></div>
+    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div><h3>Self-healing</h3><p>Adopts live connections on launch and rebuilds them after sleep, Wi-Fi changes, and reboots — zero re-login, automatically.</p></div>
+    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></div><h3>One-click import</h3><p>Reads <span class="mono">~/.ssh/config</span> to enable hosts in one click, and scans a 2FA QR to add the secret — no double entry.</p></div>
+    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg></div><h3>SLURM tunnels + countdown</h3><p>Forward a port to a job's compute node via a node picker, with a live <span class="mono">squeue</span> expiry countdown before your allocation ends.</p></div>
+    <div class="f reveal"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>Locked down</h3><p>Secrets in the macOS Keychain, optional Touch ID lock, no telemetry — and an honest, documented security model.</p></div>
+  </div>
+  <div class="more">
+    <div class="m reveal"><span class="ck">+</span><div><b>Command palette</b> — jump to any host or action.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Menu-bar control</b> — status &amp; quick actions, always at hand.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Open in Terminal</b> — launch a terminal onto a warm host.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Mount a filesystem</b> — browse a host's files in Finder (sshfs).</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Built-in health checks</b> — a Troubleshoot panel diagnoses issues.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Export &amp; import tunnels</b> — move setups between Macs.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>iCloud preference sync</b> — settings follow you across Macs.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Update notifications</b> — know when a new release ships.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>CLI &amp; TUI</b> — manage everything from the terminal too.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Drift warnings</b> — alerts if a host leaves your ssh config.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Safe by default</b> — test-login before saving, never a lockout.</div></div>
+    <div class="m reveal"><span class="ck">+</span><div><b>Native macOS 26</b> — Liquid Glass design, universal binary.</div></div>
   </div>
 </div></section>
 
