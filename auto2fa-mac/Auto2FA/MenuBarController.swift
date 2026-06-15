@@ -185,7 +185,7 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
                 let item = NSMenuItem(title: "\(t.name)  —  \(label(for: t.displayState))",
                                       action: nil, keyEquivalent: "")
                 let sub = NSMenu()
-                let toggle = NSMenuItem(title: t.displayState == .alive ? "Stop" : "Start",
+                let toggle = NSMenuItem(title: (t.displayState == .alive || t.displayState == .starting) ? "Stop" : "Start",
                                         action: #selector(toggleTunnel(_:)), keyEquivalent: "")
                 toggle.target = self
                 toggle.representedObject = t.name

@@ -35,23 +35,19 @@ struct AddHostSheet: View {
         _hostname = State(initialValue: prefillAlias ?? "")
     }
 
-    /// True iff `alias` appears as a token on a `Host` line in ~/.ssh/config
-    /// (respecting SSH_CONFIG_PATH). Returns true for an empty alias (nothing to
-    /// warn about yet) and when there's no config file (can't disprove it).
-    static func aliasInSSHConfig(_ alias: String) -> Bool {
+    /// True iff `alias` is reachable from ~/.ssh/config. Uses the app's cached
+    /// parse (`parsedConfig`), which FOLLOWS `Include` directives — so a host
+    /// defined in an Include'd file (`config.d/*`) isn't falsely flagged, and
+    /// the warning is consistent with the import sheet. Returns true (no warning)
+    /// for an empty alias, when the view is incomplete (Match/unresolved
+    /// Include), or when a wildcard `Host` pattern covers the alias.
+    private func aliasKnown(_ alias: String) -> Bool {
         let a = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         if a.isEmpty { return true }
-        let dir = (ProcessInfo.processInfo.environment["SSH_CONFIG_PATH"]
-            .map { ($0 as NSString).expandingTildeInPath } ?? NSHomeDirectory() + "/.ssh")
-        let cfg = (dir.hasSuffix("/") ? String(dir.dropLast()) : dir) + "/config"
-        guard let text = try? String(contentsOfFile: cfg, encoding: .utf8) else { return true }
-        for line in text.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            guard t.lowercased().hasPrefix("host ") else { continue }
-            let tokens = t.dropFirst(5).split(whereSeparator: { $0 == " " || $0 == "\t" })
-            if tokens.contains(where: { $0 == Substring(a) }) { return true }
-        }
-        return false
+        let cfg = appState.parsedConfig
+        if cfg.incompleteView { return true }
+        if cfg.hosts.contains(where: { $0.alias == a }) { return true }
+        return cfg.patterns.contains { SSHSyncDiff.globMatches(pattern: $0, name: a) }
     }
     @FocusState private var focused: Field?
 
@@ -73,7 +69,11 @@ struct AddHostSheet: View {
             footer
         }
         .frame(width: 440)
-        .onAppear { focused = .hostname }
+        .onAppear {
+            focused = .hostname
+            appState.refreshConfigCache()             // fresh Include-aware view for the warning
+            hostInConfig = aliasKnown(hostname)        // evaluate a prefilled alias immediately
+        }
     }
 
     private var header: some View {
@@ -106,7 +106,7 @@ struct AddHostSheet: View {
                             // the login user comes from ssh config, and a field here was
                             // never sent anywhere (pure decoration that misled users).
                             .onSubmit { focused = .password }
-                            .onChange(of: hostname) { _, _ in hostInConfig = Self.aliasInSSHConfig(hostname) }
+                            .onChange(of: hostname) { _, _ in hostInConfig = aliasKnown(hostname) }
                         if hostInConfig == false {
                             Label("Not found as a Host in ~/.ssh/config — make sure it's a real ssh alias or a reachable hostname.",
                                   systemImage: "exclamationmark.triangle")
@@ -392,6 +392,11 @@ struct AddHostSheet: View {
             ) {
                 error = msg
                 submitting = false
+            } else if prefillAlias != nil {
+                // Launched from the "Add from ~/.ssh/config" importer → go back
+                // to the import list (minus the host we just added) so the user
+                // can keep enabling more in one sitting.
+                appState.presentImport()
             } else {
                 appState.dismissSheet()
             }

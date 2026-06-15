@@ -33,6 +33,7 @@ enum SettingsTab {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject private var appState: AppState
     @AppStorage(SettingsKey.notchEnabled) private var notchEnabled = true
     @AppStorage(SettingsKey.notchPersistent) private var notchPersistent = false
     @AppStorage(SettingsKey.notchDoNotDisturb) private var notchDoNotDisturb = false
@@ -103,8 +104,9 @@ struct SettingsView: View {
                         Button("Turn off & remove the Include") { WarmReuseConsent.revert() }
                     } else {
                         Button("Turn on (backs up config, adds one Include line)") {
-                            WarmReuseConsent.apply(currentAliases: [])
-                            // Re-sync from the live host list happens on next reloadAll.
+                            // Pass the live host list so ssh2fa.conf is written
+                            // populated, not momentarily empty until the next poll.
+                            WarmReuseConsent.apply(currentAliases: appState.hosts.map { $0.host })
                         }
                     }
                 } header: { Text("Warm connection reuse") }

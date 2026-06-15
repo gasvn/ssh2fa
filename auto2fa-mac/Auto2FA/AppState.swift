@@ -254,15 +254,24 @@ final class AppState: ObservableObject {
         let now = Date()
         let warnWindow: TimeInterval = 600   // 10 min
         for t in tunnels {
-            let on = (t.displayState == .alive || t.displayState == .starting)
-            guard on, let endsAt = TunnelDeadlines.endsAt(t.name) else {
+            guard let endsAt = TunnelDeadlines.endsAt(t.name) else {
                 warnedDeadlines.remove(t.name)
                 continue
             }
             let remaining = endsAt.timeIntervalSince(now)
+            if remaining <= 0 {
+                // Allocation expired → prune the deadline so a later restart of
+                // this tunnel (without re-picking a node) can't keep showing a
+                // stale red "expired" countdown from the dead allocation.
+                TunnelDeadlines.clear(t.name)
+                warnedDeadlines.remove(t.name)
+                continue
+            }
+            let on = (t.displayState == .alive || t.displayState == .starting)
+            guard on else { warnedDeadlines.remove(t.name); continue }
             if remaining > warnWindow {
                 warnedDeadlines.remove(t.name)        // re-arm
-            } else if remaining > 0, !warnedDeadlines.contains(t.name) {
+            } else if !warnedDeadlines.contains(t.name) {
                 warnedDeadlines.insert(t.name)
                 notchPresenter.show(
                     systemImage: "hourglass.bottomhalf.filled",
@@ -296,6 +305,7 @@ final class AppState: ObservableObject {
             // a future tunnel re-using an old name gets a real first notch.
             let liveNames = Set(self.tunnels.map(\.name))
             self.lastNotchSignature = self.lastNotchSignature.filter { liveNames.contains($0.key) }
+            checkDeadlines()   // event-driven path must also fire/prune expiry warnings
             if connectionError != nil { connectionError = nil }
         } catch {
             // Event-driven refresh — swallow transient errors (see reloadHostsOnly).
@@ -541,6 +551,9 @@ final class AppState: ObservableObject {
             deleted = false
             showActionError(error)
         }
+        // Drop any compute-allocation countdown so a future tunnel that reuses
+        // this name doesn't inherit the deleted one's deadline.
+        if deleted { TunnelDeadlines.clear(tunnel.name) }
         await reloadAll()
         // Offer Undo ONLY if the delete actually happened — otherwise the
         // snackbar said "Deleted" for a tunnel that's still there, and Undo

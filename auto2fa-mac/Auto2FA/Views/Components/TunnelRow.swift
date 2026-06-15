@@ -171,11 +171,16 @@ struct TunnelRow: View {
                 .buttonStyle(.glass).controlSize(.small)
                 .disabled(appState.inFlightTunnels.contains(tunnel.name))
                 .transition(.opacity)
-                Button { appState.presentNodePicker(for: tunnel) } label: {
-                    Label("Node", systemImage: "list.bullet.rectangle")
+                // A node pick can't free a busy LOCAL port, so don't offer it
+                // for portBusy (the fix is a different local port).
+                if tunnel.displayState != .portBusy {
+                    Button { appState.presentNodePicker(for: tunnel) } label: {
+                        Label("Node", systemImage: "list.bullet.rectangle")
+                    }
+                    .buttonStyle(.glass).controlSize(.small)
+                    .disabled(appState.inFlightTunnels.contains(tunnel.name))
+                    .transition(.opacity)
                 }
-                .buttonStyle(.glass).controlSize(.small)
-                .transition(.opacity)
             }
         }
         .padding(.vertical, compactRows ? 1 : 2)
@@ -210,7 +215,7 @@ struct TunnelRow: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help(tunnel.jumpCandidates == nil
+        .help((tunnel.jumpCandidates?.isEmpty ?? true)
               ? "Auto — any ready host. Click to pin."
               : "Pinned to \(tunnel.jumpCandidates!.joined(separator: ", ")). Click to change.")
     }

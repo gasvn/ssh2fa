@@ -11,7 +11,6 @@ enum WarmReuseConsent {
         let d = UserDefaults.standard
         if d.bool(forKey: SettingsKey.warmReuseEnabled) { return }
         if d.bool(forKey: SettingsKey.warmReuseAsked) { return }
-        d.set(true, forKey: SettingsKey.warmReuseAsked)
 
         let alert = NSAlert()
         alert.messageText = "Make `ssh <host>` in your own Terminal skip the 2FA prompt too?"
@@ -19,6 +18,9 @@ enum WarmReuseConsent {
         alert.addButton(withTitle: "Set it up")
         alert.addButton(withTitle: "Not now")
         let resp = alert.runModal()
+        // Mark "asked" only AFTER the user responds — if the app is killed while
+        // the dialog is up, the offer survives instead of being silenced forever.
+        d.set(true, forKey: SettingsKey.warmReuseAsked)
         guard resp == .alertFirstButtonReturn else { return }   // "Not now" → leave off, never nag
         apply(currentAliases: currentAliases)
     }
