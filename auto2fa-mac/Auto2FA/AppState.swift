@@ -123,12 +123,25 @@ final class AppState: ObservableObject {
                 if connected {
                     await MainActor.run {
                         self.connectionError = nil
-                        self.notchPresenter.show(
-                            systemImage: "bolt.fill",
-                            title: "Daemon reconnected",
-                            description: "state restored",
-                            tint: .green
-                        )
+                        // If the cold-launch bootstrap never connected (daemon was
+                        // down at launch), THIS is the first-ever connect — show
+                        // "ready", not "reconnected". Otherwise it's a true reconnect.
+                        if !self.hasShownReadyToast {
+                            self.hasShownReadyToast = true
+                            self.notchPresenter.show(
+                                systemImage: "bolt.fill",
+                                title: "SSH2FA ready",
+                                description: "Connected to daemon",
+                                tint: .green
+                            )
+                        } else {
+                            self.notchPresenter.show(
+                                systemImage: "bolt.fill",
+                                title: "Daemon reconnected",
+                                description: "state restored",
+                                tint: .green
+                            )
+                        }
                     }
                     await self.reloadAll()
                     self.startEventTask()  // re-subscribe events on the new socket
@@ -554,7 +567,14 @@ final class AppState: ObservableObject {
             if host.active {
                 try await client.toggleHost(host.host)   // active(failed) → deactivate
                 await reloadAll()
-                try await client.toggleHost(host.host)   // idle → activate (fresh connect)
+                // Re-read live state: only re-activate if it's ACTUALLY inactive
+                // now. If the daemon's own retry brought it back active in the
+                // gap, a blind second toggle would deactivate it again ("Retry"
+                // → stop). If it's already active, the goal is met — leave it.
+                let nowActive = hosts.first(where: { $0.host == host.host })?.active ?? false
+                if !nowActive {
+                    try await client.toggleHost(host.host)   // idle → activate (fresh connect)
+                }
             } else {
                 try await client.toggleHost(host.host)   // already idle → activate
             }

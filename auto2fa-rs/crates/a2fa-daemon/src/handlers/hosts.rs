@@ -810,6 +810,19 @@ fn test_login(
     // -o ConnectTimeout=10 -o PreferredAuthentications=keyboard-interactive,password
     // -o ControlMaster=no -o ControlPath=none <host> echo __auto2fa_login_ok__
     let log_path = tmp_dir.join(format!("auto2fa-testlogin-{host}-{}.log", std::process::id()));
+    // Pre-create the verbose log at 0600 so it's never world-readable even if the
+    // best-effort cleanup below is interrupted. It carries host/user/cipher
+    // metadata (NOT credentials — those go via the PTY), but keep it private.
+    // ssh -E APPENDS to the existing file, so our empty 0600 file keeps its mode.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&log_path);
+    }
     let argv: Vec<String> = vec![
         "-v".into(),
         "-E".into(), log_path.to_string_lossy().into_owned(),
@@ -827,8 +840,10 @@ fn test_login(
 
     let result = run_login(&argv, password, otp_fn);
 
-    // Clean up temp files.
-    let _ = std::fs::remove_file(&log_path);
+    // Clean up temp files (surface a failure instead of silently leaving it).
+    if let Err(e) = std::fs::remove_file(&log_path) {
+        log::warn!("test-login: could not remove {log_path:?}: {e}");
+    }
 
     match result {
         Ok(LoginOutcome::Success) => (true, String::new()),
