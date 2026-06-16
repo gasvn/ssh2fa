@@ -64,6 +64,10 @@ final class AppState: ObservableObject {
     /// busy daemon, a brief blip) is NOT shown to the user — only a sustained
     /// run of failures surfaces a (friendly) banner. Reset on any success.
     private var reloadFailStreak = 0
+    /// bootstrap() runs again on the owned-daemon-respawn path, where the
+    /// connection watcher already shows "Daemon reconnected". Show the cold-launch
+    /// "ready" toast only ONCE so a respawn doesn't fire two toasts.
+    private var hasShownReadyToast = false
 
     func bootstrap() async {
         NSLog("[SSH2FA] bootstrap: connecting to daemon")
@@ -71,12 +75,15 @@ final class AppState: ObservableObject {
             try await client.connect()
             connectionError = nil
             NSLog("[SSH2FA] bootstrap: connected OK")
-            notchPresenter.show(
-                systemImage: "bolt.fill",
-                title: "SSH2FA ready",
-                description: "Connected to daemon",
-                tint: .green
-            )
+            if !hasShownReadyToast {
+                hasShownReadyToast = true
+                notchPresenter.show(
+                    systemImage: "bolt.fill",
+                    title: "SSH2FA ready",
+                    description: "Connected to daemon",
+                    tint: .green
+                )
+            }
         } catch {
             NSLog("[SSH2FA] bootstrap: connect failed: \(error.localizedDescription)")
             connectionError = "Daemon unreachable: \(error.localizedDescription). " +
