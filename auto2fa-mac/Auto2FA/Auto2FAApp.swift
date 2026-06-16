@@ -218,18 +218,19 @@ struct Auto2FAApp: App {
                     NSLog("[SSH2FA] wake observed; autoRecoverOnWake=off, skipping")
                     return
                 }
-                appState.notchPresenter.show(
-                    systemImage: "arrow.triangle.2.circlepath",
-                    title: "Recovering tunnels…",
-                    description: "rebuilding SSH masters",
-                    tint: .yellow
-                )
-                Task {
-                    do {
-                        try await appState.client.wakeRecover()
-                        NSLog("[SSH2FA] wake_recover dispatched")
-                    } catch {
-                        NSLog("[SSH2FA] wake_recover failed: \(error.localizedDescription)")
+                Task { @MainActor in
+                    // Toast only when the daemon actually RAN a recovery pass —
+                    // a single wake fires BOTH this and the network monitor, and
+                    // the second call is coalesced to a no-op. Claiming
+                    // "Recovering tunnels…" for that no-op was a duplicate.
+                    let ran = (try? await appState.client.wakeRecover()) ?? false
+                    if ran {
+                        appState.notchPresenter.show(
+                            systemImage: "arrow.triangle.2.circlepath",
+                            title: "Recovering tunnels…",
+                            description: "rebuilding SSH masters",
+                            tint: .yellow
+                        )
                     }
                     await appState.reloadAll()
                 }

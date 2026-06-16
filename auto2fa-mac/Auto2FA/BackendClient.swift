@@ -373,12 +373,14 @@ actor BackendClient {
     /// "retrying…" banner forever.
     @discardableResult
     func reconnectWithBackoff() async -> Bool {
-        // 1, 2, 4, 8, 16, 30, 30, 30 …
-        let delays: [UInt64] = [1, 2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30]
+        // Try IMMEDIATELY first (a launchd respawn is usually <200ms — waiting a
+        // full second before the first attempt added a needless connectivity gap
+        // on every restart), then back off: 1, 2, 4, 8, 16, 30, 30 …
+        let delays: [UInt64] = [0, 1, 2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30]
         for delay in delays {
             // Bail if user cancelled the bootstrap task entirely.
             if Task.isCancelled { return false }
-            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
             do {
                 // connect() → markConnected() emits the `true` edge; no
                 // separate yield (which would be a deduped no-op anyway).

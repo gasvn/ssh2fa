@@ -246,6 +246,10 @@ impl PoolState {
 
     /// Rotate the active symlink to `index` if the other slot is Ready.
     /// Returns true if rotation happened.
+    // POOL_SIZE == 1 in the single-master arch, so `% POOL_SIZE` is always 0 and
+    // this rotation path is effectively dead — but the general math is kept
+    // (and the lint silenced) in case a multi-slot pool is ever reintroduced.
+    #[allow(clippy::modulo_one)]
     pub fn try_rotate(&mut self) -> bool {
         let now = Instant::now();
         let other = (self.active_index + 1) % POOL_SIZE;

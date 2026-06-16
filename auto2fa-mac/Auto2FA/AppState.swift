@@ -653,7 +653,12 @@ final class AppState: ObservableObject {
             if let up = t.urlPath, !up.isEmpty {
                 try? await client.setTunnelUrlPath(newName, path: up)
             }
-            if let node = t.lastNode, !node.isEmpty {
+            // Only set the node (which START the clone) if the original is
+            // live — cloning an IDLE tunnel shouldn't auto-SSH to its (possibly
+            // dead) last node and land the fresh clone straight in `failed`.
+            // Mirrors undoDelete's guard.
+            if t.displayState == .alive,
+               let node = t.lastNode, !node.isEmpty {
                 try? await client.setTunnelNode(newName, node: node,
                                                 user: t.lastUser ?? "")
             }

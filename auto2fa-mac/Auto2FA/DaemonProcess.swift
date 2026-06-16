@@ -212,11 +212,14 @@ final class DaemonProcess {
         let prevStamp = (try? String(contentsOfFile: marker, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let daemonChanged = prevStamp != stamp
-        if daemonChanged {
+        // Install/refresh FIRST; record the stamp only once the LaunchAgent is
+        // actually loaded. A failed bootstrap therefore retries on the next
+        // launch instead of being masked by a "success" stamp (which would
+        // leave the daemon unmanaged with no recovery path).
+        let loaded = installOrRefreshLaunchAgent(daemonPath: bundled.path, daemonWasUpdated: daemonChanged)
+        if daemonChanged && loaded {
             try? stamp.write(toFile: marker, atomically: true, encoding: .utf8)
         }
-
-        installOrRefreshLaunchAgent(daemonPath: bundled.path, daemonWasUpdated: daemonChanged)
     }
 
     /// Write `~/Library/LaunchAgents/com.ssh2fa.daemon.plist` with this user's
@@ -224,7 +227,11 @@ final class DaemonProcess {
     /// differs, so a working install isn't churned. When the daemon binary was
     /// just updated, kickstart the service so the new binary runs (launchd
     /// re-adopts the live masters — zero relogin).
-    private func installOrRefreshLaunchAgent(daemonPath: String, daemonWasUpdated: Bool) {
+    /// Returns true once the LaunchAgent is loaded (or was already fine). False
+    /// only if the plist couldn't be written/serialized or bootstrap never
+    /// stuck — so the caller can avoid recording a "success" stamp.
+    @discardableResult
+    private func installOrRefreshLaunchAgent(daemonPath: String, daemonWasUpdated: Bool) -> Bool {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         let label = "com.ssh2fa.daemon"
@@ -256,7 +263,7 @@ final class DaemonProcess {
             fromPropertyList: plist, format: .xml, options: 0
         ) else {
             NSLog("[SSH2FA] could not serialize LaunchAgent plist")
-            return
+            return false
         }
 
         try? fm.createDirectory(atPath: agentsDir, withIntermediateDirectories: true)
@@ -264,11 +271,13 @@ final class DaemonProcess {
         let plistChanged = existing != data
         if plistChanged {
             do {
-                try data.write(to: URL(fileURLWithPath: plistPath))
+                // Atomic so a crash/SIGKILL mid-write can't leave a truncated
+                // plist that launchd then refuses to parse on every boot.
+                try data.write(to: URL(fileURLWithPath: plistPath), options: .atomic)
                 NSLog("[SSH2FA] wrote LaunchAgent %@", plistPath)
             } catch {
                 NSLog("[SSH2FA] LaunchAgent write failed: %@", error.localizedDescription)
-                return
+                return false
             }
         }
 
@@ -295,9 +304,12 @@ final class DaemonProcess {
             if !loaded {
                 NSLog("[SSH2FA] LaunchAgent bootstrap did not succeed after retries — the daemon may need a manual relaunch")
             }
+            return loaded
         } else if daemonWasUpdated {
             DaemonProcess.runLaunchctl(["kickstart", "-k", target])
+            return true
         }
+        return true
     }
 
     /// Fully tear down the install: unload + remove the LaunchAgent (the daemon
