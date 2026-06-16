@@ -55,7 +55,7 @@ final class DaemonProcess {
 
     /// Returns true if a daemon is already responding on the socket. Used to
     /// short-circuit spawning a duplicate.
-    static func socketResponds() -> Bool {
+    nonisolated static func socketResponds() -> Bool {
         let path = ("~/.ssh2fa/ssh2fa.sock" as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: path) else { return false }
         // Try a quick connect; if it fails immediately, the socket is stale.
@@ -94,6 +94,14 @@ final class DaemonProcess {
         var soLen = socklen_t(MemoryLayout<Int32>.size)
         guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &soLen) == 0 else { return false }
         return soErr == 0
+    }
+
+    /// `socketResponds()` does a bounded (up to 500ms) blocking poll. Run it OFF
+    /// the main actor so the launch / respawn-wait paths never stall the UI
+    /// thread — exactly the blocking-syscall-on-critical-thread class the daemon
+    /// is careful to avoid.
+    nonisolated static func socketRespondsAsync() async -> Bool {
+        await Task.detached { socketResponds() }.value
     }
 
     /// Discover the project directory containing the Rust workspace
@@ -163,7 +171,7 @@ final class DaemonProcess {
         return FileManager.default.fileExists(atPath: p)
     }
 
-    static func bundledDaemonURL() -> URL? {
+    nonisolated static func bundledDaemonURL() -> URL? {
         // Construct the path explicitly from the Resources dir rather than
         // Bundle.main.url(forResource:withExtension:) — the latter is
         // unreliable for an EXTENSIONLESS executable dropped into Resources by
@@ -193,7 +201,7 @@ final class DaemonProcess {
     /// Idempotent and NON-DESTRUCTIVE: a no-op in a dev build (no bundled
     /// daemon → an existing hand-installed setup is untouched); rewrites the
     /// LaunchAgent only when it's missing or differs.
-    func installBundledDaemonIfNeeded() {
+    nonisolated func installBundledDaemonIfNeeded() {
         let fm = FileManager.default
         guard let bundled = DaemonProcess.bundledDaemonURL(), fm.fileExists(atPath: bundled.path) else {
             NSLog("[SSH2FA] no bundled daemon (dev build) — skipping first-run install")
@@ -231,7 +239,7 @@ final class DaemonProcess {
     /// only if the plist couldn't be written/serialized or bootstrap never
     /// stuck — so the caller can avoid recording a "success" stamp.
     @discardableResult
-    private func installOrRefreshLaunchAgent(daemonPath: String, daemonWasUpdated: Bool) -> Bool {
+    nonisolated private func installOrRefreshLaunchAgent(daemonPath: String, daemonWasUpdated: Bool) -> Bool {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         let label = "com.ssh2fa.daemon"
@@ -358,7 +366,7 @@ final class DaemonProcess {
 
     /// Run an arbitrary tool, returning its exit code (best-effort).
     @discardableResult
-    private static func runProcess(_ path: String, _ args: [String]) -> Int32 {
+    nonisolated private static func runProcess(_ path: String, _ args: [String]) -> Int32 {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
@@ -370,7 +378,7 @@ final class DaemonProcess {
 
     /// Run `/bin/launchctl` with `args`, best-effort (errors logged, ignored).
     @discardableResult
-    private static func runLaunchctl(_ args: [String]) -> Int32 {
+    nonisolated private static func runLaunchctl(_ args: [String]) -> Int32 {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         p.arguments = args
@@ -395,7 +403,7 @@ final class DaemonProcess {
     }
 
     func ensureRunning() async -> SpawnResult {
-        if DaemonProcess.socketResponds() {
+        if await DaemonProcess.socketRespondsAsync() {
             NSLog("[SSH2FA] daemon already running; not spawning")
             return .alreadyRunning
         }
@@ -465,7 +473,7 @@ final class DaemonProcess {
             // it a comfortable window.
             for _ in 0..<50 {
                 try? await Task.sleep(nanoseconds: 200_000_000)
-                if DaemonProcess.socketResponds() {
+                if await DaemonProcess.socketRespondsAsync() {
                     return .spawned(pid: p.processIdentifier)
                 }
             }

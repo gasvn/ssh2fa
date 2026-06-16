@@ -50,7 +50,13 @@ struct Auto2FAApp: App {
                     // a downloaded .app self-contained — launchd then keeps
                     // the daemon alive across reboots; ensureRunning below
                     // just connects (or direct-spawns as a fallback).
-                    DaemonProcess.shared.installBundledDaemonIfNeeded()
+                    // Off the main actor: this runs launchctl (blocking) + a
+                    // bootstrap retry loop with sleeps. On main it froze the UI
+                    // for up to a few seconds on first install / app-move.
+                    // (Read `shared` here on the main actor, then hand the
+                    // instance to the detached task.)
+                    let daemon = DaemonProcess.shared
+                    await Task.detached { daemon.installBundledDaemonIfNeeded() }.value
                     let result = await DaemonProcess.shared.ensureRunning()
                     switch result {
                     case .alreadyRunning:
