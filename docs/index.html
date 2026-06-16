@@ -149,6 +149,15 @@
   .pal-i .pic{color:var(--accent);font-family:'JetBrains Mono',monospace;flex:none}
   .pal-i .hint{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--faint)}
 
+  /* Touch ID prompt mockup */
+  .ui-bio{max-width:296px;margin:0 auto;background:rgba(255,255,255,.92);backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);border:1px solid rgba(255,255,255,.7);border-radius:18px;box-shadow:0 1px 1px rgba(20,22,28,.04),0 26px 52px -20px rgba(20,22,28,.36);padding:28px 26px 22px;text-align:center}
+  .bio-fp{width:50px;height:50px;margin:0 auto 15px;color:var(--accent);animation:pulse 1.7s var(--ease) infinite}
+  .bio-fp svg{width:50px;height:50px}
+  .bio-app{font-weight:700;font-size:15px;letter-spacing:-.02em}
+  .bio-reason{font-size:12.5px;color:var(--muted);line-height:1.5;margin:7px auto 18px;max-width:24ch}
+  .bio-reason b{color:var(--ink);font-weight:600}
+  .bio-btn{font-size:12.5px;font-weight:600;color:var(--accent)}
+
   /* consolidated capability grid */
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px 28px;margin-top:100px;padding-top:60px;border-top:1px solid var(--line)}
   .grid-h{grid-column:1/-1;font-size:14px;font-weight:600;color:var(--accent);margin-bottom:-6px;font-family:'JetBrains Mono',monospace}
@@ -314,6 +323,26 @@
         </div>
       </div></div>
     </div>
+
+    <!-- 4 · Touch ID lock -->
+    <div class="row reveal">
+      <div class="copy">
+        <div class="rk"><span class="dot"></span>TOUCH ID</div>
+        <h3>Your fingerprint, back in the loop.</h3>
+        <p>Because SSH2FA holds your credentials so it can log in for you, you can require <span class="mono">Touch ID</span> before anything sensitive happens — revealing a secret, editing a host, or exporting a setup. The convenience stays; the gate comes back.</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Biometric prompt before credentials are revealed</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Falls back to your Mac's password automatically</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Entirely optional — off by default, on when you want it</li>
+        </ul>
+      </div>
+      <div class="shot"><div class="ui-bio">
+        <div class="bio-fp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"/><path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"/></svg></div>
+        <div class="bio-app">SSH2FA</div>
+        <div class="bio-reason">wants to reveal the saved credentials for <b>gpu-04</b></div>
+        <div class="bio-btn">Use Password…</div>
+      </div></div>
+    </div>
   </div>
 
   <div class="grid">
@@ -322,7 +351,7 @@
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l5-5-5-5M13 19h7"/></svg></span><div><h4>Zero-config terminal</h4><p>Your own <span class="mono">ssh</span> reuses the warm master — no edits.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></span><div><h4>Import + QR scan</h4><p>Reads <span class="mono">~/.ssh/config</span>; scan a QR to add the 2FA secret.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><div><h4>Mount in Finder</h4><p>Browse a host's files over sshfs, right in Finder.</p></div></div>
-    <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><div><h4>Touch ID lock</h4><p>Optional biometric gate before sensitive actions.</p></div></div>
+    <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span><div><h4>Update notifications</h4><p>Know the moment a new release ships.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.5 1.5A4 4 0 0 0 6 19z"/></svg></span><div><h4>iCloud sync</h4><p>Your settings follow you across all your Macs.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4-4 4M21 7H9M7 21l-4-4 4-4M3 17h12"/></svg></span><div><h4>Export &amp; import</h4><p>Move your tunnel and host setups between Macs.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span><div><h4>Health checks</h4><p>A Troubleshoot panel diagnoses connection issues.</p></div></div>
@@ -336,7 +365,7 @@
 <section id="security"><div class="wrap">
   <div class="callout reveal">
     <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Security, stated plainly</h3>
-    <p>SSH2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That convenience means your "second factor" no longer protects you against someone with access to your unlocked Mac. Read the full <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p>
+    <p>SSH2FA stores your SSH password and TOTP secret in the macOS Keychain and submits the second factor for you. That convenience means your "second factor" no longer protects you against someone with access to your unlocked Mac — so you can turn on an optional <b style="color:var(--ink)">Touch ID</b> lock to require your fingerprint before any credential is revealed. Read the full <a href="https://github.com/gasvn/ssh2fa/blob/main/SECURITY.md">security model</a> before you rely on it.</p>
   </div>
 </div></section>
 
