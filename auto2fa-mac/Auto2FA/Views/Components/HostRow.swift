@@ -124,7 +124,9 @@ struct HostRow: View {
                     .transition(.opacity)
             } else if host.displayState == .failed {
                 // Failed → a prominent recovery action at rest (not hover-gated).
-                Button { Task { await appState.toggleHost(host) } } label: {
+                // retryHost (stop→start) — a plain toggle would just STOP a
+                // failed host, which is still `active`.
+                Button { Task { await appState.retryHost(host) } } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.glass)

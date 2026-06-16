@@ -192,7 +192,9 @@ struct CommandPalette: View {
         .glassChrome(cornerRadius: Radius.card)
         .onAppear { focused = true }
         .onKeyPress(.downArrow) {
-            selectedIdx = min(filtered.count - 1, selectedIdx + 1)
+            // max(0, …) so an empty result list doesn't drive selectedIdx to -1
+            // (which would leave no row highlighted until the next keystroke).
+            selectedIdx = max(0, min(filtered.count - 1, selectedIdx + 1))
             return .handled
         }
         .onKeyPress(.upArrow) {

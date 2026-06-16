@@ -535,6 +535,33 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    /// Force a fresh connection attempt on a host. A FAILED host is still
+    /// `active` (the daemon keeps retrying it in backoff), so a single
+    /// `toggleHost` would just STOP it — the "Retry" affordance must instead
+    /// stop-then-start to actually reconnect (and reset the circuit breaker).
+    /// The reload between gives the daemon's synchronous `active=false` time to
+    /// settle before the re-activation (the rapid OFF→ON race is daemon-guarded).
+    func retryHost(_ host: SSHHost) async {
+        inFlightHosts.insert(host.host)
+        defer { inFlightHosts.remove(host.host) }
+        notchPresenter.show(
+            systemImage: "arrow.triangle.2.circlepath",
+            title: "Retrying",
+            description: host.host,
+            tint: .yellow
+        )
+        do {
+            if host.active {
+                try await client.toggleHost(host.host)   // active(failed) → deactivate
+                await reloadAll()
+                try await client.toggleHost(host.host)   // idle → activate (fresh connect)
+            } else {
+                try await client.toggleHost(host.host)   // already idle → activate
+            }
+        } catch { showActionError(error) }
+        await reloadAll()
+    }
+
     func toggleTunnel(_ tunnel: Tunnel) async {
         inFlightTunnels.insert(tunnel.name)
         defer { inFlightTunnels.remove(tunnel.name) }
@@ -964,6 +991,11 @@ final class AppState: ObservableObject {
         do {
             try await client.setTunnelNode(tunnelName, node: node, user: user)
             RecentNodes.record(node)
+            // Drop any prior compute-allocation countdown — the node just
+            // changed. NodePicker re-sets a fresh deadline after this returns
+            // (it has the SqueueJob's TIME_LEFT); CustomNode has none, so the
+            // tunnel correctly ends up with no stale countdown.
+            TunnelDeadlines.clear(tunnelName)
             dismissSheet()
             await reloadAll()
             return nil
