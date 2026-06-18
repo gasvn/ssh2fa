@@ -35,7 +35,7 @@ struct WelcomeSheet: View {
                 .padding(.top, Spacing.xl)
             Text("Welcome to SSH2FA")
                 .font(.dashTitle)
-            Text("Log into your 2FA-protected SSH hosts once, then stay connected — no more typing a Duo/TOTP code every time you `ssh`.")
+            Text("Log into your 2FA-protected SSH hosts once, then stay connected — no more typing a Duo/TOTP code every time you ssh.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -75,7 +75,7 @@ struct WelcomeSheet: View {
                 .padding(Spacing.m)
                 .groupedContent(cornerRadius: Radius.control)
             } else {
-                Text("SSH2FA refers to each host by its `~/.ssh/config` alias. Add your first one and enter its password + 2FA secret — that's it.")
+                Text("SSH2FA refers to each host by its ~/.ssh/config alias. Add your first one and enter its password + 2FA secret — that's it.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(Spacing.m)
