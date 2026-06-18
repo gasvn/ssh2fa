@@ -62,6 +62,20 @@ struct SettingsView: View {
         TabView(selection: $settingsTab) {
             Form {
                 Section {
+                    HStack(alignment: .top, spacing: Spacing.m) {
+                        Image(systemName: "bolt.shield")
+                            .font(.title2).foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("How SSH2FA works")
+                                .font(.callout.weight(.semibold))
+                            Text("It answers the password + 2FA prompt for you and keeps a warm connection to each host, so ssh, scp, and your editor connect instantly with no code to type. Your password and 2FA secret are stored in the macOS Keychain.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } header: { Text("Overview") }
+
+                Section {
                     Toggle("Start SSH2FA at login", isOn: $launchAtLogin)
                         .disabled(!LoginItem.isSupported)
                         .onChange(of: launchAtLogin) { _, on in
@@ -102,8 +116,8 @@ struct SettingsView: View {
 
                 Section {
                     Text(warmReuseEnabled
-                         ? "On — `ssh <host>` in your own Terminal reuses SSH2FA's connection (one `Include` line in ~/.ssh/config)."
-                         : "Off — the app's \"Open Terminal\" still reuses the connection; this also makes your own `ssh <host>` skip 2FA.")
+                         ? "On — running ssh <host> in your own Terminal reuses SSH2FA's warm connection (via one Include line added to ~/.ssh/config)."
+                         : "Off — the app's \"Open Terminal\" already reuses the connection. Turning this on also makes ssh <host> in your own Terminal skip the 2FA prompt.")
                         .font(.caption).foregroundStyle(.secondary)
                     if warmReuseEnabled {
                         Button("Turn off & remove the Include") { WarmReuseConsent.revert() }
@@ -152,11 +166,11 @@ struct SettingsView: View {
                 } header: { Text("Sleep & Wake") }
 
                 Section {
-                    Toggle("Start the auto2fa daemon when this app launches", isOn: $spawnDaemonOnLaunch)
-                    Text("Off if you prefer to run the daemon yourself (LaunchAgent, or run ssh2fa-daemon manually).")
+                    Toggle("Start the background helper when this app launches", isOn: $spawnDaemonOnLaunch)
+                    Text("SSH2FA uses a small background helper to keep your connections alive. Leave this on unless you run it yourself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } header: { Text("Daemon") }
+                } header: { Text("Background helper") }
 
                 Section {
                     Toggle("Require Touch ID to open the dashboard", isOn: $requireTouchID)
@@ -383,7 +397,7 @@ final class DiagnosticsModel: ObservableObject {
         if quarantined {
             out.append(DiagCheck(name: "Gatekeeper", status: .warn,
                                  detail: "App is quarantined (downloaded, not notarized).",
-                                 fixHint: "If things won’t start: System Settings → Privacy & Security → “Open Anyway”, or run `xattr -dr com.apple.quarantine \(Bundle.main.bundlePath)`."))
+                                 fixHint: "If things won't start: System Settings → Privacy & Security → \"Open Anyway\", or run: xattr -dr com.apple.quarantine \(Bundle.main.bundlePath)"))
         } else {
             out.append(DiagCheck(name: "Gatekeeper", status: .ok, detail: "Not quarantined."))
         }
@@ -396,11 +410,11 @@ final class DiagnosticsModel: ObservableObject {
             out.append(DiagCheck(name: "SSH config",
                                  status: hosts > 0 ? .ok : .warn,
                                  detail: hosts > 0 ? "\(cfg): \(hosts) Host alias(es)." : "\(cfg) has no Host entries.",
-                                 fixHint: hosts > 0 ? nil : "Add a `Host <alias>` block for each machine you connect to."))
+                                 fixHint: hosts > 0 ? nil : "Add a Host <alias> block for each machine you connect to."))
         } else {
             out.append(DiagCheck(name: "SSH config", status: .warn,
                                  detail: "No \(cfg).",
-                                 fixHint: "Create ~/.ssh/config with a `Host <alias>` block per machine — SSH2FA refers to hosts by their ssh alias."))
+                                 fixHint: "Create ~/.ssh/config with a Host <alias> block per machine — SSH2FA refers to hosts by their ssh alias."))
         }
 
         // 7. sshfs / macFUSE (only needed for the optional mount feature).
