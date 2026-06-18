@@ -74,6 +74,7 @@ targets:
       - path: Auto2FA/ControlPathResolver.swift
       - path: Auto2FA/SSHConfigManager.swift
       - path: Auto2FA/OTPSecret.swift
+      - path: Auto2FA/OnboardingChecklist.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
