@@ -158,6 +158,22 @@
   .bio-reason b{color:var(--ink);font-weight:600}
   .bio-btn{font-size:12.5px;font-weight:600;color:var(--accent)}
 
+  /* QR 2FA-scan mockup */
+  .ui-qr{max-width:288px;margin:0 auto;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 1px rgba(20,22,28,.04),0 26px 52px -20px rgba(20,22,28,.34);padding:22px;text-align:center}
+  .qr-h{font-weight:700;font-size:14px;letter-spacing:-.02em;text-align:left;margin-bottom:15px}
+  .qr-frame{position:relative;width:168px;height:168px;margin:0 auto;border-radius:13px;background:var(--soft);display:grid;place-items:center;overflow:hidden}
+  .qr-frame svg{width:120px;height:120px;display:block;shape-rendering:crispEdges}
+  .qr-frame i{position:absolute;width:20px;height:20px;border:2.5px solid var(--accent)}
+  .qr-frame i.tl{top:8px;left:8px;border-right:0;border-bottom:0;border-top-left-radius:6px}
+  .qr-frame i.tr{top:8px;right:8px;border-left:0;border-bottom:0;border-top-right-radius:6px}
+  .qr-frame i.bl{bottom:8px;left:8px;border-right:0;border-top:0;border-bottom-left-radius:6px}
+  .qr-frame i.br{bottom:8px;right:8px;border-left:0;border-top:0;border-bottom-right-radius:6px}
+  .qr-scan{position:absolute;left:10px;right:10px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);box-shadow:0 0 10px 1px rgba(47,107,255,.55);animation:qrsweep 2.6s var(--ease) infinite}
+  @keyframes qrsweep{0%{top:14%}50%{top:86%}100%{top:14%}}
+  .qr-toast{margin-top:16px;display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:500;color:#15924b;background:#e7f7ee;border-radius:100px;padding:5px 14px;font-family:'JetBrains Mono',monospace}
+  .qr-toast svg{width:13px;height:13px}
+  .qr-otp{margin-top:11px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
   /* consolidated capability grid */
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px 28px;margin-top:100px;padding-top:60px;border-top:1px solid var(--line)}
   .grid-h{grid-column:1/-1;font-size:14px;font-weight:600;color:var(--accent);margin-bottom:-6px;font-family:'JetBrains Mono',monospace}
@@ -343,13 +359,48 @@
         <div class="bio-btn">Use Password…</div>
       </div></div>
     </div>
+
+    <!-- 5 · QR 2FA scan -->
+    <div class="row reveal">
+      <div class="copy">
+        <div class="rk"><span class="dot"></span>2FA SETUP</div>
+        <h3>Add a host's 2FA in one scan.</h3>
+        <p>Enrolling a new host? Point SSH2FA at the Duo / TOTP QR your cluster shows you and the secret is captured straight into the Keychain — no long Base32 string to copy by hand, and no typos to lock you out.</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Scan from the screen or drop in an image</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Parses the <span class="mono">otpauth://</span> secret automatically</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Stored in the Keychain, never in plain text</li>
+        </ul>
+      </div>
+      <div class="shot"><div class="ui-qr">
+        <div class="qr-h">Add 2FA secret</div>
+        <div class="qr-frame">
+          <svg viewBox="0 0 21 21" fill="none"><g fill="#16181d">
+            <rect x="0" y="0" width="7" height="1"/><rect x="0" y="6" width="7" height="1"/><rect x="0" y="1" width="1" height="5"/><rect x="6" y="1" width="1" height="5"/><rect x="2" y="2" width="3" height="3"/>
+            <rect x="14" y="0" width="7" height="1"/><rect x="14" y="6" width="7" height="1"/><rect x="14" y="1" width="1" height="5"/><rect x="20" y="1" width="1" height="5"/><rect x="16" y="2" width="3" height="3"/>
+            <rect x="0" y="14" width="7" height="1"/><rect x="0" y="20" width="7" height="1"/><rect x="0" y="15" width="1" height="5"/><rect x="6" y="15" width="1" height="5"/><rect x="2" y="16" width="3" height="3"/>
+            <rect x="8" y="6" width="1" height="1"/><rect x="10" y="6" width="1" height="1"/><rect x="12" y="6" width="1" height="1"/>
+            <rect x="6" y="8" width="1" height="1"/><rect x="6" y="10" width="1" height="1"/><rect x="6" y="12" width="1" height="1"/>
+            <rect x="8" y="8" width="1" height="1"/><rect x="10" y="8" width="1" height="1"/><rect x="12" y="8" width="1" height="1"/><rect x="9" y="9" width="1" height="1"/><rect x="13" y="9" width="1" height="1"/><rect x="11" y="10" width="1" height="1"/><rect x="8" y="11" width="1" height="1"/><rect x="12" y="11" width="1" height="1"/><rect x="8" y="9" width="1" height="1"/>
+            <rect x="14" y="8" width="1" height="1"/><rect x="16" y="8" width="1" height="1"/><rect x="18" y="9" width="1" height="1"/><rect x="20" y="8" width="1" height="1"/><rect x="15" y="10" width="1" height="1"/><rect x="17" y="10" width="1" height="1"/><rect x="19" y="11" width="1" height="1"/><rect x="15" y="8" width="1" height="1"/>
+            <rect x="8" y="13" width="1" height="1"/><rect x="10" y="12" width="1" height="1"/><rect x="12" y="13" width="1" height="1"/><rect x="14" y="11" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="18" y="12" width="1" height="1"/><rect x="20" y="13" width="1" height="1"/><rect x="9" y="12" width="1" height="1"/><rect x="13" y="12" width="1" height="1"/><rect x="11" y="14" width="1" height="1"/>
+            <rect x="9" y="16" width="1" height="1"/><rect x="11" y="18" width="1" height="1"/><rect x="13" y="16" width="1" height="1"/><rect x="15" y="19" width="1" height="1"/><rect x="17" y="17" width="1" height="1"/><rect x="19" y="16" width="1" height="1"/><rect x="20" y="19" width="1" height="1"/><rect x="8" y="19" width="1" height="1"/><rect x="10" y="17" width="1" height="1"/><rect x="12" y="19" width="1" height="1"/>
+            <rect x="14" y="17" width="1" height="1"/><rect x="16" y="19" width="1" height="1"/><rect x="18" y="17" width="1" height="1"/><rect x="20" y="16" width="1" height="1"/><rect x="15" y="16" width="1" height="1"/><rect x="17" y="19" width="1" height="1"/><rect x="19" y="18" width="1" height="1"/>
+          </g></svg>
+          <span class="qr-scan"></span>
+          <i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
+        </div>
+        <div class="qr-toast"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Secret captured</div>
+        <div class="qr-otp">otpauth://totp/gpu-04?secret=••••••••</div>
+      </div></div>
+    </div>
   </div>
 
   <div class="grid">
     <div class="grid-h reveal">Everything else, included</div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></span><div><h4>No-retype 2FA</h4><p>Auto-submits your password + a fresh TOTP at login.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l5-5-5-5M13 19h7"/></svg></span><div><h4>Zero-config terminal</h4><p>Your own <span class="mono">ssh</span> reuses the warm master — no edits.</p></div></div>
-    <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></span><div><h4>Import + QR scan</h4><p>Reads <span class="mono">~/.ssh/config</span>; scan a QR to add the 2FA secret.</p></div></div>
+    <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4M5 21h14"/></svg></span><div><h4>ssh config import</h4><p>Reads <span class="mono">~/.ssh/config</span> to enable your hosts in one click.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><div><h4>Mount in Finder</h4><p>Browse a host's files over sshfs, right in Finder.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span><div><h4>Update notifications</h4><p>Know the moment a new release ships.</p></div></div>
     <div class="g reveal"><span class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.5 1.5A4 4 0 0 0 6 19z"/></svg></span><div><h4>iCloud sync</h4><p>Your settings follow you across all your Macs.</p></div></div>
