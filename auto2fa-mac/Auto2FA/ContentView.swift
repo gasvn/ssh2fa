@@ -82,6 +82,13 @@ struct ContentView: View {
         // Import live in the menu bar (Window / File). The toolbar gets a DIRECT
         // Settings button — one click opens it, no dropdown.
         ToolbarItem(placement: .primaryAction) {
+            Link(destination: URL(string: "https://ko-fi.com/shgao")!) {
+                Label("Sponsor", systemImage: "heart.fill")
+            }
+            .tint(.pink)
+            .help("Support SSH2FA on Ko-fi ♥")
+        }
+        ToolbarItem(placement: .primaryAction) {
             Button { openSettings() } label: {
                 Label("Settings", systemImage: "gearshape")
             }

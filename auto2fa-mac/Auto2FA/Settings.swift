@@ -514,6 +514,10 @@ private struct AboutPane: View {
             Link("github.com/gasvn/ssh2fa",
                  destination: URL(string: "https://github.com/gasvn/ssh2fa")!)
                 .font(.callout)
+            Link("Made by Shanghua Gao · shgao.site",
+                 destination: URL(string: "https://shgao.site")!)
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
             // ---- Update check ----
             VStack(spacing: 6) {
