@@ -219,7 +219,7 @@ final class AppState: ObservableObject {
         notchPresenter.show(
             systemImage: "checkmark.seal.fill",
             title: "Connected!",
-            description: "\(h.host) is live — try `ssh \(h.host)` in Terminal. No code to type.",
+            description: "\(h.host) is live — open a Terminal from its row. No code to type.",
             tint: .green)
     }
 
