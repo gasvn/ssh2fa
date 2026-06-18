@@ -20,6 +20,11 @@ enum SettingsKey {
     static let terminalApp = "auto2fa.terminalApp"
     static let warmReuseEnabled = "auto2fa.warmReuseInclude"
     static let warmReuseAsked   = "auto2fa.warmReuseAsked"
+    /// Set the first time a host's "Open Terminal" actually launches — drives the
+    /// onboarding checklist's "open a terminal" step.
+    static let usedTerminal = "auto2fa.usedTerminal"
+    /// User dismissed the Get-Started checklist — hide it for good.
+    static let onboardingDismissed = "auto2fa.onboardingDismissed"
     /// Which Settings tab is shown — lets the menu-bar "Troubleshoot…" deep-link
     /// straight to that tab instead of dumping the user on General.
     static let settingsTab = "auto2fa.settingsTab"

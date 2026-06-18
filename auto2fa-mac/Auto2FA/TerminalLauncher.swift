@@ -85,6 +85,7 @@ enum TerminalLauncher {
             } else {
                 NSWorkspace.shared.open(fileURL)  // system default .command handler
             }
+            UserDefaults.standard.set(true, forKey: SettingsKey.usedTerminal)
             NSLog("[SSH2FA] openSSH host=\(host) via=\(choice.isEmpty ? "default" : choice) cp=\(controlPath)")
         } catch {
             NSLog("[SSH2FA] openSSH failed: \(error.localizedDescription)")
