@@ -2,16 +2,32 @@ import SwiftUI
 
 struct HostsView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage(SettingsKey.onboardingDismissed) private var onboardingDismissed = false
+
+    private var onboardingActive: Bool {
+        !onboardingDismissed && OnboardingChecklist.shouldShow(
+            hostCount: appState.hosts.count,
+            anyConnected: appState.hosts.contains { $0.displayState == .connected },
+            usedTerminal: UserDefaults.standard.bool(forKey: SettingsKey.usedTerminal))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             header
             if appState.hosts.isEmpty {
-                emptyState
-            } else if visibleHosts.isEmpty {
-                noMatches
+                // No hosts yet → the checklist IS the empty state (carries the CTAs).
+                GetStartedChecklist(compact: false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                hostsList
+                // Has hosts but onboarding not finished → slim guide above the list.
+                if onboardingActive {
+                    GetStartedChecklist(compact: true) { onboardingDismissed = true }
+                }
+                if visibleHosts.isEmpty {
+                    noMatches
+                } else {
+                    hostsList
+                }
             }
         }
         .padding(Spacing.m)
@@ -83,37 +99,5 @@ struct HostsView: View {
         .groupedContent()
     }
 
-    // MARK: - Empty state
 
-    private var emptyState: some View {
-        VStack(spacing: Spacing.m) {
-            Image(systemName: "server.rack")
-                .font(.largeTitle)
-                .foregroundStyle(.tint)
-            Text("No SSH hosts yet")
-                .font(.title3)
-            Text("Register a host with its 2FA secret and the daemon will keep its login pool warm in the background.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            if !appState.importableHosts.isEmpty {
-                Button {
-                    appState.presentImport()
-                } label: {
-                    Label("Found \(appState.importableHosts.count) host(s) in ~/.ssh/config — pick which to protect",
-                          systemImage: "sparkles")
-                }
-                .buttonStyle(.glassProminent)
-            }
-            Button {
-                appState.presentAddHost()
-            } label: {
-                Label("Add your first SSH host", systemImage: "plus")
-            }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(Spacing.xl)
-    }
 }
