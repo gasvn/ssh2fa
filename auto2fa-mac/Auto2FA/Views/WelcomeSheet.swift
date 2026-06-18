@@ -51,39 +51,38 @@ struct WelcomeSheet: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: Spacing.m) {
-            // Feature rows wrapped in a glass card for a cohesive panel look
-            VStack(alignment: .leading, spacing: Spacing.m) {
-                row(icon: "server.rack",
-                    title: "1. Add a host",
-                    body: "Its ssh-config alias, your password, and your 2FA secret. The wizard shows you how to find the secret (incl. Duo). We test-login before saving so a wrong code can't lock you out.")
-                row(icon: "bolt.horizontal.circle",
-                    title: "2. Stay logged in",
-                    body: "A background helper keeps two connections warm per host, so every `ssh` reuses them instantly — no code to type. It auto-recovers after sleep, network changes, and reboots.")
-                row(icon: "arrow.triangle.branch",
-                    title: "3. (Optional) Forward a port to a compute node",
-                    body: "On a SLURM cluster? Pick a running job's node and forward a local port to it (Jupyter, etc.). If you just want no-retype SSH, skip this entirely.")
-                row(icon: "menubar.dock.rectangle",
-                    title: "Lives in your menu bar",
-                    body: "Status at a glance, right-click for quick actions. ⌘, for Settings; daemon logs from the menu-bar menu.")
+            if !appState.importableHosts.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.s) {
+                    Label("Found \(appState.importableHosts.count) host(s) in your ~/.ssh/config",
+                          systemImage: "sparkles")
+                        .font(.callout.weight(.semibold))
+                    Text("Pick which to protect — we pre-fill the alias, you just enter the password and 2FA secret (or scan the QR). We test-login before saving so a wrong code can't lock you out.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        UserDefaults.standard.set(true, forKey: SettingsKey.welcomeShown)
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            appState.presentImport()
+                        }
+                    } label: {
+                        Label("Pick hosts to protect →", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(Spacing.m)
+                .groupedContent(cornerRadius: Radius.control)
+            } else {
+                Text("SSH2FA refers to each host by its `~/.ssh/config` alias. Add your first one and enter its password + 2FA secret — that's it.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(Spacing.m)
+                    .groupedContent(cornerRadius: Radius.control)
             }
-            .padding(Spacing.m)
-            .groupedContent(cornerRadius: Radius.control)
         }
         .padding(Spacing.xl)
-    }
-
-    private func row(icon: String, title: String, body: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.m) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(.tint)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.rowTitle)
-                Text(body).font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
     }
 
     private var footer: some View {
@@ -93,20 +92,29 @@ struct WelcomeSheet: View {
                 dismiss()
             }
             Spacer()
-            Button {
-                UserDefaults.standard.set(true, forKey: SettingsKey.welcomeShown)
-                dismiss()
-                // Tiny delay so dismiss animation finishes before next sheet opens.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    appState.presentAddHost()
+            // Manual add: prominent only when there's no easier import path.
+            // (.bordered/.borderedProminent are PrimitiveButtonStyles and can't
+            // be type-erased into one ?: expression, so branch the whole button.)
+            if appState.importableHosts.isEmpty {
+                Button(action: addManually) {
+                    Label("Add a host manually", systemImage: "plus")
                 }
-            } label: {
-                Label("Add my first host", systemImage: "plus")
+                .buttonStyle(.borderedProminent).controlSize(.large)
+            } else {
+                Button(action: addManually) {
+                    Label("Add a host manually", systemImage: "plus")
+                }
+                .buttonStyle(.bordered).controlSize(.large)
             }
-            .keyboardShortcut(.defaultAction)
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
         }
         .padding(Spacing.xl)
+    }
+
+    private func addManually() {
+        UserDefaults.standard.set(true, forKey: SettingsKey.welcomeShown)
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            appState.presentAddHost()
+        }
     }
 }
