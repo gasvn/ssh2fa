@@ -44,3 +44,6 @@ debug_*.py
 auto2fa-mac/build_latest/
 auto2fa-rs/dist/
 auto2fa-rs/target/
+
+# Visual-companion brainstorm artifacts
+.superpowers/
