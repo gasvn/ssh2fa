@@ -82,11 +82,7 @@ struct ContentView: View {
         // Import live in the menu bar (Window / File). The toolbar gets a DIRECT
         // Settings button — one click opens it, no dropdown.
         ToolbarItem(placement: .primaryAction) {
-            Link(destination: URL(string: "https://ko-fi.com/shgao")!) {
-                Label("Sponsor", systemImage: "heart.fill")
-            }
-            .tint(.pink)
-            .help("Support SSH2FA on Ko-fi ♥")
+            SponsorButton()
         }
         ToolbarItem(placement: .primaryAction) {
             Button { openSettings() } label: {
@@ -214,5 +210,63 @@ struct ContentView: View {
             },
             set: { newValue in if newValue == nil { appState.dismissSheet() } }
         )
+    }
+}
+
+/// Toolbar ♥ button. Hover reveals WHY (the $99 Apple Developer fee for
+/// notarization); clicking the heart — or the CTA in the popover — opens Ko-fi.
+/// The popover stays open while hovering either the button or the popover (with
+/// a short grace period) so the CTA is reachable.
+private struct SponsorButton: View {
+    @Environment(\.openURL) private var openURL
+    @State private var buttonHover = false
+    @State private var popoverHover = false
+    @State private var show = false
+
+    private let kofi = URL(string: "https://ko-fi.com/shgao")!
+
+    var body: some View {
+        Button { openURL(kofi) } label: {
+            Label("Sponsor", systemImage: "heart.fill")
+        }
+        .tint(.pink)
+        .help("Why sponsor? Hover for the goal — click to open Ko-fi ♥")
+        .onHover { hovering in buttonHover = hovering; updateShow() }
+        .popover(isPresented: $show, arrowEdge: .bottom) {
+            info.onHover { hovering in popoverHover = hovering; updateShow() }
+        }
+    }
+
+    private func updateShow() {
+        if buttonHover || popoverHover {
+            show = true
+        } else {
+            // Grace period so moving the cursor between the button and the
+            // popover doesn't flicker it shut.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                if !buttonHover && !popoverHover { show = false }
+            }
+        }
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Help get SSH2FA notarized", systemImage: "heart.fill")
+                .font(.headline).foregroundStyle(.pink)
+            Text("Goal: **$99 / year — the Apple Developer fee.**")
+                .font(.callout)
+            Text("SSH2FA is free & open source. The one missing piece is an Apple Developer membership ($99/yr). With it the app can be notarized — it installs with zero Gatekeeper warnings for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { openURL(kofi) } label: {
+                Label("Sponsor on Ko-fi →", systemImage: "cup.and.saucer.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(.pink).controlSize(.large)
+            Text("Ko-fi · instant, 0% platform fee · one-time or monthly")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(16)
+        .frame(width: 330)
     }
 }
