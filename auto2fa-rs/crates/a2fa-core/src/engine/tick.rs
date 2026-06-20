@@ -208,6 +208,7 @@ mod tests {
             jump_candidates: None,
             last_node: None,
             last_user: None,
+            direct_host: None,
             auto_start: false,
             post_connect_cmd: None,
             tags: vec![],

@@ -36,6 +36,8 @@ struct PersistedTunnel {
     url_path: Option<String>,
     #[serde(default)]
     wants_alive: bool,
+    #[serde(default)]
+    direct_host: Option<String>,
     // status is runtime-only; we keep it for round-trip read but don't
     // store it — the daemon always resets to idle on load.
     #[serde(default)]
@@ -211,6 +213,7 @@ pub fn load_tunnels(path: &Path) -> Vec<Tunnel> {
             jump_candidates: persisted.jump_candidates,
             last_node: persisted.last_node,
             last_user: persisted.last_user,
+            direct_host: persisted.direct_host,
             auto_start: persisted.auto_start,
             post_connect_cmd: persisted.post_connect_cmd,
             tags: persisted.tags,

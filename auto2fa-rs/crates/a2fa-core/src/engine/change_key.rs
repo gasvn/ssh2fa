@@ -88,6 +88,7 @@ mod tests {
             jump_candidates: Some(vec!["k6".into()]),
             last_node: Some("holygpu01".into()),
             last_user: Some("user1".into()),
+            direct_host: None,
             auto_start: true,
             post_connect_cmd: None,
             tags: vec!["ml".into()],

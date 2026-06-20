@@ -34,6 +34,15 @@ pub struct Tunnel {
     /// Last UNIX user used for the `user@node` part of the ssh command.
     pub last_user: Option<String>,
 
+    /// When `Some(host)`, this tunnel forwards local_port → localhost:remote_port
+    /// directly ON that registered host (`ssh -N -L … <host>`) — NO jump host and
+    /// NO SLURM compute node. `None` = the default SLURM compute-node forward.
+    ///
+    /// `#[serde(default)]`: old tunnels.json and old IPC snapshots omit this field
+    /// and must still decode (→ None = unchanged compute behavior).
+    #[serde(default)]
+    pub direct_host: Option<String>,
+
     /// If true, the tunnel is automatically started at daemon boot.
     pub auto_start: bool,
 
@@ -81,4 +90,42 @@ pub struct Tunnel {
 
     /// Number of failed/stale transitions since daemon start.
     pub fail_count: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tunnel JSON WITHOUT direct_host must decode (→ None) so old
+    /// tunnels.json / old snapshots keep working.
+    #[test]
+    fn direct_host_defaults_to_none_when_absent() {
+        let json = r#"{
+            "name": "nb", "local_port": 8888, "remote_port": 8888,
+            "jump_candidates": null, "last_node": null, "last_user": null,
+            "auto_start": false, "post_connect_cmd": null, "tags": [],
+            "url_path": null, "status": "idle", "active_jump": null,
+            "last_msg": "", "last_alive_at": 0.0, "total_uptime_sec": 0.0,
+            "connect_count": 0, "fail_count": 0
+        }"#;
+        let t: Tunnel = serde_json::from_str(json).expect("decode without direct_host");
+        assert_eq!(t.direct_host, None);
+    }
+
+    /// A direct tunnel round-trips its host.
+    #[test]
+    fn direct_host_round_trips() {
+        let json = r#"{
+            "name": "web", "local_port": 9000, "remote_port": 9000,
+            "jump_candidates": null, "last_node": null, "last_user": null,
+            "auto_start": false, "post_connect_cmd": null, "tags": [],
+            "url_path": null, "direct_host": "loginhost", "status": "idle",
+            "active_jump": null, "last_msg": "", "last_alive_at": 0.0,
+            "total_uptime_sec": 0.0, "connect_count": 0, "fail_count": 0
+        }"#;
+        let t: Tunnel = serde_json::from_str(json).expect("decode with direct_host");
+        assert_eq!(t.direct_host.as_deref(), Some("loginhost"));
+        let back = serde_json::to_value(&t).unwrap();
+        assert_eq!(back["direct_host"], "loginhost");
+    }
 }
