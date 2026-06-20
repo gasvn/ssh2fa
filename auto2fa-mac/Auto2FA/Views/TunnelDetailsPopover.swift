@@ -40,7 +40,9 @@ struct TunnelDetailsPopover: View {
             HStack(spacing: Spacing.s) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(tunnel.name).font(.dashTitle)
-                    Text(":\(tunnel.localPort) → \(tunnel.lastNode ?? "—"):\(tunnel.remotePort)")
+                    Text(tunnel.isDirect
+                         ? ":\(tunnel.localPort) → \(tunnel.directHost ?? "host"):\(tunnel.remotePort) (direct)"
+                         : ":\(tunnel.localPort) → \(tunnel.lastNode ?? "—"):\(tunnel.remotePort)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }

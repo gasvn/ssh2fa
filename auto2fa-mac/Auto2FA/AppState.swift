@@ -647,7 +647,8 @@ final class AppState: ObservableObject {
             // the daemon side, so undoing "9999 → 8888" used to recreate
             // "9999 → 9999" — silent config corruption.
             _ = try await client.addTunnel(name: t.name, localPort: t.localPort,
-                                           remotePort: t.remotePort)
+                                           remotePort: t.remotePort,
+                                           directHost: t.directHost)
             if t.autoStart {
                 try? await client.setTunnelAutostart(t.name, value: true)
             }
@@ -663,12 +664,16 @@ final class AppState: ObservableObject {
             if let up = t.urlPath, !up.isEmpty {
                 try? await client.setTunnelUrlPath(t.name, path: up)
             }
-            // Only re-set the node (and thus restart the tunnel) if it was
-            // alive at delete time. Idle tunnels stay idle.
-            if t.displayState == .alive,
-               let node = t.lastNode, !node.isEmpty {
-                try? await client.setTunnelNode(t.name, node: node,
-                                                user: t.lastUser ?? "")
+            // Only restart if it was alive at delete time; idle tunnels stay
+            // idle. Direct tunnels have no node — start them via toggle so undo
+            // is faithful; compute tunnels restart by re-setting the node.
+            if t.displayState == .alive {
+                if t.isDirect {
+                    try? await client.toggleTunnel(t.name)
+                } else if let node = t.lastNode, !node.isEmpty {
+                    try? await client.setTunnelNode(t.name, node: node,
+                                                    user: t.lastUser ?? "")
+                }
             }
             await reloadTunnelsOnly()
             FriendlyText.haptic()
@@ -694,7 +699,8 @@ final class AppState: ObservableObject {
             // Keep the ORIGINAL remote port: a clone of "8888 → 6006" must
             // forward to 6006, not to its own new local port.
             _ = try await client.addTunnel(name: newName, localPort: newPort,
-                                           remotePort: t.remotePort)
+                                           remotePort: t.remotePort,
+                                           directHost: t.directHost)
             if !t.tags.isEmpty {
                 try? await client.setTunnelTags(newName, tags: t.tags)
             }
@@ -707,14 +713,16 @@ final class AppState: ObservableObject {
             if let up = t.urlPath, !up.isEmpty {
                 try? await client.setTunnelUrlPath(newName, path: up)
             }
-            // Only set the node (which START the clone) if the original is
-            // live — cloning an IDLE tunnel shouldn't auto-SSH to its (possibly
-            // dead) last node and land the fresh clone straight in `failed`.
-            // Mirrors undoDelete's guard.
-            if t.displayState == .alive,
-               let node = t.lastNode, !node.isEmpty {
-                try? await client.setTunnelNode(newName, node: node,
-                                                user: t.lastUser ?? "")
+            // Only start the clone if the original is live — cloning an IDLE
+            // tunnel shouldn't auto-SSH. Direct clones start via toggle (no
+            // node); compute clones start by setting the node. Mirrors undoDelete.
+            if t.displayState == .alive {
+                if t.isDirect {
+                    try? await client.toggleTunnel(newName)
+                } else if let node = t.lastNode, !node.isEmpty {
+                    try? await client.setTunnelNode(newName, node: node,
+                                                    user: t.lastUser ?? "")
+                }
             }
             await reloadTunnelsOnly()
             FriendlyText.haptic()
@@ -907,7 +915,8 @@ final class AppState: ObservableObject {
                 // otherwise "8888 → 6006" imports as "8888 → 8888" and the
                 // forward silently targets the wrong remote port.
                 _ = try await client.addTunnel(name: t.name, localPort: t.local_port,
-                                               remotePort: t.remote_port)
+                                               remotePort: t.remote_port,
+                                               directHost: t.direct_host)
                 if t.auto_start {
                     try? await client.setTunnelAutostart(t.name, value: true)
                 }

@@ -33,12 +33,15 @@ struct CommandPalette: View {
                 subtitle: "localhost:\(t.localPort) → \(t.lastNode ?? "?")",
                 keywords: [t.name, "tunnel", alive ? "stop" : "start"] + t.tags
             ) { Task { await appState.toggleTunnel(t) } })
-            out.append(.init(
-                icon: "list.bullet.rectangle",
-                title: "Pick node — \(t.name)",
-                subtitle: "browse SLURM jobs on jump host",
-                keywords: [t.name, "node", "squeue", "pick"]
-            ) { appState.presentNodePicker(for: t) })
+            // Direct tunnels have no compute node — don't offer the node picker.
+            if !t.isDirect {
+                out.append(.init(
+                    icon: "list.bullet.rectangle",
+                    title: "Pick node — \(t.name)",
+                    subtitle: "browse SLURM jobs on jump host",
+                    keywords: [t.name, "node", "squeue", "pick"]
+                ) { appState.presentNodePicker(for: t) })
+            }
             if alive {
                 // Use browserURL (includes the tunnel's url_path, e.g. a
                 // jupyter "?token=…") — the raw localhost URL dropped the

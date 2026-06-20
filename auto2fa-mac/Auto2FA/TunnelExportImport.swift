@@ -7,9 +7,9 @@ import UniformTypeIdentifiers
 /// changes don't silently corrupt user backups.
 ///
 /// Credentials are NOT exported — only tunnel definitions (name, ports,
-/// jump candidates, tags, post-connect command, last node). Hosts and
-/// their passwords stay in passwords.json, which the user re-creates via
-/// the Add Host wizard on the importing machine.
+/// jump candidates, tags, post-connect command, last node, direct host).
+/// Hosts and their passwords stay in passwords.json, which the user
+/// re-creates via the Add Host wizard on the importing machine.
 enum TunnelExportImport {
     struct ExportedTunnel: Codable {
         let name: String
@@ -24,6 +24,11 @@ enum TunnelExportImport {
         /// Browser URL suffix (e.g. a jupyter "?token=…"). Optional so files
         /// exported before this field existed still decode (nil).
         var url_path: String?
+        /// Direct-mode target host (forward to this registered host's own
+        /// localhost, no jump/node). Optional so older exports decode (nil =
+        /// a normal SLURM compute tunnel). Added WITHOUT bumping the schema —
+        /// a missing key decodes to nil, exactly like url_path.
+        var direct_host: String?
     }
 
     struct ExportFile: Codable {
@@ -103,7 +108,8 @@ enum TunnelExportImport {
             auto_start: t.autoStart,
             post_connect_cmd: t.postConnectCmd,
             tags: t.tags,
-            url_path: t.urlPath
+            url_path: t.urlPath,
+            direct_host: t.directHost
         )
     }
 

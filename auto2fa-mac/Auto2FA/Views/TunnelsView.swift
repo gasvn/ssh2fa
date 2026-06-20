@@ -237,11 +237,13 @@ struct TunnelsView: View {
                 Button((t.displayState == .alive || t.displayState == .starting) ? "Stop" : "Start") {
                     Task { await appState.toggleTunnel(t) }
                 }
-                Button("Pick node…") {
-                    appState.presentNodePicker(for: t)
-                }
-                Menu("Use jump host") {
-                    jumpPickerMenu(for: t)
+                if !t.isDirect {
+                    Button("Pick node…") {
+                        appState.presentNodePicker(for: t)
+                    }
+                    Menu("Use jump host") {
+                        jumpPickerMenu(for: t)
+                    }
                 }
                 Button("Open in browser") {
                     openInBrowser(t)
@@ -282,7 +284,9 @@ struct TunnelsView: View {
             return .handled
         }
         .onKeyPress(.return) {
-            guard let t = singleSelectedTunnel else { return .ignored }
+            // Return opens the compute-node picker — meaningless for a direct
+            // tunnel (no node), so leave the key unhandled for those.
+            guard let t = singleSelectedTunnel, !t.isDirect else { return .ignored }
             appState.presentNodePicker(for: t)
             return .handled
         }

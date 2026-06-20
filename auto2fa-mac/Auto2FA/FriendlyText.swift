@@ -54,6 +54,12 @@ enum FriendlyText {
             let m = t.lastMsg
             return m.isEmpty ? "Compute node ended — pick a new one" : m
         case .idle:
+            if t.isDirect {
+                // Direct tunnels have no compute node — surface the daemon's own
+                // message (e.g. "waiting for host …") or a plain Idle, never the
+                // "pick a node" instruction (there's no node control for them).
+                return t.lastMsg.isEmpty ? "Idle" : t.lastMsg
+            }
             if t.lastNode == nil { return "Pick a compute node to start" }
             return "Idle"
         case .portBusy:
