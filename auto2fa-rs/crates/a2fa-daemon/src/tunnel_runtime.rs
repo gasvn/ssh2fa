@@ -460,6 +460,8 @@ pub enum TunnelStatusKind {
 /// * `last_recovery_ts`    — Unix epoch of the last recovery attempt.
 /// * `last_squeue_ts`      — Unix epoch of the last squeue check.
 /// * `now`                 — current Unix epoch (f64).
+/// * `is_direct`           — true for direct-mode tunnels (no SLURM job,
+///   so squeue checks must never fire for them).
 #[allow(clippy::too_many_arguments)]
 pub fn tunnel_action(
     status: TunnelStatusKind,
@@ -470,6 +472,7 @@ pub fn tunnel_action(
     last_recovery_ts: f64,
     last_squeue_ts: f64,
     now: f64,
+    is_direct: bool,
 ) -> TunnelAction {
     use TunnelStatusKind::*;
 
@@ -485,8 +488,9 @@ pub fn tunnel_action(
         // squeue even while the tunnel is down — otherwise a Failed tunnel
         // would recover forever and never notice its node ended.  Otherwise
         // fall back to a throttled recovery attempt.
+        // Direct tunnels have no SLURM job — skip squeue entirely.
         Idle | Failed | PortBusy if wants_alive => {
-            if now - last_squeue_ts >= SQUEUE_INTERVAL_SEC {
+            if !is_direct && now - last_squeue_ts >= SQUEUE_INTERVAL_SEC {
                 TunnelAction::SqueueCheck
             } else if now - last_recovery_ts >= AUTO_RECOVERY_INTERVAL_SEC {
                 TunnelAction::Recover
@@ -517,8 +521,8 @@ pub fn tunnel_action(
                 return TunnelAction::StopDisabledJump;
             }
 
-            // Case 3: squeue check due.
-            if now - last_squeue_ts >= SQUEUE_INTERVAL_SEC {
+            // Case 3: squeue check due (compute tunnels only — direct have no job).
+            if !is_direct && now - last_squeue_ts >= SQUEUE_INTERVAL_SEC {
                 return TunnelAction::SqueueCheck;
             }
 
@@ -529,11 +533,15 @@ pub fn tunnel_action(
 
 /// Whether a tunnel should be auto-started at boot.
 ///
-/// Mirrors Python's `tick()` boot logic:
-///   `want = ts.auto_start or ts.wants_alive`
-///   `if want and ts.last_node is not None: start(name)`
-pub fn should_autostart(auto_start: bool, wants_alive: bool, last_node: Option<&str>) -> bool {
-    (auto_start || wants_alive) && last_node.is_some()
+/// Compute tunnels need a `last_node` (Python parity). Direct tunnels have no
+/// node, so `is_direct` makes them eligible on the want flag alone.
+pub fn should_autostart(
+    auto_start: bool,
+    wants_alive: bool,
+    last_node: Option<&str>,
+    is_direct: bool,
+) -> bool {
+    (auto_start || wants_alive) && (last_node.is_some() || is_direct)
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +579,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD,
             /*last_squeue_ts=*/ recent_squeue,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Recover);
     }
@@ -587,6 +596,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD,
             /*last_squeue_ts=*/ OLD, // due
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::SqueueCheck);
     }
@@ -605,6 +615,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD,
             /*last_squeue_ts=*/ OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -621,6 +632,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD,
             /*last_squeue_ts=*/ recent_squeue,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Recover);
     }
@@ -640,6 +652,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD,
             /*last_squeue_ts=*/ OLD, // squeue due
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::SqueueCheck);
     }
@@ -656,6 +669,7 @@ mod tests {
             /*last_recovery_ts=*/ OLD, // recovery due
             /*last_squeue_ts=*/ recent_squeue,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Recover);
     }
@@ -672,6 +686,7 @@ mod tests {
             /*last_recovery_ts=*/ recent,
             /*last_squeue_ts=*/ recent,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -688,6 +703,7 @@ mod tests {
             /*last_recovery_ts=*/ recent,
             /*last_squeue_ts=*/ recent,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -703,6 +719,7 @@ mod tests {
             OLD,
             OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -718,6 +735,7 @@ mod tests {
             OLD,
             OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -735,6 +753,7 @@ mod tests {
             OLD,
             OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::StopDead);
     }
@@ -750,6 +769,7 @@ mod tests {
             OLD,
             OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::StopDead);
     }
@@ -767,6 +787,7 @@ mod tests {
             OLD,
             OLD,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::StopDisabledJump);
     }
@@ -782,6 +803,7 @@ mod tests {
             OLD,
             /*last_squeue_ts=*/ OLD, // throttle elapsed
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::SqueueCheck);
     }
@@ -798,6 +820,7 @@ mod tests {
             OLD,
             /*last_squeue_ts=*/ recent,
             NOW,
+            /*is_direct=*/ false,
         );
         assert_eq!(action, TunnelAction::Skip);
     }
@@ -806,27 +829,27 @@ mod tests {
 
     #[test]
     fn autostart_flag_with_node_gives_true() {
-        assert!(should_autostart(true, false, Some("holygpu01")));
+        assert!(should_autostart(true, false, Some("holygpu01"), false));
     }
 
     #[test]
     fn wants_alive_with_node_gives_true() {
-        assert!(should_autostart(false, true, Some("holygpu01")));
+        assert!(should_autostart(false, true, Some("holygpu01"), false));
     }
 
     #[test]
     fn autostart_flag_without_node_gives_false() {
-        assert!(!should_autostart(true, false, None));
+        assert!(!should_autostart(true, false, None, false));
     }
 
     #[test]
     fn wants_alive_without_node_gives_false() {
-        assert!(!should_autostart(false, true, None));
+        assert!(!should_autostart(false, true, None, false));
     }
 
     #[test]
     fn neither_flag_set_gives_false() {
-        assert!(!should_autostart(false, false, Some("holygpu01")));
+        assert!(!should_autostart(false, false, Some("holygpu01"), false));
     }
 
     // ---- Child registry (unit-level: store / take / kill) ---------------
@@ -1113,5 +1136,67 @@ mod tests {
         let armed = note_stop_dead_flap(&mut rt, None, 1000.0);
         assert!(!armed);
         assert_eq!(rt.consecutive_flaps, 2, "unknown uptime must not count either way");
+    }
+
+    // ---- direct-mode gating --------------------------------------------
+
+    #[test]
+    fn direct_down_wants_alive_squeue_due_gives_recover_not_squeue() {
+        // A DIRECT tunnel has no SLURM job — even with squeue "due" it must
+        // go straight to recovery, never SqueueCheck.
+        let action = tunnel_action(
+            TunnelStatusKind::Failed,
+            /*wants_alive=*/ true,
+            None,
+            /*port_bound=*/ false,
+            None,
+            /*last_recovery_ts=*/ OLD,
+            /*last_squeue_ts=*/ OLD, // would be "due" for a compute tunnel
+            NOW,
+            /*is_direct=*/ true,
+        );
+        assert_eq!(action, TunnelAction::Recover);
+    }
+
+    #[test]
+    fn direct_alive_squeue_due_gives_skip_not_squeue() {
+        let action = tunnel_action(
+            TunnelStatusKind::Alive,
+            true,
+            Some(true),
+            true,
+            Some(true),
+            OLD,
+            /*last_squeue_ts=*/ OLD, // due
+            NOW,
+            /*is_direct=*/ true,
+        );
+        assert_eq!(action, TunnelAction::Skip);
+    }
+
+    #[test]
+    fn direct_alive_child_dead_still_stop_dead() {
+        // Direct tunnels still get the child-died health check.
+        let action = tunnel_action(
+            TunnelStatusKind::Alive,
+            true,
+            Some(false),
+            true,
+            Some(true),
+            OLD,
+            OLD,
+            NOW,
+            /*is_direct=*/ true,
+        );
+        assert_eq!(action, TunnelAction::StopDead);
+    }
+
+    #[test]
+    fn direct_autostart_without_node_is_eligible() {
+        // No last_node (direct tunnels never have one), but is_direct → eligible.
+        assert!(should_autostart(false, true, None, /*is_direct=*/ true));
+        assert!(should_autostart(true, false, None, /*is_direct=*/ true));
+        // Not direct + no node → still NOT eligible (unchanged).
+        assert!(!should_autostart(false, true, None, /*is_direct=*/ false));
     }
 }

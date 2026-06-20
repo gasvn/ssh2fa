@@ -211,6 +211,7 @@ fn process_tunnel(
         last_recovery_ts,
         last_squeue_ts,
         now,
+        false, // is_direct — wired to snap.direct_host.is_some() in a later task
     );
 
     match action {
@@ -315,7 +316,7 @@ fn run_boot_autostart(
         guard
             .tunnels
             .iter()
-            .filter(|t| should_autostart(t.auto_start, t.wants_alive, t.last_node.as_deref()))
+            .filter(|t| should_autostart(t.auto_start, t.wants_alive, t.last_node.as_deref(), false))
             .map(|t| TunnelSnapshot {
                 name: t.name.clone(),
                 local_port: t.local_port,
