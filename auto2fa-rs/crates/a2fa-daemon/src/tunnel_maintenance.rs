@@ -831,24 +831,34 @@ fn spawn_tunnel_start_with_runtime(
                     // Store child in registry.
                     runtime.store_child(&name, child);
 
-                    // Set alive_since in the runtime.
-                    runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));
-
-                    // Record connect event.
-                    runtime.record(&name, now, format!("connected via {label} → {target}"));
-
-                    // Update State.
-                    {
+                    // Commit Alive UNDER a wants_alive re-check, closing the tiny
+                    // TOCTOU window between the abort check above and this write: a
+                    // Stop landing in that gap (now AFTER the child is stored) must
+                    // win, not be resurrected and persisted as wants_alive=true.
+                    let committed = {
                         let mut guard = crate::lock_state(&state);
-                        if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
-                            t.status = TunnelStatus::Alive;
-                            t.wants_alive = true;
-                            t.last_alive_at = now;
-                            t.connect_count += 1;
-                            t.active_jump = Some(label.clone());
-                            t.last_msg = format!("via {label}");
+                        match guard.tunnels.iter_mut().find(|t| t.name == name) {
+                            Some(t) if t.wants_alive => {
+                                t.status = TunnelStatus::Alive;
+                                t.last_alive_at = now;
+                                t.connect_count += 1;
+                                t.active_jump = Some(label.clone());
+                                t.last_msg = format!("via {label}");
+                                true
+                            }
+                            _ => false, // user stopped (or deleted) during start
                         }
+                    };
+                    if !committed {
+                        info!("[tunnel:{name}] stopped during start (post-store) — killing fresh forward (abort honored)");
+                        runtime.kill_child(&name);
+                        runtime.record(&name, now, "start aborted by user stop");
+                        return;
                     }
+
+                    // Runtime bookkeeping only after the Alive commit succeeds.
+                    runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));
+                    runtime.record(&name, now, format!("connected via {label} → {target}"));
                     // A successful connect clears the consecutive-failure tally.
                     runtime.with_rt_mut(&name, |r| r.consecutive_recovery_failures = 0);
 

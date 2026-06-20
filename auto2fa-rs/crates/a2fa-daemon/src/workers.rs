@@ -404,21 +404,41 @@ fn spawn_tunnel_start_inner(
                     // Store child in runtime registry if available.
                     if let Some(rt) = &runtime {
                         rt.store_child(&name, child);
+                    }
+
+                    // Commit Alive UNDER a wants_alive re-check, closing the tiny
+                    // TOCTOU window between the abort check above and this write: a
+                    // Stop landing in that gap (now AFTER the child is stored) must
+                    // win, not be resurrected and persisted as wants_alive=true.
+                    let committed = {
+                        let mut guard = crate::lock_state(&state);
+                        match guard.tunnels.iter_mut().find(|t| t.name == name) {
+                            Some(t) if t.wants_alive => {
+                                t.status = TunnelStatus::Alive;
+                                t.last_alive_at = now;
+                                t.connect_count += 1;
+                                t.active_jump = Some(label.clone());
+                                t.last_msg = format!("via {label}");
+                                info!("[tunnel:{name}] alive via {label}");
+                                true
+                            }
+                            _ => false, // user stopped (or deleted) during start
+                        }
+                    };
+                    if !committed {
+                        info!("[tunnel:{name}] stopped during start (post-store) — killing fresh forward (abort honored)");
+                        if let Some(rt) = &runtime {
+                            rt.kill_child(&name);
+                            rt.record(&name, now, "start aborted by user stop");
+                        }
+                        return;
+                    }
+
+                    // Runtime bookkeeping only after the Alive commit succeeds.
+                    if let Some(rt) = &runtime {
                         rt.with_rt_mut(&name, |r| r.alive_since = Some(now));
                         rt.record(&name, now, format!("connected via {label} → {target}"));
                     }
-
-                    let mut guard = crate::lock_state(&state);
-                    if let Some(t) = guard.tunnels.iter_mut().find(|t| t.name == name) {
-                        t.status = TunnelStatus::Alive;
-                        t.wants_alive = true;
-                        t.last_alive_at = now;
-                        t.connect_count += 1;
-                        t.active_jump = Some(label.clone());
-                        t.last_msg = format!("via {label}");
-                        info!("[tunnel:{name}] alive via {label}");
-                    }
-                    drop(guard);
 
                     // Persist wants_alive (off-lock + through the serialized
                     // save helper — a raw snapshot-then-save here could rename
