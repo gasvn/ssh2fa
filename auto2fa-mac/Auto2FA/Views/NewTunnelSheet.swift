@@ -25,6 +25,14 @@ struct NewTunnelSheet: View {
 
     enum Field { case name, port }
 
+    enum Target: String, CaseIterable, Identifiable {
+        case compute = "Compute node (SLURM)"
+        case direct = "Direct to a host"
+        var id: String { rawValue }
+    }
+    @State private var target: Target = .compute
+    @State private var selectedHost: String = ""
+
     enum TunnelTemplate: String, CaseIterable, Identifiable {
         case jupyter = "Jupyter"
         case tensorboard = "TensorBoard"
@@ -81,6 +89,31 @@ struct NewTunnelSheet: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .onChange(of: template) { _, new in applyTemplate(new) }
+                }
+
+                fieldGroup("Target") {
+                    Picker("Target", selection: $target) {
+                        ForEach(Target.allCases) { t in Text(t.rawValue).tag(t) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                if target == .direct {
+                    fieldGroup("Host") {
+                        if appState.hosts.isEmpty {
+                            Text("No registered hosts yet — add a host first, then forward a port to it.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Picker("Host", selection: $selectedHost) {
+                                ForEach(appState.hosts, id: \.host) { h in
+                                    Text(h.host).tag(h.host)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                    }
                 }
 
                 fieldGroup("Name") {
@@ -156,6 +189,7 @@ struct NewTunnelSheet: View {
             // daemon for a sensible next-free port so the user doesn't have
             // to think about it.
             applyTemplate(template)
+            if selectedHost.isEmpty, let first = appState.hosts.first { selectedHost = first.host }
             if portText.isEmpty {
                 await suggestPort()
             }
@@ -248,13 +282,25 @@ struct NewTunnelSheet: View {
             focused = .port
             return
         }
+        var directHost: String? = nil
+        if target == .direct {
+            let h = selectedHost.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !h.isEmpty else {
+                error = appState.hosts.isEmpty
+                    ? "Add a host first, then forward a port to it."
+                    : "Pick a host to forward to."
+                return
+            }
+            directHost = h
+        }
         submitting = true
         error = nil
         Task {
             if let errMsg = await appState.createTunnel(name: trimmedName,
                                                        localPort: port,
                                                        remotePort: parsedRemotePort,
-                                                       autoStart: autoStart) {
+                                                       autoStart: autoStart,
+                                                       directHost: directHost) {
                 error = errMsg
                 submitting = false
             }

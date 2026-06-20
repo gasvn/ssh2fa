@@ -126,9 +126,15 @@ struct TunnelRow: View {
             // tunnel is failed (so the action bar / recovery buttons get the full
             // trailing width without clipping).
             if !hovering && !isFailedState {
-                // Node (secondary; "(no node)" tertiary) — flexible column.
+                // Target column: direct → "→ host"; compute → node or "(no node)".
                 Group {
-                    if let n = tunnel.lastNode {
+                    if tunnel.isDirect {
+                        Text("→ \(tunnel.directHost ?? "host")")
+                            .font(.rowIdentifier)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let n = tunnel.lastNode {
                         Text(n)
                             .font(.rowIdentifier)
                             .foregroundStyle(.secondary)
@@ -144,9 +150,18 @@ struct TunnelRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // via <jump> — clickable jump-host Menu (also in the ⋯ overflow).
-                viaMenu
-                    .frame(width: 70, alignment: .leading)
+                // direct → static "direct" label; compute → clickable jump menu.
+                Group {
+                    if tunnel.isDirect {
+                        Text("direct")
+                            .font(.rowMeta)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    } else {
+                        viaMenu
+                    }
+                }
+                .frame(width: 70, alignment: .leading)
 
                 // Metadata: aliveSince + fail count — compact fixed column.
                 metadata
@@ -173,7 +188,7 @@ struct TunnelRow: View {
                 .transition(.opacity)
                 // A node pick can't free a busy LOCAL port, so don't offer it
                 // for portBusy (the fix is a different local port).
-                if tunnel.displayState != .portBusy {
+                if tunnel.displayState != .portBusy && !tunnel.isDirect {
                     Button { appState.presentNodePicker(for: tunnel) } label: {
                         Label("Node", systemImage: "list.bullet.rectangle")
                     }
@@ -283,12 +298,14 @@ struct TunnelRow: View {
                     }
                 }
 
-                glassActionButton(id: "node",
-                                  disabled: isBusy,
-                                  help: "Pick compute node") {
-                    appState.presentNodePicker(for: tunnel)
-                } label: {
-                    Label("Node", systemImage: "list.bullet.rectangle")
+                if !tunnel.isDirect {
+                    glassActionButton(id: "node",
+                                      disabled: isBusy,
+                                      help: "Pick compute node") {
+                        appState.presentNodePicker(for: tunnel)
+                    } label: {
+                        Label("Node", systemImage: "list.bullet.rectangle")
+                    }
                 }
 
                 glassActionButton(id: "open",
@@ -365,17 +382,19 @@ struct TunnelRow: View {
         }
         .disabled(appState.inFlightTunnels.contains(tunnel.name))
 
-        Button {
-            appState.presentNodePicker(for: tunnel)
-        } label: {
-            Label("Pick node…", systemImage: "list.bullet.rectangle")
-        }
-        .disabled(isBusy)
+        if !tunnel.isDirect {
+            Button {
+                appState.presentNodePicker(for: tunnel)
+            } label: {
+                Label("Pick node…", systemImage: "list.bullet.rectangle")
+            }
+            .disabled(isBusy)
 
-        Menu {
-            jumpPickerMenu(for: tunnel)
-        } label: {
-            Label("Use jump host", systemImage: "arrow.triangle.branch")
+            Menu {
+                jumpPickerMenu(for: tunnel)
+            } label: {
+                Label("Use jump host", systemImage: "arrow.triangle.branch")
+            }
         }
 
         Button {
