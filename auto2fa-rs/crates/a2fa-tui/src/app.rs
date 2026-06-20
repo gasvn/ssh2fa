@@ -546,6 +546,7 @@ mod tests {
             jump_candidates: None,
             last_node: Some(node.to_string()),
             last_user: None,
+            direct_host: None,
             auto_start: false,
             post_connect_cmd: None,
             tags: vec![],
