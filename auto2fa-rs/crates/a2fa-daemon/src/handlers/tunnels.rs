@@ -349,12 +349,12 @@ pub fn tunnel_start(
     let post_connect_running: Arc<Mutex<HashSet<String>>> =
         post_connect_running.unwrap_or_else(|| Arc::new(Mutex::new(HashSet::new())));
 
+    let spec = a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node };
+
     match runtime {
         Some(rt) => spawn_tunnel_start_with_runtime(
             name,
-            jump,
-            user,
-            node,
+            spec,
             local_port,
             remote_port,
             post_connect_cmd,
@@ -364,9 +364,7 @@ pub fn tunnel_start(
         ),
         None => spawn_tunnel_start(
             name,
-            jump,
-            user,
-            node,
+            spec,
             local_port,
             remote_port,
             post_connect_cmd,

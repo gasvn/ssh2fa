@@ -282,9 +282,7 @@ pub struct TunnelStartResult {
 /// State by the caller before this function is called (no lock held here).
 pub fn spawn_tunnel_start(
     name: String,
-    jump: String,
-    user: String,
-    node: String,
+    spec: a2fa_core::tunnels::forward::ForwardSpec,
     local_port: u16,
     remote_port: u16,
     post_connect_cmd: Option<String>,
@@ -292,16 +290,8 @@ pub fn spawn_tunnel_start(
     post_connect_running: Arc<Mutex<std::collections::HashSet<String>>>,
 ) {
     spawn_tunnel_start_inner(
-        name,
-        jump,
-        user,
-        node,
-        local_port,
-        remote_port,
-        post_connect_cmd,
-        state,
-        post_connect_running,
-        None,
+        name, spec, local_port, remote_port, post_connect_cmd, state,
+        post_connect_running, None,
     );
 }
 
@@ -311,9 +301,7 @@ pub fn spawn_tunnel_start(
 /// Used by the IPC `tunnel_start` handler when a `TunnelRuntime` is available.
 pub fn spawn_tunnel_start_with_runtime(
     name: String,
-    jump: String,
-    user: String,
-    node: String,
+    spec: a2fa_core::tunnels::forward::ForwardSpec,
     local_port: u16,
     remote_port: u16,
     post_connect_cmd: Option<String>,
@@ -322,25 +310,15 @@ pub fn spawn_tunnel_start_with_runtime(
     runtime: Arc<crate::tunnel_runtime::TunnelRuntime>,
 ) {
     spawn_tunnel_start_inner(
-        name,
-        jump,
-        user,
-        node,
-        local_port,
-        remote_port,
-        post_connect_cmd,
-        state,
-        post_connect_running,
-        Some(runtime),
+        name, spec, local_port, remote_port, post_connect_cmd, state,
+        post_connect_running, Some(runtime),
     );
 }
 
 /// Internal implementation shared by the two public variants above.
 fn spawn_tunnel_start_inner(
     name: String,
-    jump: String,
-    user: String,
-    node: String,
+    spec: a2fa_core::tunnels::forward::ForwardSpec,
     local_port: u16,
     remote_port: u16,
     post_connect_cmd: Option<String>,
@@ -353,13 +331,25 @@ fn spawn_tunnel_start_inner(
     let spawn_res = std::thread::Builder::new()
         .name(format!("tunnel-start:{name}"))
         .spawn(move || {
-            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward, ProbeOutcome};
+            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward_spec, ForwardSpec, ProbeOutcome};
             use a2fa_core::tunnels::post_connect::run_post_connect;
             use a2fa_core::model::TunnelStatus;
 
-            info!("[tunnel:{name}] starting via {jump}");
+            let label = spec.label().to_string();
+            // Post-connect needs a (node, jump) pair; for direct, host stands in for both.
+            let (pc_node, pc_jump) = match &spec {
+                ForwardSpec::Compute { node, jump, .. } => (node.clone(), jump.clone()),
+                ForwardSpec::Direct { host } => (host.clone(), host.clone()),
+            };
+            // Human target for the connect record.
+            let target = match &spec {
+                ForwardSpec::Compute { node, .. } => format!("{node}:{remote_port}"),
+                ForwardSpec::Direct { host } => format!("{host}:{remote_port} (direct)"),
+            };
 
-            let child = match start_forward(&jump, &user, &node, local_port, remote_port) {
+            info!("[tunnel:{name}] starting via {label}");
+
+            let child = match start_forward_spec(&spec, local_port, remote_port) {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("[tunnel:{name}] spawn failed: {e}");
@@ -415,7 +405,7 @@ fn spawn_tunnel_start_inner(
                     if let Some(rt) = &runtime {
                         rt.store_child(&name, child);
                         rt.with_rt_mut(&name, |r| r.alive_since = Some(now));
-                        rt.record(&name, now, format!("connected via {jump} → {node}:{remote_port}"));
+                        rt.record(&name, now, format!("connected via {label} → {target}"));
                     }
 
                     let mut guard = crate::lock_state(&state);
@@ -424,9 +414,9 @@ fn spawn_tunnel_start_inner(
                         t.wants_alive = true;
                         t.last_alive_at = now;
                         t.connect_count += 1;
-                        t.active_jump = Some(jump.clone());
-                        t.last_msg = format!("via {jump}");
-                        info!("[tunnel:{name}] alive via {jump}");
+                        t.active_jump = Some(label.clone());
+                        t.last_msg = format!("via {label}");
+                        info!("[tunnel:{name}] alive via {label}");
                     }
                     drop(guard);
 
@@ -441,8 +431,8 @@ fn spawn_tunnel_start_inner(
                             name.clone(),
                             cmd,
                             local_port,
-                            node.clone(),
-                            jump.clone(),
+                            pc_node.clone(),
+                            pc_jump.clone(),
                             post_connect_running,
                         );
                     }

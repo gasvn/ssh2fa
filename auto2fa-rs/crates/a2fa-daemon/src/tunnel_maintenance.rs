@@ -713,11 +713,10 @@ fn do_tunnel_start(
         // The worker thread writes Alive into State; we hook the alive_since
         // update through a wrapper approach: the runtime state gets updated
         // when the tunnel transitions to Alive (see `spawn_tunnel_start_with_runtime`).
+        let spec = a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node };
         spawn_tunnel_start_with_runtime(
             name.to_owned(),
-            jump,
-            user,
-            node,
+            spec,
             local_port,
             remote_port,
             snap.local_port,
@@ -741,9 +740,7 @@ fn do_tunnel_start(
 #[allow(clippy::too_many_arguments)]
 fn spawn_tunnel_start_with_runtime(
     name: String,
-    jump: String,
-    user: String,
-    node: String,
+    spec: a2fa_core::tunnels::forward::ForwardSpec,
     local_port: u16,
     remote_port: u16,
     _snap_local_port: u16,
@@ -758,12 +755,22 @@ fn spawn_tunnel_start_with_runtime(
     let spawn_res = std::thread::Builder::new()
         .name(format!("maintenance-start:{name}"))
         .spawn(move || {
-            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward, ProbeOutcome};
+            use a2fa_core::tunnels::forward::{probe_and_settle, start_forward_spec, ForwardSpec, ProbeOutcome};
             use a2fa_core::tunnels::post_connect::run_post_connect;
 
-            info!("[tunnel:{name}] maintenance: starting via {jump}");
+            let label = spec.label().to_string();
+            let (pc_node, pc_jump) = match &spec {
+                ForwardSpec::Compute { node, jump, .. } => (node.clone(), jump.clone()),
+                ForwardSpec::Direct { host } => (host.clone(), host.clone()),
+            };
+            let target = match &spec {
+                ForwardSpec::Compute { node, .. } => format!("{node}:{remote_port}"),
+                ForwardSpec::Direct { host } => format!("{host}:{remote_port} (direct)"),
+            };
 
-            let child = match start_forward(&jump, &user, &node, local_port, remote_port) {
+            info!("[tunnel:{name}] maintenance: starting via {label}");
+
+            let child = match start_forward_spec(&spec, local_port, remote_port) {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("[tunnel:{name}] maintenance: spawn failed: {e}");
@@ -812,7 +819,7 @@ fn spawn_tunnel_start_with_runtime(
                     runtime.with_rt_mut(&name, |r| r.alive_since = Some(now));
 
                     // Record connect event.
-                    runtime.record(&name, now, format!("connected via {jump} → {node}:{remote_port}"));
+                    runtime.record(&name, now, format!("connected via {label} → {target}"));
 
                     // Update State.
                     {
@@ -822,8 +829,8 @@ fn spawn_tunnel_start_with_runtime(
                             t.wants_alive = true;
                             t.last_alive_at = now;
                             t.connect_count += 1;
-                            t.active_jump = Some(jump.clone());
-                            t.last_msg = format!("via {jump}");
+                            t.active_jump = Some(label.clone());
+                            t.last_msg = format!("via {label}");
                         }
                     }
                     // A successful connect clears the consecutive-failure tally.
@@ -840,8 +847,8 @@ fn spawn_tunnel_start_with_runtime(
                             name.clone(),
                             cmd,
                             local_port,
-                            node.clone(),
-                            jump.clone(),
+                            pc_node.clone(),
+                            pc_jump.clone(),
                             post_connect_running,
                         );
                     }
