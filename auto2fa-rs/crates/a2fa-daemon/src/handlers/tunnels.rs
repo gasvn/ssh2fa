@@ -73,6 +73,7 @@ pub fn tunnel_snapshot(t: &Tunnel) -> Value {
         "jump_candidates": t.jump_candidates,
         "last_node": t.last_node,
         "last_user": t.last_user,
+        "direct_host": t.direct_host,
         "auto_start": t.auto_start,
         "post_connect_cmd": t.post_connect_cmd,
         "tags": t.tags,
@@ -146,6 +147,24 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         None => local_port,
     };
 
+    // Optional direct-mode target: forward straight to this registered host's
+    // own localhost (no jump / no node). Reject a leading '-' (ssh arg injection).
+    let direct_host: Option<String> = match params.get("direct_host") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let s = v.as_str().unwrap_or("").trim().to_owned();
+            if s.is_empty() {
+                None
+            } else if s.starts_with('-') {
+                return Err(Error::BadParams(format!(
+                    "invalid direct_host '{s}': must not start with '-'"
+                )));
+            } else {
+                Some(s)
+            }
+        }
+    };
+
     let mut guard = crate::lock_state(state);
 
     // Duplicate check (by name).
@@ -170,7 +189,7 @@ pub fn tunnel_add(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         jump_candidates: None,
         last_node: None,
         last_user: None,
-        direct_host: None,
+        direct_host,
         auto_start: false,
         post_connect_cmd: None,
         tags: vec![],
@@ -261,84 +280,109 @@ pub fn tunnel_start(
         .ok_or_else(|| Error::BadParams("name required".into()))?
         .to_owned();
 
-    // Snapshot everything we need under the lock.
-    let (jump, user, node, local_port, remote_port, post_connect_cmd) = {
+    let resolved: Option<(a2fa_core::tunnels::forward::ForwardSpec, u16, u16, Option<String>)> = {
         let mut guard = crate::lock_state(state);
         let t = guard
             .tunnels
-            .iter_mut()
+            .iter()
             .find(|t| t.name == name)
             .ok_or_else(|| Error::NotFound(name.clone()))?;
 
-        // Idempotent + in-flight latch: skip the spawn when the tunnel is
-        // already Alive OR already Starting.  The `Starting` status acts as the
-        // in-flight latch (same as the maintenance loop), so repeated
-        // `tunnel_start` IPC calls during the ~10s probe_and_settle window can't
-        // each spawn another `ssh -L` worker (unbounded ssh + thread pile-up).
-        //
-        // This check and the `= Starting` write below both happen under THIS
-        // single `guard` acquisition (no gap), so two concurrent IPC calls
-        // cannot both observe a non-Starting status and both proceed to spawn.
+        // Idempotent + in-flight latch.
         if matches!(t.status, TunnelStatus::Alive | TunnelStatus::Starting) {
-            return Ok(Value::Null); // idempotent / already in flight
-        }
-
-        // Pick the first ready jump host.
-        let jump = guard
-            .hosts
-            .iter()
-            .find(|h| h.is_master_ready && {
-                // If the tunnel has explicit candidates, check that.
-                let t = guard.tunnels.iter().find(|t| t.name == name).unwrap();
-                match &t.jump_candidates {
-                    Some(cands) => cands.contains(&h.host),
-                    None => true,
-                }
-            })
-            .map(|h| h.host.clone());
-
-        // Re-borrow tunnel mutably after the host lookup.
-        let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
-
-        let node = match t.last_node.clone() {
-            Some(n) => n,
-            None => {
-                t.status = TunnelStatus::Idle;
-                t.last_msg = "no node — press Enter to pick".into();
-                return Ok(Value::Null);
-            }
-        };
-
-        let jump = match jump {
-            Some(j) => j,
-            None => {
-                t.status = TunnelStatus::Idle;
-                t.last_msg = "waiting for jump host".into();
-                return Ok(Value::Null);
-            }
-        };
-
-        let user = t
-            .last_user
-            .clone()
-            .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
-
-        if user.is_empty() {
-            t.status = TunnelStatus::Failed;
-            t.last_msg = "no user (set last_user in tunnels.json)".into();
             return Ok(Value::Null);
         }
 
+        let direct_host = t.direct_host.clone();
         let local_port = t.local_port;
         let remote_port = t.remote_port;
         let post_cmd = t.post_connect_cmd.clone();
 
-        t.status = TunnelStatus::Starting;
-        t.active_jump = Some(jump.clone());
-        t.last_msg = format!("starting via {jump}");
-        t.wants_alive = true;
+        match direct_host {
+            // ---- Direct mode: forward to <host>'s own localhost ----
+            Some(host) => {
+                let ready = guard
+                    .hosts
+                    .iter()
+                    .any(|h| h.host == host && h.is_master_ready);
+                let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
+                if !ready {
+                    // Park until the host's master is up; maintenance recovers it.
+                    t.status = TunnelStatus::Idle;
+                    t.last_msg = format!("waiting for host {host}");
+                    t.active_jump = Some(host.clone());
+                    t.wants_alive = true;
+                    return Ok(Value::Null);
+                }
+                t.status = TunnelStatus::Starting;
+                t.active_jump = Some(host.clone());
+                t.last_msg = format!("starting direct to {host}");
+                t.wants_alive = true;
+                Some((
+                    a2fa_core::tunnels::forward::ForwardSpec::Direct { host },
+                    local_port,
+                    remote_port,
+                    post_cmd,
+                ))
+            }
+            // ---- Compute mode: SLURM two-hop (unchanged) ----
+            None => {
+                let jump = guard
+                    .hosts
+                    .iter()
+                    .find(|h| h.is_master_ready && {
+                        let t = guard.tunnels.iter().find(|t| t.name == name).unwrap();
+                        match &t.jump_candidates {
+                            Some(cands) => cands.contains(&h.host),
+                            None => true,
+                        }
+                    })
+                    .map(|h| h.host.clone());
 
-        (jump, user, node, local_port, remote_port, post_cmd)
+                let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
+
+                let node = match t.last_node.clone() {
+                    Some(n) => n,
+                    None => {
+                        t.status = TunnelStatus::Idle;
+                        t.last_msg = "no node — press Enter to pick".into();
+                        return Ok(Value::Null);
+                    }
+                };
+                let jump = match jump {
+                    Some(j) => j,
+                    None => {
+                        t.status = TunnelStatus::Idle;
+                        t.last_msg = "waiting for jump host".into();
+                        return Ok(Value::Null);
+                    }
+                };
+                let user = t
+                    .last_user
+                    .clone()
+                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+                if user.is_empty() {
+                    t.status = TunnelStatus::Failed;
+                    t.last_msg = "no user (set last_user in tunnels.json)".into();
+                    return Ok(Value::Null);
+                }
+                t.status = TunnelStatus::Starting;
+                t.active_jump = Some(jump.clone());
+                t.last_msg = format!("starting via {jump}");
+                t.wants_alive = true;
+                Some((
+                    a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node },
+                    local_port,
+                    remote_port,
+                    post_cmd,
+                ))
+            }
+        }
+    };
+
+    let (spec, local_port, remote_port, post_connect_cmd) = match resolved {
+        Some(v) => v,
+        None => return Ok(Value::Null),
     };
 
     // Spawn the blocking worker off-lock. Use the SHARED post-connect dedup set
@@ -348,8 +392,6 @@ pub fn tunnel_start(
     // set only for legacy callers that don't supply one (e.g. unit tests).
     let post_connect_running: Arc<Mutex<HashSet<String>>> =
         post_connect_running.unwrap_or_else(|| Arc::new(Mutex::new(HashSet::new())));
-
-    let spec = a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node };
 
     match runtime {
         Some(rt) => spawn_tunnel_start_with_runtime(
@@ -1559,5 +1601,58 @@ mod tests {
         .unwrap();
         let results = v["results"].as_array().unwrap();
         assert_eq!(results.len(), 10, "every requested name must get a result");
+    }
+
+    // ---- direct mode ---------------------------------------------------
+
+    #[test]
+    fn tunnel_add_direct_host_stored_and_in_snapshot() {
+        let state = make_state();
+        let snap = tunnel_add(
+            &state,
+            &json!({"name": "web", "local_port": 9000, "direct_host": "loginhost"}),
+        )
+        .unwrap();
+        assert_eq!(snap["direct_host"], "loginhost");
+        let guard = crate::lock_state(&state);
+        assert_eq!(guard.tunnels[0].direct_host.as_deref(), Some("loginhost"));
+    }
+
+    #[test]
+    fn tunnel_add_without_direct_host_is_none() {
+        let state = make_state();
+        let snap = tunnel_add(&state, &json!({"name": "nb", "local_port": 8888})).unwrap();
+        assert!(snap["direct_host"].is_null());
+        assert_eq!(crate::lock_state(&state).tunnels[0].direct_host, None);
+    }
+
+    #[test]
+    fn tunnel_add_direct_host_leading_dash_rejected() {
+        let state = make_state();
+        let err = tunnel_add(
+            &state,
+            &json!({"name": "x", "local_port": 9001, "direct_host": "-oProxyCommand=x"}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    /// A direct tunnel whose host is not registered/ready must NOT spawn — it
+    /// parks Idle with a "waiting for host" message (maintenance recovers it).
+    #[test]
+    fn tunnel_start_direct_no_ready_host_waits() {
+        let state = make_state();
+        tunnel_add(
+            &state,
+            &json!({"name": "web", "local_port": 9002, "direct_host": "loginhost"}),
+        )
+        .unwrap();
+        tunnel_start(&state, &json!({"name": "web"}), None, None).unwrap();
+        let guard = crate::lock_state(&state);
+        let t = &guard.tunnels[0];
+        assert_eq!(t.status, TunnelStatus::Idle);
+        assert!(t.last_msg.contains("waiting for host"), "got: {}", t.last_msg);
+        assert_eq!(t.active_jump.as_deref(), Some("loginhost"));
+        assert!(t.wants_alive, "wants_alive must be set so maintenance retries");
     }
 }

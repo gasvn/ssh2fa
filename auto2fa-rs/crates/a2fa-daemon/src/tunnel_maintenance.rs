@@ -138,6 +138,7 @@ pub fn maintenance_tick(
                 active_jump: t.active_jump.clone(),
                 last_node: t.last_node.clone(),
                 last_user: t.last_user.clone(),
+                direct_host: t.direct_host.clone(),
                 post_connect_cmd: t.post_connect_cmd.clone(),
                 jump_host_active: t.active_jump.as_deref().and_then(|jh| {
                     guard.hosts.iter().find(|h| h.host == jh).map(|h| h.active)
@@ -170,6 +171,7 @@ struct TunnelSnapshot {
     active_jump: Option<String>,
     last_node: Option<String>,
     last_user: Option<String>,
+    direct_host: Option<String>,
     #[allow(dead_code)]
     post_connect_cmd: Option<String>,
     /// `Some(true/false)` → the tunnel's active_jump host's `active` flag.
@@ -211,7 +213,7 @@ fn process_tunnel(
         last_recovery_ts,
         last_squeue_ts,
         now,
-        false, // is_direct — wired to snap.direct_host.is_some() in a later task
+        snap.direct_host.is_some(),
     );
 
     match action {
@@ -316,7 +318,7 @@ fn run_boot_autostart(
         guard
             .tunnels
             .iter()
-            .filter(|t| should_autostart(t.auto_start, t.wants_alive, t.last_node.as_deref(), false))
+            .filter(|t| should_autostart(t.auto_start, t.wants_alive, t.last_node.as_deref(), t.direct_host.is_some()))
             .map(|t| TunnelSnapshot {
                 name: t.name.clone(),
                 local_port: t.local_port,
@@ -326,6 +328,7 @@ fn run_boot_autostart(
                 active_jump: t.active_jump.clone(),
                 last_node: t.last_node.clone(),
                 last_user: t.last_user.clone(),
+                direct_host: t.direct_host.clone(),
                 post_connect_cmd: t.post_connect_cmd.clone(),
                 jump_host_active: t.active_jump.as_deref().and_then(|jh| {
                     guard.hosts.iter().find(|h| h.host == jh).map(|h| h.active)
@@ -637,83 +640,96 @@ fn do_tunnel_start(
     post_connect_running: &Arc<Mutex<HashSet<String>>>,
 ) {
     // Re-snapshot under lock to get fresh jump candidates / readiness.
-    let start_info: Option<(String, String, String, u16, u16, Option<String>)> = {
+    let start_info: Option<(a2fa_core::tunnels::forward::ForwardSpec, u16, u16, Option<String>)> = {
         let mut guard = crate::lock_state(state);
 
-        // Guard: re-check wants_alive under lock (concurrent user-stop may have
-        // cleared it while we were deciding to recover off-lock — mirrors Python's
-        // `_auto_recovery` flag re-check).
         let t = match guard.tunnels.iter().find(|t| t.name == name) {
             Some(t) => t,
-            None => return, // tunnel was removed
+            None => return,
         };
         if !t.wants_alive {
             info!("[tunnel:{name}] do_tunnel_start: wants_alive cleared by user — skipping");
             return;
         }
         if matches!(t.status, TunnelStatus::Alive | TunnelStatus::Starting) {
-            return; // already in flight
-        }
-
-        // Pick a ready jump host.
-        let jump = {
-            let candidates = t.jump_candidates.clone();
-            guard.hosts.iter().find(|h| {
-                h.is_master_ready && match &candidates {
-                    Some(cs) => cs.contains(&h.host),
-                    None => true,
-                }
-            }).map(|h| h.host.clone())
-        };
-
-        let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
-
-        let node = match t.last_node.clone() {
-            Some(n) => n,
-            None => {
-                t.status = TunnelStatus::Idle;
-                t.last_msg = "no node — press Enter to pick".into();
-                return;
-            }
-        };
-
-        let jump = match jump {
-            Some(j) => j,
-            None => {
-                t.status = TunnelStatus::Idle;
-                t.last_msg = "waiting for jump host".into();
-                return;
-            }
-        };
-
-        let user = t
-            .last_user
-            .clone()
-            .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
-
-        if user.is_empty() {
-            t.status = TunnelStatus::Failed;
-            t.last_msg = "no user (set last_user in tunnels.json)".into();
             return;
         }
 
+        let direct_host = t.direct_host.clone();
         let local_port = t.local_port;
         let remote_port = t.remote_port;
         let post_cmd = t.post_connect_cmd.clone();
 
-        t.status = TunnelStatus::Starting;
-        t.active_jump = Some(jump.clone());
-        t.last_msg = format!("starting via {jump}");
-
-        Some((jump, user, node, local_port, remote_port, post_cmd))
+        match direct_host {
+            Some(host) => {
+                let ready = guard.hosts.iter().any(|h| h.host == host && h.is_master_ready);
+                let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
+                if !ready {
+                    t.status = TunnelStatus::Idle;
+                    t.last_msg = format!("waiting for host {host}");
+                    t.active_jump = Some(host.clone());
+                    return;
+                }
+                t.status = TunnelStatus::Starting;
+                t.active_jump = Some(host.clone());
+                t.last_msg = format!("starting direct to {host}");
+                Some((
+                    a2fa_core::tunnels::forward::ForwardSpec::Direct { host },
+                    local_port,
+                    remote_port,
+                    post_cmd,
+                ))
+            }
+            None => {
+                let jump = {
+                    let candidates = t.jump_candidates.clone();
+                    guard.hosts.iter().find(|h| {
+                        h.is_master_ready && match &candidates {
+                            Some(cs) => cs.contains(&h.host),
+                            None => true,
+                        }
+                    }).map(|h| h.host.clone())
+                };
+                let t = guard.tunnels.iter_mut().find(|t| t.name == name).unwrap();
+                let node = match t.last_node.clone() {
+                    Some(n) => n,
+                    None => {
+                        t.status = TunnelStatus::Idle;
+                        t.last_msg = "no node — press Enter to pick".into();
+                        return;
+                    }
+                };
+                let jump = match jump {
+                    Some(j) => j,
+                    None => {
+                        t.status = TunnelStatus::Idle;
+                        t.last_msg = "waiting for jump host".into();
+                        return;
+                    }
+                };
+                let user = t
+                    .last_user
+                    .clone()
+                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+                if user.is_empty() {
+                    t.status = TunnelStatus::Failed;
+                    t.last_msg = "no user (set last_user in tunnels.json)".into();
+                    return;
+                }
+                t.status = TunnelStatus::Starting;
+                t.active_jump = Some(jump.clone());
+                t.last_msg = format!("starting via {jump}");
+                Some((
+                    a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node },
+                    local_port,
+                    remote_port,
+                    post_cmd,
+                ))
+            }
+        }
     };
 
-    if let Some((jump, user, node, local_port, remote_port, post_cmd)) = start_info {
-        // Set alive_since when the tunnel eventually becomes Alive.
-        // The worker thread writes Alive into State; we hook the alive_since
-        // update through a wrapper approach: the runtime state gets updated
-        // when the tunnel transitions to Alive (see `spawn_tunnel_start_with_runtime`).
-        let spec = a2fa_core::tunnels::forward::ForwardSpec::Compute { jump, user, node };
+    if let Some((spec, local_port, remote_port, post_cmd)) = start_info {
         spawn_tunnel_start_with_runtime(
             name.to_owned(),
             spec,
