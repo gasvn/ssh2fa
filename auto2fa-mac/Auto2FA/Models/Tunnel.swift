@@ -8,6 +8,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
     let jumpCandidates: [String]?
     let lastNode: String?
     let lastUser: String?
+    let directHost: String?
     let autoStart: Bool
     let postConnectCmd: String?
     let tags: [String]
@@ -22,6 +23,10 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
 
     var id: String { name }
     var url: String { "localhost:\(localPort)" }
+
+    /// True when this tunnel forwards straight to a registered host's own
+    /// localhost (no jump / no SLURM node).
+    var isDirect: Bool { directHost != nil }
 
     /// Full browser URL: prepends http:// + appends user-defined urlPath
     /// (e.g. "/?token=abc") if set. Used by "Open in browser" and ⌘O.
@@ -38,6 +43,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         case jumpCandidates = "jump_candidates"
         case lastNode = "last_node"
         case lastUser = "last_user"
+        case directHost = "direct_host"
         case autoStart = "auto_start"
         case postConnectCmd = "post_connect_cmd"
         case urlPath = "url_path"
@@ -59,6 +65,7 @@ struct Tunnel: Identifiable, Codable, Equatable, Hashable {
         self.jumpCandidates = try c.decodeIfPresent([String].self, forKey: .jumpCandidates)
         self.lastNode = try c.decodeIfPresent(String.self, forKey: .lastNode)
         self.lastUser = try c.decodeIfPresent(String.self, forKey: .lastUser)
+        self.directHost = try c.decodeIfPresent(String.self, forKey: .directHost)
         self.autoStart = try c.decode(Bool.self, forKey: .autoStart)
         self.postConnectCmd = try c.decodeIfPresent(String.self, forKey: .postConnectCmd)
         self.tags = (try? c.decode([String].self, forKey: .tags)) ?? []

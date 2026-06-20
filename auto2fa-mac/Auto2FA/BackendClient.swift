@@ -460,9 +460,11 @@ actor BackendClient {
         _ = try await sendRaw(method: "host_rotate", params: ["host": host])
     }
 
-    func addTunnel(name: String, localPort: Int, remotePort: Int? = nil) async throws -> Tunnel {
+    func addTunnel(name: String, localPort: Int, remotePort: Int? = nil,
+                   directHost: String? = nil) async throws -> Tunnel {
         var params: [String: Any] = ["name": name, "local_port": localPort]
         if let rp = remotePort { params["remote_port"] = rp }
+        if let dh = directHost, !dh.isEmpty { params["direct_host"] = dh }
         let data = try await sendRaw(method: "tunnel_add", params: params)
         return try JSONDecoder().decode(Tunnel.self, from: data)
     }

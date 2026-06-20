@@ -819,12 +819,12 @@ final class AppState: ObservableObject {
     /// message on failure (so the sheet can show it inline rather than
     /// duplicating it as a global banner).
     func createTunnel(name: String, localPort: Int, remotePort: Int? = nil,
-                      autoStart: Bool = false) async -> String? {
+                      autoStart: Bool = false, directHost: String? = nil) async -> String? {
         inFlightTunnels.insert(name)
         defer { inFlightTunnels.remove(name) }
         do {
             _ = try await client.addTunnel(name: name, localPort: localPort,
-                                           remotePort: remotePort)
+                                           remotePort: remotePort, directHost: directHost)
             if autoStart {
                 try? await client.setTunnelAutostart(name, value: true)
             }
