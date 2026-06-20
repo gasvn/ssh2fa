@@ -278,6 +278,7 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
             "jump_candidates": t.jump_candidates,
             "last_node": t.last_node,
             "last_user": t.last_user,
+            "direct_host": t.direct_host,
             "auto_start": t.auto_start,
             "post_connect_cmd": t.post_connect_cmd,
             "tags": t.tags,
@@ -460,5 +461,27 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert!(leftover.is_empty(), "no .tmp files should leak, found {leftover:?}");
+    }
+
+    /// REGRESSION: a direct-mode tunnel's `direct_host` must survive a
+    /// save→load round-trip. (save_tunnels formerly dropped the field, so the
+    /// first daemon persist silently reverted a direct tunnel to compute mode.)
+    #[test]
+    fn direct_host_survives_save_and_reload() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(
+            &p,
+            r#"{"tunnels":{"web":{"local_port":9000,"remote_port":9000,"direct_host":"loginhost"}}}"#,
+        )
+        .unwrap();
+        let loaded = load_tunnels(&p);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].direct_host.as_deref(), Some("loginhost"));
+        // Persist them back out, then reload — direct_host must still be there.
+        save_tunnels(&p, &loaded).unwrap();
+        let reloaded = load_tunnels(&p);
+        assert_eq!(reloaded[0].direct_host.as_deref(), Some("loginhost"),
+                   "save_tunnels must not drop direct_host");
     }
 }
