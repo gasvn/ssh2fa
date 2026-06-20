@@ -12,6 +12,28 @@ const SSH_OPTS: &[(&str, &str)] = &[
     ("ServerAliveInterval", "15"),
 ];
 
+/// What a forward connects to.
+///
+/// * `Compute` — the SLURM two-hop forward: `ssh -N -J <jump> -L … <user>@<node>`.
+/// * `Direct`  — straight to a registered host's own localhost:
+///   `ssh -N -L … <host>` (no jump, no node), reusing the host's warm master.
+#[derive(Debug, Clone)]
+pub enum ForwardSpec {
+    Compute { jump: String, user: String, node: String },
+    Direct { host: String },
+}
+
+impl ForwardSpec {
+    /// Host label shown in logs / UI / the tunnel's `active_jump` field
+    /// (the jump for compute, the host for direct).
+    pub fn label(&self) -> &str {
+        match self {
+            ForwardSpec::Compute { jump, .. } => jump,
+            ForwardSpec::Direct { host } => host,
+        }
+    }
+}
+
 /// Build the argument list for the `ssh -N -J …` tunnel command.
 ///
 /// This is a pure function — no I/O — so it is fully unit-testable without
@@ -46,6 +68,24 @@ pub fn build_forward_argv(
     }
 
     args.push(format!("{user}@{node}"));
+    args
+}
+
+/// Build the argument list for a DIRECT `ssh -N -L …` forward to `host`'s own
+/// localhost. No `-J`, no `user@node` — the bare ssh-config alias is the target,
+/// so ssh multiplexes over the host's existing ControlMaster (no new 2FA).
+///
+/// Pure — fully unit-testable. Returns the argument list (excludes `"ssh"`).
+pub fn build_direct_argv(host: &str, local_port: u16, remote_port: u16) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    args.push("-N".into());
+    args.push("-L".into());
+    args.push(format!("{local_port}:localhost:{remote_port}"));
+    for (key, val) in SSH_OPTS {
+        args.push("-o".into());
+        args.push(format!("{key}={val}"));
+    }
+    args.push(host.to_string());
     args
 }
 
@@ -92,6 +132,41 @@ pub fn start_forward(
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| Error::Internal(format!("ssh spawn failed: {e}")))
+}
+
+/// Spawn a DIRECT `ssh -N -L …` forward to `host`'s own localhost.
+///
+/// Mirrors [`start_forward`]: rejects a leading `-` in `host` (argument
+/// injection, e.g. a host named "-oProxyCommand=…"), and discards all child
+/// stdio so the long-lived `ssh -N` can never block on a full pipe buffer.
+pub fn start_forward_direct(host: &str, local_port: u16, remote_port: u16) -> Result<Child> {
+    if host.starts_with('-') {
+        return Err(Error::BadParams(format!(
+            "invalid host '{host}': must not start with '-'"
+        )));
+    }
+    let argv = build_direct_argv(host, local_port, remote_port);
+    Command::new("ssh")
+        .args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| Error::Internal(format!("ssh spawn failed: {e}")))
+}
+
+/// Dispatch a forward start by mode. The tunnel workers call only this.
+pub fn start_forward_spec(
+    spec: &ForwardSpec,
+    local_port: u16,
+    remote_port: u16,
+) -> Result<Child> {
+    match spec {
+        ForwardSpec::Compute { jump, user, node } => {
+            start_forward(jump, user, node, local_port, remote_port)
+        }
+        ForwardSpec::Direct { host } => start_forward_direct(host, local_port, remote_port),
+    }
 }
 
 /// Outcome of [`probe_and_settle`].
@@ -298,5 +373,43 @@ mod tests {
         assert_eq!(outcome, ProbeOutcome::Ready);
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    // ---- direct mode --------------------------------------------------
+
+    #[test]
+    fn direct_argv_has_no_jump_flag() {
+        let argv = build_direct_argv("loginhost", 8888, 8888);
+        assert!(!argv.contains(&"-J".to_string()), "direct argv must NOT contain -J: {argv:?}");
+    }
+
+    #[test]
+    fn direct_argv_is_n_dash_l_and_bare_host() {
+        let argv = build_direct_argv("loginhost", 7777, 9999);
+        assert_eq!(argv[0], "-N");
+        assert!(argv.contains(&"7777:localhost:9999".to_string()), "missing forward spec: {argv:?}");
+        // The LAST arg is the bare host (no '@', no user).
+        assert_eq!(argv.last().unwrap(), "loginhost");
+        assert!(!argv.last().unwrap().contains('@'), "direct target must be a bare host");
+    }
+
+    #[test]
+    fn direct_argv_carries_ssh_opts() {
+        let argv = build_direct_argv("h", 1024, 1025);
+        assert!(argv.iter().any(|a| a.contains("ExitOnForwardFailure")), "missing ExitOnForwardFailure");
+        assert!(argv.iter().any(|a| a.contains("StrictHostKeyChecking=no")), "missing StrictHostKeyChecking=no");
+    }
+
+    #[test]
+    fn start_forward_direct_rejects_leading_dash_host() {
+        assert!(start_forward_direct("-oProxyCommand=x", 1, 2).is_err());
+    }
+
+    #[test]
+    fn forward_spec_label_returns_jump_or_host() {
+        let c = ForwardSpec::Compute { jump: "k6".into(), user: "u".into(), node: "n".into() };
+        let d = ForwardSpec::Direct { host: "loginhost".into() };
+        assert_eq!(c.label(), "k6");
+        assert_eq!(d.label(), "loginhost");
     }
 }
