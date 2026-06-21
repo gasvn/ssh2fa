@@ -77,6 +77,7 @@ targets:
       - path: Auto2FA/OnboardingChecklist.swift
       - path: Auto2FA/Models/Tunnel.swift
       - path: Auto2FA/FriendlyText.swift
+      - path: Auto2FA/ManagedHostStore.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
