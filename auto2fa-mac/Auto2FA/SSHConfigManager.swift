@@ -36,6 +36,67 @@ enum SSHConfigManager {
         return header + "\n" + blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
     }
 
+    // MARK: - New guided-host APIs (overload — leaves the aliases: form untouched)
+
+    /// A host to render into the managed conf. `conn == nil` → a legacy/imported
+    /// alias that relies on the user's own config; emit only the ControlMaster
+    /// block (today's behavior). `conn != nil` → a guided host; emit the full
+    /// connection definition so it resolves with no user-config entry.
+    struct ManagedHost {
+        var alias: String
+        var conn: Conn?
+        struct Conn { var hostName: String; var user: String; var port: Int }
+    }
+
+    static func generateManagedConf(hosts: [ManagedHost], dir: String) -> String {
+        let header = "# Managed by SSH2FA — do not edit. Regenerated on host add/remove.\n"
+        let blocks = hosts.sorted { $0.alias < $1.alias }.map { h -> String in
+            let cp = SSHPaths.controlPathFallback(dir: dir, alias: h.alias)
+            var lines = ["Host \(h.alias)"]
+            if let c = h.conn {
+                lines.append("    HostName \(c.hostName)")
+                lines.append("    User \(c.user)")
+                if c.port != 22 { lines.append("    Port \(c.port)") }
+            }
+            lines.append("    ControlMaster auto")
+            lines.append("    ControlPath \(cp)")
+            lines.append("    ControlPersist yes")
+            return lines.joined(separator: "\n")
+        }
+        return header + "\n" + blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
+    }
+
+    /// The daemon wrapper (~/.ssh/ssh2fa-daemon.conf) that `ssh -F` reads:
+    /// our managed hosts FIRST (so their values win), then the user's config to
+    /// inherit globals + legacy hosts. The managed file has no includes, so this
+    /// one-directional include chain can never loop.
+    static func daemonWrapperContent(dir: String) -> String {
+        """
+        # Managed by SSH2FA — the daemon reads this via `ssh -F`. Do not edit.
+        Include \(dir)/ssh2fa.conf
+        Include \(dir)/config
+        """ + "\n"
+    }
+
+    /// Reduce a user-facing name to a legal ssh `Host` token: trim, collapse
+    /// whitespace runs to a single `-`, drop characters ssh treats specially.
+    static func sanitizeAlias(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let collapsed = trimmed.replacingOccurrences(of: "\\s+", with: "-",
+                                                     options: .regularExpression)
+        let allowed = collapsed.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || "-._".unicodeScalars.contains($0)
+        }
+        return String(String.UnicodeScalarView(allowed))
+    }
+
+    /// True iff `alias` is already a Host the USER defined in their own config.
+    static func aliasConflicts(_ alias: String, userAliases: [String]) -> Bool {
+        userAliases.contains(alias)
+    }
+
+    // MARK: - Include management
+
     /// True if the config text already contains an `Include ssh2fa.conf` line
     /// (marked region OR a bare line).
     static func hasInclude(_ configText: String) -> Bool {
