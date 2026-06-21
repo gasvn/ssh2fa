@@ -404,7 +404,8 @@ pub fn start_master(
     }
     let control_path_str = path.to_string_lossy().into_owned();
 
-    let argv: Vec<String> = vec![
+    let mut argv: Vec<String> = crate::config::paths::managed_config_args();
+    argv.extend([
         "-E".into(),      log_file,
         "-o".into(),      "StrictHostKeyChecking=no".into(),
         "-o".into(),      "UserKnownHostsFile=/dev/null".into(),
@@ -415,7 +416,7 @@ pub fn start_master(
         "-o".into(),      format!("ControlPath={control_path_str}"),
         "-o".into(),      "ControlPersist=yes".into(),
         state.host.clone(),
-    ];
+    ]);
 
     info!("[{}] spawning ssh master slot {index}", state.host);
 
