@@ -25,12 +25,15 @@ enum WarmReuseConsent {
         apply(currentAliases: currentAliases)
     }
 
-    /// Enable warm reuse: write ssh2fa.conf for the current hosts + add the
-    /// Include (with backup). Flips the persisted flag on success.
+    /// Enable warm reuse: add the `Include ssh2fa.conf` line to ~/.ssh/config
+    /// (with backup), so the user's OWN `ssh <alias>` reuses the warm master.
+    /// ssh2fa.conf itself is owned by `AppState.syncManagedSSHConfig` (written on
+    /// every reload with each host's full connection block); this path must NOT
+    /// rewrite it — a `conn: nil` rewrite here would strip guided hosts'
+    /// HostName/User until the next sync. Flips the persisted flag on success.
     static func apply(currentAliases: [String]) {
         let dir = SSHPaths.sshDir()
         do {
-            try SSHConfigManager.writeManagedConf(hosts: currentAliases.map { .init(alias: $0, conn: nil) }, dir: dir)
             try SSHConfigManager.enableInclude(dir: dir, timestamp: timestamp())
             UserDefaults.standard.set(true, forKey: SettingsKey.warmReuseEnabled)
         } catch {
@@ -38,7 +41,9 @@ enum WarmReuseConsent {
         }
     }
 
-    /// Revert: remove the Include + ssh2fa.conf, clear the flag.
+    /// Revert: remove the Include line from ~/.ssh/config, clear the flag.
+    /// Does NOT delete ssh2fa.conf — the daemon resolves hosts through it via
+    /// `ssh -F`, so it is load-bearing regardless of the terminal-reuse opt-in.
     static func revert() {
         do {
             try SSHConfigManager.disableInclude(dir: SSHPaths.sshDir())

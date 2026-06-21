@@ -113,7 +113,7 @@ final class SSHConfigManagerTests: XCTestCase {
         XCTAssertEqual(secondPass.components(separatedBy: "Include ssh2fa.conf").count - 1, 1)
     }
 
-    func testDisableIncludeRevertsAndRemovesConf() throws {
+    func testDisableIncludeRemovesIncludeButKeepsConf() throws {
         let dir = tempDir()
         let cfg = SSHPaths.configFile(dir: dir)
         try "Host k\n".write(toFile: cfg, atomically: true, encoding: .utf8)
@@ -123,6 +123,9 @@ final class SSHConfigManagerTests: XCTestCase {
         let after = try String(contentsOfFile: cfg, encoding: .utf8)
         XCTAssertFalse(after.contains("Include ssh2fa.conf"))
         XCTAssertTrue(after.contains("Host k"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: SSHPaths.managedConfFile(dir: dir)))
+        // ssh2fa.conf is now load-bearing (the daemon reads it via `ssh -F`), so
+        // disabling terminal-reuse must KEEP it — only the user-config Include
+        // line is removed. It is owned by AppState.syncManagedSSHConfig.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: SSHPaths.managedConfFile(dir: dir)))
     }
 }

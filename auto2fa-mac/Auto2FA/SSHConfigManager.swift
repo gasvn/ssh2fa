@@ -35,8 +35,11 @@ enum SSHConfigManager {
             let cp = SSHPaths.controlPathFallback(dir: dir, alias: h.alias)
             var lines = ["Host \(h.alias)"]
             if let c = h.conn {
-                lines.append("    HostName \(c.hostName)")
-                lines.append("    User \(c.user)")
+                // Defensive: strip any newline so a value can never inject a
+                // second config directive into the file (HostName/User come
+                // from user input). `port` is an Int, inherently safe.
+                lines.append("    HostName \(oneLine(c.hostName))")
+                lines.append("    User \(oneLine(c.user))")
                 if c.port != 22 { lines.append("    Port \(c.port)") }
             }
             lines.append("    ControlMaster auto")
@@ -45,6 +48,12 @@ enum SSHConfigManager {
             return lines.joined(separator: "\n")
         }
         return header + "\n" + blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
+    }
+
+    /// Collapse any CR/LF in a config value to nothing — a newline would inject
+    /// a second directive line into the generated config.
+    private static func oneLine(_ s: String) -> String {
+        s.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
     }
 
     /// The daemon wrapper (~/.ssh/ssh2fa-daemon.conf) that `ssh -F` reads:
@@ -72,8 +81,13 @@ enum SSHConfigManager {
     }
 
     /// True iff `alias` is already a Host the USER defined in their own config.
+    /// Case-insensitive (ssh `Host` matching ignores case). Callers should pass
+    /// the user's config aliases MINUS the app's own managed aliases — once the
+    /// terminal-reuse Include is on, the managed aliases surface in the parsed
+    /// config and would otherwise self-conflict on a legitimate re-add/edit.
     static func aliasConflicts(_ alias: String, userAliases: [String]) -> Bool {
-        userAliases.contains(alias)
+        let a = alias.lowercased()
+        return userAliases.contains { $0.lowercased() == a }
     }
 
     // MARK: - Include management
@@ -172,7 +186,10 @@ enum SSHConfigManager {
             try atomicWrite(kept.joined(separator: "\n") + (kept.isEmpty ? "" : "\n"),
                             to: cfgPath, perms: 0o600)
         }
-        try? FileManager.default.removeItem(atPath: SSHPaths.managedConfFile(dir: dir))
+        // Do NOT delete ssh2fa.conf — it is now load-bearing: the daemon reads it
+        // via `ssh -F` (through the wrapper). Disabling terminal-reuse only
+        // removes the user-config Include line above; the managed conf stays,
+        // owned by AppState.syncManagedSSHConfig.
     }
 
     /// Atomic write (perms) that skips when `content` already matches the file

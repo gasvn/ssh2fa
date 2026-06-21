@@ -42,5 +42,8 @@ enum ManagedHostStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(list).write(to: url, options: .atomic)
+        // 0o600 for consistency with the managed ssh config files (contents are
+        // host/user/port — not secret — but keep it owner-only regardless).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

@@ -48,4 +48,28 @@ final class SSHConfigGenTests: XCTestCase {
         XCTAssertTrue(SSHConfigManager.aliasConflicts("cannon", userAliases: ["cannon", "other"]))
         XCTAssertFalse(SSHConfigManager.aliasConflicts("fresh", userAliases: ["cannon"]))
     }
+
+    /// ssh Host matching is case-insensitive — the conflict check must be too.
+    func testConflictDetectionCaseInsensitive() {
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("Cannon", userAliases: ["cannon"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("cannon", userAliases: ["CANNON"]))
+    }
+
+    /// A newline in HostName/User must not inject a second config DIRECTIVE line
+    /// (the value substring staying on the HostName/User line is harmless — ssh
+    /// just gets a bogus value; the attack is a new directive on its own line).
+    func testHostNameUserNewlineStripped() {
+        let conf = SSHConfigManager.generateManagedConf(
+            hosts: [.init(alias: "h",
+                          conn: .init(hostName: "good\nProxyCommand evil",
+                                      user: "u\nIdentityFile /tmp/x", port: 22))],
+            dir: "/Users/x/.ssh")
+        let directiveLines = conf.split(separator: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        XCTAssertFalse(directiveLines.contains { $0.hasPrefix("ProxyCommand") },
+                       "no injected ProxyCommand directive line: \(conf)")
+        XCTAssertFalse(directiveLines.contains { $0.hasPrefix("IdentityFile") },
+                       "no injected IdentityFile directive line: \(conf)")
+    }
 }

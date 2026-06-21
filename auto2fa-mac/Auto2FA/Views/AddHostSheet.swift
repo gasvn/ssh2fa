@@ -382,7 +382,13 @@ struct AddHostSheet: View {
             guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 error = "Enter your username on the server."; return
             }
-            if SSHConfigManager.aliasConflicts(name, userAliases: appState.parsedConfig.hosts.map { $0.alias }) {
+            // Conflict only against the user's OWN config hosts — exclude the
+            // app's managed aliases (once warm-reuse Includes ssh2fa.conf, the
+            // parsed config surfaces them, which would falsely block editing a
+            // host we created). Editing an existing managed host is an upsert.
+            let managed = Set(ManagedHostStore.load(from: appState.managedHostsURL).map { $0.alias })
+            let userAliases = appState.parsedConfig.hosts.map { $0.alias }.filter { !managed.contains($0) }
+            if SSHConfigManager.aliasConflicts(name, userAliases: userAliases) {
                 error = "You already have an SSH host named “\(name)”. Pick a different name."
                 focused = .hostname; return
             }
