@@ -29,6 +29,39 @@ pub fn config_dir() -> PathBuf {
     PathBuf::from(home).join(".ssh")
 }
 
+/// The user's `~/.ssh` directory — where the ControlPath sockets, the managed
+/// `ssh2fa.conf`, and the daemon wrapper live. Distinct from [`config_dir`]
+/// (which holds passwords.json and may be elsewhere via `SSH_CONFIG_PATH`).
+pub fn ssh_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    std::path::PathBuf::from(home).join(".ssh")
+}
+
+/// The app-owned ssh config the daemon reads via `ssh -F`. The app writes it
+/// (Includes the managed hosts file + the user's `~/.ssh/config`); the daemon
+/// only reads it. Co-located with `~/.ssh` so a relative `Include ssh2fa.conf`
+/// resolves correctly.
+pub fn daemon_ssh_config_path() -> std::path::PathBuf {
+    ssh_dir().join("ssh2fa-daemon.conf")
+}
+
+/// ssh args that point ssh at the app-managed config: `["-F", <wrapper>]` when
+/// the wrapper exists, else EMPTY — so a daemon running before the app has
+/// written the wrapper (or an older install) falls back to resolving from the
+/// user's own `~/.ssh/config` exactly as before. Never hard-fails on absence.
+pub fn managed_config_args() -> Vec<String> {
+    managed_config_args_for(&daemon_ssh_config_path())
+}
+
+/// Testable core of [`managed_config_args`].
+pub fn managed_config_args_for(wrapper: &std::path::Path) -> Vec<String> {
+    if wrapper.is_file() {
+        vec!["-F".to_owned(), wrapper.to_string_lossy().into_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Expand a leading `~/` or a bare `~` to the value of `$HOME`.
 fn expand_tilde(s: &str) -> PathBuf {
     if s == "~" {
@@ -73,5 +106,31 @@ mod tests {
         std::env::set_var("SSH_CONFIG_PATH", d.path());
         assert_eq!(config_dir(), d.path());
         std::env::remove_var("SSH_CONFIG_PATH");
+    }
+
+    #[test]
+    fn ssh_dir_is_home_dot_ssh() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(ssh_dir(), std::path::PathBuf::from(home).join(".ssh"));
+    }
+
+    #[test]
+    fn daemon_ssh_config_path_is_in_ssh_dir() {
+        assert_eq!(daemon_ssh_config_path(), ssh_dir().join("ssh2fa-daemon.conf"));
+    }
+
+    #[test]
+    fn managed_config_args_empty_when_wrapper_absent() {
+        let missing = std::path::PathBuf::from("/no/such/ssh2fa-daemon.conf");
+        assert!(managed_config_args_for(&missing).is_empty());
+    }
+
+    #[test]
+    fn managed_config_args_has_dash_f_when_wrapper_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ssh2fa-daemon.conf");
+        std::fs::write(&p, "Include ~/.ssh/config\n").unwrap();
+        let args = managed_config_args_for(&p);
+        assert_eq!(args, vec!["-F".to_string(), p.to_string_lossy().into_owned()]);
     }
 }
