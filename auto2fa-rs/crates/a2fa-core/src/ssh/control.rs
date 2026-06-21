@@ -107,8 +107,11 @@ fn run_ssh_g(host: &str) -> Option<String> {
     let spawn_res = std::thread::Builder::new()
         .name("ssh-g".into())
         .spawn(move || {
+            let mut g_args: Vec<String> = crate::config::paths::managed_config_args();
+            g_args.push("-G".into());
+            g_args.push(host_owned);
             let child = Command::new("ssh")
-                .args(["-G", &host_owned])
+                .args(&g_args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
