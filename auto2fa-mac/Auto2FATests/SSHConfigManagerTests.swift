@@ -2,7 +2,8 @@ import XCTest
 
 final class SSHConfigManagerTests: XCTestCase {
     func testGeneratedConfIsSortedWithCorrectControlPath() {
-        let out = SSHConfigManager.generateManagedConf(aliases: ["b", "a"], dir: "/d")
+        let out = SSHConfigManager.generateManagedConf(
+            hosts: [.init(alias: "b", conn: nil), .init(alias: "a", conn: nil)], dir: "/d")
         XCTAssertTrue(out.hasPrefix("# Managed by SSH2FA"))
         // sorted: a before b
         let aIdx = out.range(of: "Host a")!.lowerBound
@@ -63,7 +64,7 @@ final class SSHConfigManagerTests: XCTestCase {
 
     func testWriteManagedConfCreatesFileWithPerms() throws {
         let dir = tempDir()
-        let wrote = try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir)
+        let wrote = try SSHConfigManager.writeManagedConf(hosts: [.init(alias: "k", conn: nil)], dir: dir)
         XCTAssertTrue(wrote)
         let path = SSHPaths.managedConfFile(dir: dir)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
@@ -73,8 +74,8 @@ final class SSHConfigManagerTests: XCTestCase {
 
     func testWriteManagedConfSkipsUnchanged() throws {
         let dir = tempDir()
-        XCTAssertTrue(try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir))
-        XCTAssertFalse(try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir))
+        XCTAssertTrue(try SSHConfigManager.writeManagedConf(hosts: [.init(alias: "k", conn: nil)], dir: dir))
+        XCTAssertFalse(try SSHConfigManager.writeManagedConf(hosts: [.init(alias: "k", conn: nil)], dir: dir))
     }
 
     func testEnableIncludeBacksUpAndAddsRegion() throws {
@@ -116,7 +117,7 @@ final class SSHConfigManagerTests: XCTestCase {
         let dir = tempDir()
         let cfg = SSHPaths.configFile(dir: dir)
         try "Host k\n".write(toFile: cfg, atomically: true, encoding: .utf8)
-        try SSHConfigManager.writeManagedConf(aliases: ["k"], dir: dir)
+        try SSHConfigManager.writeManagedConf(hosts: [.init(alias: "k", conn: nil)], dir: dir)
         try SSHConfigManager.enableInclude(dir: dir, timestamp: "T1")
         try SSHConfigManager.disableInclude(dir: dir)
         let after = try String(contentsOfFile: cfg, encoding: .utf8)

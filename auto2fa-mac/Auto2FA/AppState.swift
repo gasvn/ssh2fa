@@ -246,7 +246,7 @@ final class AppState: ObservableObject {
             reloadFailStreak = 0
             if connectionError != nil { connectionError = nil }
             refreshConfigCache()
-            syncSSHConfigIfEnabled()
+            syncManagedSSHConfig()
         } catch {
             // A single background-poll timeout is almost always a transient blip
             // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
@@ -815,12 +815,29 @@ final class AppState: ObservableObject {
                                 configIncompleteView: parsedConfig.incompleteView)
     }
 
-    /// Regenerate ssh2fa.conf from the live host list — only when the user has
-    /// opted into warm reuse. No-op otherwise. Safe to call on every reload
-    /// (writeManagedConf skips unchanged content).
-    func syncSSHConfigIfEnabled() {
-        guard UserDefaults.standard.bool(forKey: SettingsKey.warmReuseEnabled) else { return }
-        try? SSHConfigManager.writeManagedConf(aliases: hosts.map { $0.host }, dir: SSHPaths.sshDir())
+    /// Regenerate ssh2fa.conf + the daemon wrapper from the live host list and
+    /// the sidecar. ALWAYS runs (the daemon resolves via these files) — the
+    /// terminal-reuse Include into ~/.ssh/config stays a separate opt-in.
+    /// Safe on every reload (writes skip unchanged content).
+    func syncManagedSSHConfig() {
+        let dir = SSHPaths.sshDir()
+        let sidecar = ManagedHostStore.load(from: managedHostsURL)
+        let byAlias = Dictionary(sidecar.map { ($0.alias, $0) }, uniquingKeysWith: { a, _ in a })
+        let managed: [SSHConfigManager.ManagedHost] = hosts.map { h in
+            if let c = byAlias[h.host] {
+                return .init(alias: h.host, conn: .init(hostName: c.hostName, user: c.user, port: c.port))
+            }
+            return .init(alias: h.host, conn: nil)
+        }
+        try? SSHConfigManager.writeManagedConf(hosts: managed, dir: dir)
+        try? SSHConfigManager.writeDaemonWrapper(dir: dir)
+    }
+
+    /// Sidecar location: ~/.ssh2fa/managed_hosts.json.
+    var managedHostsURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".ssh2fa")
+            .appendingPathComponent("managed_hosts.json")
     }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error
@@ -1009,6 +1026,24 @@ final class AppState: ObservableObject {
             return (error as? BackendClient.ClientError)?.errorDescription
                 ?? error.localizedDescription
         }
+    }
+
+    /// Guided add: persist the connection fields, regenerate the managed ssh
+    /// config + wrapper, THEN register credentials (so the test-login + master
+    /// resolve the new host via `ssh -F`). Returns nil on success or an error.
+    @discardableResult
+    func addManagedHost(alias: String, hostName: String, user: String, port: Int,
+                        password: String, otpauthURL: String, autoConnect: Bool) async -> String? {
+        do {
+            try ManagedHostStore.upsert(
+                ManagedHostConn(alias: alias, hostName: hostName, user: user, port: port),
+                in: managedHostsURL)
+        } catch {
+            return "Couldn't save connection settings: \(error.localizedDescription)"
+        }
+        syncManagedSSHConfig()           // writes ssh2fa.conf + wrapper before login
+        return await addHost(host: alias, password: password,
+                             otpauthURL: otpauthURL, autoConnect: autoConnect)
     }
 
     /// Set a node on a tunnel (also kicks off start via set_node on the

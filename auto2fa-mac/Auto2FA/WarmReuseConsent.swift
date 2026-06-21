@@ -30,7 +30,7 @@ enum WarmReuseConsent {
     static func apply(currentAliases: [String]) {
         let dir = SSHPaths.sshDir()
         do {
-            try SSHConfigManager.writeManagedConf(aliases: currentAliases, dir: dir)
+            try SSHConfigManager.writeManagedConf(hosts: currentAliases.map { .init(alias: $0, conn: nil) }, dir: dir)
             try SSHConfigManager.enableInclude(dir: dir, timestamp: timestamp())
             UserDefaults.standard.set(true, forKey: SettingsKey.warmReuseEnabled)
         } catch {

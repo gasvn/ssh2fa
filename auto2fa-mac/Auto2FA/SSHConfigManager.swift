@@ -17,26 +17,7 @@ enum SSHConfigManager {
         s.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
     }
 
-    // MARK: - Pure transforms
-
-    /// The full ssh2fa.conf body for a set of aliases (sorted → stable output).
-    /// Per-host ControlPath = the daemon's fallback path so daemon + clients
-    /// agree on one socket and enabling the Include never rebuilds a master.
-    static func generateManagedConf(aliases: [String], dir: String) -> String {
-        let header = "# Managed by SSH2FA — do not edit. Regenerated on host add/remove.\n"
-        let blocks = aliases.sorted().map { alias -> String in
-            let cp = SSHPaths.controlPathFallback(dir: dir, alias: alias)
-            return """
-            Host \(alias)
-                ControlMaster auto
-                ControlPath \(cp)
-                ControlPersist yes
-            """
-        }
-        return header + "\n" + blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
-    }
-
-    // MARK: - New guided-host APIs (overload — leaves the aliases: form untouched)
+    // MARK: - Pure transforms (guided-host APIs)
 
     /// A host to render into the managed conf. `conn == nil` → a legacy/imported
     /// alias that relies on the user's own config; emit only the ControlMaster
@@ -142,17 +123,22 @@ enum SSHConfigManager {
             : (path as NSString).deletingLastPathComponent + "/" + dest
     }
 
-    /// Write ssh2fa.conf for `aliases` into `dir` (perms 600). Idempotent: skips
-    /// the write when content is unchanged. Returns true iff a write happened.
+    /// Write ssh2fa.conf from the host list into `dir` (perms 600). Idempotent:
+    /// skips the write when content is unchanged. Returns true iff a write
+    /// happened.
     @discardableResult
-    static func writeManagedConf(aliases: [String], dir: String) throws -> Bool {
+    static func writeManagedConf(hosts: [ManagedHost], dir: String) throws -> Bool {
         let path = SSHPaths.managedConfFile(dir: dir)
-        let content = generateManagedConf(aliases: aliases, dir: dir)
-        if let existing = try? String(contentsOfFile: path, encoding: .utf8), existing == content {
-            return false
-        }
-        try atomicWrite(content, to: path, perms: 0o600)
-        return true
+        let content = generateManagedConf(hosts: hosts, dir: dir)
+        return try writeIfChanged(content, to: path, perms: 0o600)
+    }
+
+    /// Write ~/.ssh/ssh2fa-daemon.conf (the `-F` wrapper) into `dir` (perms 600).
+    /// Idempotent. Returns true iff a write happened.
+    @discardableResult
+    static func writeDaemonWrapper(dir: String) throws -> Bool {
+        let path = (dir as NSString).appendingPathComponent("ssh2fa-daemon.conf")
+        return try writeIfChanged(daemonWrapperContent(dir: dir), to: path, perms: 0o600)
     }
 
     /// Add the Include to ~/.ssh/config in `dir` after backing the file up.
@@ -187,6 +173,17 @@ enum SSHConfigManager {
                             to: cfgPath, perms: 0o600)
         }
         try? FileManager.default.removeItem(atPath: SSHPaths.managedConfFile(dir: dir))
+    }
+
+    /// Atomic write (perms) that skips when `content` already matches the file
+    /// byte-for-byte. Returns true iff a write actually happened.
+    @discardableResult
+    private static func writeIfChanged(_ content: String, to path: String, perms: Int) throws -> Bool {
+        if let existing = try? String(contentsOfFile: path, encoding: .utf8), existing == content {
+            return false
+        }
+        try atomicWrite(content, to: path, perms: perms)
+        return true
     }
 
     private static func atomicWrite(_ content: String, to path: String, perms: Int) throws {
