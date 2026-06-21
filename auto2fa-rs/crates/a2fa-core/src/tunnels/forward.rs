@@ -36,8 +36,9 @@ impl ForwardSpec {
 
 /// Build the argument list for the `ssh -N -J …` tunnel command.
 ///
-/// This is a pure function — no I/O — so it is fully unit-testable without
-/// a real cluster.
+/// Prepends `[-F, <wrapper>]` when the app-managed ssh config wrapper exists
+/// (so that jump/host aliases in that config are visible to ssh), then
+/// delegates to [`build_forward_argv_with`].
 ///
 /// # Arguments
 /// - `jump`       — jump host (e.g. `"rc.fas.harvard.edu"`)
@@ -54,19 +55,32 @@ pub fn build_forward_argv(
     local_port: u16,
     remote_port: u16,
 ) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
+    build_forward_argv_with(
+        &crate::config::paths::managed_config_args(),
+        jump, user, node, local_port, remote_port,
+    )
+}
 
+/// Testable core: `prefix` is prepended verbatim (the `["-F", <path>]` args, or
+/// empty). Keeps the wrapper-path lookup out of the pure argv assembly.
+pub fn build_forward_argv_with(
+    prefix: &[String],
+    jump: &str,
+    user: &str,
+    node: &str,
+    local_port: u16,
+    remote_port: u16,
+) -> Vec<String> {
+    let mut args: Vec<String> = prefix.to_vec();
     args.push("-N".into());
     args.push("-J".into());
     args.push(jump.to_string());
     args.push("-L".into());
     args.push(format!("{local_port}:localhost:{remote_port}"));
-
     for (key, val) in SSH_OPTS {
         args.push("-o".into());
         args.push(format!("{key}={val}"));
     }
-
     args.push(format!("{user}@{node}"));
     args
 }
@@ -75,9 +89,23 @@ pub fn build_forward_argv(
 /// localhost. No `-J`, no `user@node` — the bare ssh-config alias is the target,
 /// so ssh multiplexes over the host's existing ControlMaster (no new 2FA).
 ///
+/// Prepends `[-F, <wrapper>]` when the app-managed ssh config wrapper exists,
+/// then delegates to [`build_direct_argv_with`].
+///
 /// Pure — fully unit-testable. Returns the argument list (excludes `"ssh"`).
 pub fn build_direct_argv(host: &str, local_port: u16, remote_port: u16) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
+    build_direct_argv_with(&crate::config::paths::managed_config_args(), host, local_port, remote_port)
+}
+
+/// Testable core: `prefix` is prepended verbatim (the `["-F", <path>]` args, or
+/// empty). Keeps the wrapper-path lookup out of the pure argv assembly.
+pub fn build_direct_argv_with(
+    prefix: &[String],
+    host: &str,
+    local_port: u16,
+    remote_port: u16,
+) -> Vec<String> {
+    let mut args: Vec<String> = prefix.to_vec();
     args.push("-N".into());
     args.push("-L".into());
     args.push(format!("{local_port}:localhost:{remote_port}"));
@@ -411,5 +439,34 @@ mod tests {
         let d = ForwardSpec::Direct { host: "loginhost".into() };
         assert_eq!(c.label(), "k6");
         assert_eq!(d.label(), "loginhost");
+    }
+
+    #[test]
+    fn forward_argv_starts_with_managed_config_when_present() {
+        let argv = build_forward_argv_with(
+            &["-F".into(), "/x/ssh2fa-daemon.conf".into()],
+            "jump", "user", "node", 8080, 8888,
+        );
+        assert_eq!(argv[0], "-F");
+        assert_eq!(argv[1], "/x/ssh2fa-daemon.conf");
+        assert!(argv.contains(&"-N".to_string()));
+        assert_eq!(argv.last().unwrap(), "user@node");
+    }
+
+    #[test]
+    fn direct_argv_starts_with_managed_config_when_present() {
+        let argv = build_direct_argv_with(
+            &["-F".into(), "/x/ssh2fa-daemon.conf".into()],
+            "loginhost", 9000, 9000,
+        );
+        assert_eq!(argv[0], "-F");
+        assert_eq!(argv.last().unwrap(), "loginhost");
+        assert!(!argv.contains(&"-J".to_string()));
+    }
+
+    #[test]
+    fn forward_argv_no_prefix_is_todays_shape() {
+        let argv = build_forward_argv_with(&[], "jump", "user", "node", 8080, 8888);
+        assert_eq!(argv[0], "-N"); // unchanged when no wrapper
     }
 }
