@@ -15,6 +15,11 @@ struct AddHostSheet: View {
 
     @State private var step = 0
     @State private var hostname = ""
+    @State private var displayName = ""        // friendly → sanitized alias
+    @State private var serverAddress = ""      // HostName
+    @State private var username = ""           // User
+    @State private var portText = "22"         // Port (advanced)
+    @State private var showAdvanced = false
     @State private var password = ""
     @State private var otpauthURL = ""
     @State private var autoConnect = true
@@ -29,6 +34,11 @@ struct AddHostSheet: View {
     @State private var hostInConfig: Bool? = nil
 
     let prefillAlias: String?
+
+    /// Guided ("Add a host") mode collects name/address/username and writes the
+    /// app-managed ssh config; the import mode (`prefillAlias != nil`) registers
+    /// an alias the user already defined in their own ~/.ssh/config.
+    private var isGuided: Bool { prefillAlias == nil }
 
     init(prefillAlias: String? = nil) {
         self.prefillAlias = prefillAlias
@@ -98,22 +108,32 @@ struct AddHostSheet: View {
         VStack(alignment: .leading, spacing: Spacing.m) {
             // Fields wrapped in a glass card panel
             VStack(alignment: .leading, spacing: Spacing.m) {
-                field("Hostname or SSH alias",
-                      VStack(alignment: .leading, spacing: Spacing.xs) {
-                        TextField("login01.example.edu", text: $hostname)
-                            .focused($focused, equals: .hostname)
-                            // NOTE: no username field — the host is an ssh-config alias;
-                            // the login user comes from ssh config, and a field here was
-                            // never sent anywhere (pure decoration that misled users).
-                            .onSubmit { focused = .password }
-                            .onChange(of: hostname) { _, _ in hostInConfig = aliasKnown(hostname) }
-                        if hostInConfig == false {
-                            Label("Not found as a Host in ~/.ssh/config — make sure it's a real ssh alias or a reachable hostname.",
-                                  systemImage: "exclamationmark.triangle")
-                                .font(.caption2).foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                      })
+                if isGuided {
+                    field("Name", TextField("e.g. Cannon, lab server", text: $displayName)
+                            .focused($focused, equals: .hostname))
+                    field("Server address", TextField("login.rc.fas.harvard.edu", text: $serverAddress))
+                    field("Username", TextField("your login name on the server", text: $username))
+                    DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                        field("Port", TextField("22", text: $portText))
+                    }
+                } else {
+                    field("Hostname or SSH alias",
+                          VStack(alignment: .leading, spacing: Spacing.xs) {
+                            TextField("login01.example.edu", text: $hostname)
+                                .focused($focused, equals: .hostname)
+                                // NOTE: no username field — the host is an ssh-config alias;
+                                // the login user comes from ssh config, and a field here was
+                                // never sent anywhere (pure decoration that misled users).
+                                .onSubmit { focused = .password }
+                                .onChange(of: hostname) { _, _ in hostInConfig = aliasKnown(hostname) }
+                            if hostInConfig == false {
+                                Label("Not found as a Host in ~/.ssh/config — make sure it's a real ssh alias or a reachable hostname.",
+                                      systemImage: "exclamationmark.triangle")
+                                    .font(.caption2).foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                          })
+                }
                 field("Password",
                       HStack {
                         Group {
@@ -190,6 +210,10 @@ struct AddHostSheet: View {
         // without this, Back + edit + Next kept "Add Host" enabled on the
         // STALE "Login succeeded" and saved untested credentials.
         .onChange(of: hostname) { _, _ in invalidateTest() }
+        .onChange(of: displayName) { _, _ in invalidateTest() }
+        .onChange(of: serverAddress) { _, _ in invalidateTest() }
+        .onChange(of: username) { _, _ in invalidateTest() }
+        .onChange(of: portText) { _, _ in invalidateTest() }
         .onChange(of: password) { _, _ in invalidateTest() }
         .onChange(of: otpauthURL) { _, _ in invalidateTest() }
     }
@@ -235,10 +259,11 @@ struct AddHostSheet: View {
         VStack(alignment: .leading, spacing: Spacing.m) {
             // Summary card
             VStack(alignment: .leading, spacing: Spacing.s) {
+                let summaryHost = isGuided ? SSHConfigManager.sanitizeAlias(displayName) : hostname
                 Label {
                     HStack(spacing: 0) {
                         Text("Host: ").foregroundStyle(.secondary)
-                        Text(hostname).fontDesign(.monospaced)
+                        Text(summaryHost).fontDesign(.monospaced)
                     }
                 } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
@@ -250,7 +275,7 @@ struct AddHostSheet: View {
                     }
                 } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
-                let otpOk = OTPSecret.normalize(input: otpauthURL, account: hostname) != nil
+                let otpOk = OTPSecret.normalize(input: otpauthURL, account: summaryHost) != nil
                 Label {
                     HStack(spacing: 0) {
                         Text("OTP secret: ").foregroundStyle(.secondary)
@@ -348,6 +373,28 @@ struct AddHostSheet: View {
     }
 
     private func advance() {
+        if isGuided {
+            let name = SSHConfigManager.sanitizeAlias(displayName)
+            guard !name.isEmpty else { error = "Give this host a name."; focused = .hostname; return }
+            guard !serverAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                error = "Enter the server address."; return
+            }
+            guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                error = "Enter your username on the server."; return
+            }
+            if SSHConfigManager.aliasConflicts(name, userAliases: appState.parsedConfig.hosts.map { $0.alias }) {
+                error = "You already have an SSH host named “\(name)”. Pick a different name."
+                focused = .hostname; return
+            }
+            guard !password.isEmpty else { error = "Password is required."; return }
+            guard OTPSecret.normalize(input: otpauthURL, account: name) != nil else {
+                error = "Enter a 2FA secret — an otpauth:// URL or a base32 key."
+                focused = .otpauth; return
+            }
+            error = nil
+            step = 1
+            return
+        }
         let h = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else { error = "Hostname is required."; focused = .hostname; return }
         guard !password.isEmpty else { error = "Password is required."; focused = .password; return }
@@ -365,12 +412,31 @@ struct AddHostSheet: View {
         testResult = nil
         error = nil
         do {
-            let (ok, reason) = try await appState.client.testHostCredentials(
-                host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
-                password: password,
-                otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
-                    ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
+            let ok: Bool, reason: String
+            if isGuided {
+                // Write the sidecar + app-managed ssh config BEFORE testing so
+                // `ssh -F` can resolve the sanitized alias (the guided host isn't
+                // in ~/.ssh/config).
+                let alias = SSHConfigManager.sanitizeAlias(displayName)
+                let port = Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
+                try? ManagedHostStore.upsert(
+                    ManagedHostConn(alias: alias,
+                                    hostName: serverAddress.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    user: username.trimmingCharacters(in: .whitespacesAndNewlines), port: port),
+                    in: appState.managedHostsURL)
+                appState.syncManagedSSHConfig()
+                (ok, reason) = try await appState.client.testHostCredentials(
+                    host: alias, password: password,
+                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: alias)
+                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines))
+            } else {
+                (ok, reason) = try await appState.client.testHostCredentials(
+                    host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
+                    password: password,
+                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
+                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
             testResult = (ok, ok ? "Login succeeded — you can save now." : reason)
         } catch {
             testResult = (false, "Test couldn't run: \(error.localizedDescription)")
@@ -382,6 +448,27 @@ struct AddHostSheet: View {
         guard !submitting else { return }
         submitting = true
         error = nil
+        if isGuided {
+            let alias = SSHConfigManager.sanitizeAlias(displayName)
+            let port = Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
+            Task {
+                if let msg = await appState.addManagedHost(
+                    alias: alias,
+                    hostName: serverAddress.trimmingCharacters(in: .whitespacesAndNewlines),
+                    user: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                    port: port,
+                    password: password,
+                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: alias)
+                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                    autoConnect: autoConnect
+                ) {
+                    error = msg; submitting = false
+                } else {
+                    appState.dismissSheet()
+                }
+            }
+            return
+        }
         Task {
             if let msg = await appState.addHost(
                 host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
