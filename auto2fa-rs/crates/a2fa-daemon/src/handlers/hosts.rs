@@ -823,7 +823,8 @@ fn test_login(
             .mode(0o600)
             .open(&log_path);
     }
-    let argv: Vec<String> = vec![
+    let mut argv: Vec<String> = a2fa_core::config::paths::managed_config_args();
+    argv.extend([
         "-v".into(),
         "-E".into(), log_path.to_string_lossy().into_owned(),
         "-o".into(), "StrictHostKeyChecking=no".into(),
@@ -836,7 +837,7 @@ fn test_login(
         host.into(),
         // run_login matches this marker as its command-mode success signal.
         "echo".into(), a2fa_core::ssh::pty_auth::LOGIN_OK_MARKER.into(),
-    ];
+    ]);
 
     let result = run_login(&argv, password, otp_fn);
 
