@@ -440,9 +440,13 @@
 
 <section id="install"><div class="wrap">
   <div class="head reveal"><div class="kick">Get started</div><h2>Install in one command.</h2>
-    <p>Not notarized yet (the <a href="#support" class="accent">$99 goal</a>) — so this one-liner installs it <em>and</em> clears the Gatekeeper flag for you: no warning, no clicks. Prefer a GUI? Steps below.</p></div>
+    <p>Not notarized yet (the <a href="#support" class="accent">$99 goal</a>) — so each command below skips the Gatekeeper warning for you, no clicks. Prefer a GUI? Steps further down.</p></div>
+  <div class="reveal" style="max-width:860px;margin:0 auto 18px">
+    <div class="code"><span class="c"># Homebrew — one line, and you get `brew upgrade` for updates</span>
+brew install --cask --no-quarantine gasvn/tap/ssh2fa</div>
+  </div>
   <div class="reveal" style="max-width:860px;margin:0 auto 46px">
-    <div class="code"><span class="c"># paste in Terminal — downloads, installs to /Applications, removes the quarantine flag, launches</span>
+    <div class="code"><span class="c"># no Homebrew? one line — downloads, installs to /Applications, removes the quarantine flag, launches</span>
 curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
   &amp;&amp; hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
   &amp;&amp; ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
