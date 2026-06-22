@@ -104,27 +104,36 @@ links to them.
 
 ## Homebrew cask
 
-A cask lives at [`Casks/ssh2fa.rb`](../Casks/ssh2fa.rb) — but this repo isn't a
-tap (a tap repo must be named `homebrew-*`). To let people
-`brew install --cask`:
+The cask lives at [`Casks/ssh2fa.rb`](../Casks/ssh2fa.rb) and is published through
+the tap repo **[`gasvn/homebrew-tap`](https://github.com/gasvn/homebrew-tap)**
+(Homebrew requires a tap repo named `homebrew-*`; `homebrew-tap` → the `gasvn/tap`
+shorthand). The tap is general — it can hold any future casks/formulae too.
 
-1. **One time:** create a public repo `gasvn/homebrew-tap` and copy
-   `Casks/ssh2fa.rb` into its `Casks/` directory.
-2. **Each release:** after `package-app.sh`, paste the printed **DMG sha256**
-   and bump `version` in the cask, then push it to the tap.
-
-Then users install with:
+Users install with:
 
 ```sh
-brew tap gasvn/tap
-brew install --cask ssh2fa          # or: brew install --cask gasvn/tap/ssh2fa
-brew uninstall --zap --cask ssh2fa  # full removal incl. Keychain creds
+brew install --cask --no-quarantine gasvn/tap/ssh2fa
+brew upgrade --cask ssh2fa            # update to the latest release
+brew uninstall --zap --cask ssh2fa    # full removal incl. Keychain creds
 ```
 
+`--no-quarantine` is **required** while the app is un-notarized: Homebrew
+quarantines casks by default, so without it Gatekeeper blocks the first launch
+(allow via System Settings → Privacy & Security → "Open Anyway"). The flag skips
+quarantine — same effect as `xattr -dr com.apple.quarantine`. Brew does **not**
+notarize; only a Developer ID + the notary service does (see above).
+
+**Each release — keep the cask in sync in BOTH repos:**
+
+1. After `package-app.sh`, copy the printed **DMG sha256**.
+2. Bump `version` + `sha256` in **`Casks/ssh2fa.rb`** (this repo) **and** in
+   `gasvn/homebrew-tap`'s `Casks/ssh2fa.rb`, then push the tap. (Both must match
+   the uploaded DMG or `brew install` fails the checksum.)
+
 The cask quits the app + unloads the LaunchAgent on uninstall; `--zap` also
-trashes `~/.ssh2fa`, the LaunchAgent plist, prefs, and every Keychain
-credential under the `auto2fa` service. Validate edits with
-`brew style ./Casks/ssh2fa.rb` (and `brew audit --cask` once a release exists).
+trashes `~/.ssh2fa`, the LaunchAgent plist, prefs, and every Keychain credential
+under the `auto2fa` service. Validate edits with `brew style ./Casks/ssh2fa.rb`
+and `brew audit --cask gasvn/tap/ssh2fa`.
 
 ## Future: Sparkle auto-update
 
