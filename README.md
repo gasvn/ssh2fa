@@ -54,7 +54,7 @@ $ ssh gpu-04
 
 ## 60-second quickstart
 
-1. **Download** `SSH2FA.dmg` from [Releases](https://github.com/gasvn/ssh2fa/releases) → drag the app to `/Applications` → open it. *(Un-notarized build? First launch: **System Settings → Privacy & Security → "Open Anyway."**)*
+1. **Install** — paste the [one-command installer](#install) (downloads, installs, and opens it with no warning), or grab `SSH2FA.dmg` from [Releases](https://github.com/gasvn/ssh2fa/releases) and drag the app to `/Applications` *(GUI first launch: **System Settings → Privacy & Security → "Open Anyway."**)*
 2. **Add Host** → enter the host's **name, address, and your username** (or pick an existing ssh alias), then your **password** and **2FA secret** — type it, paste an `otpauth://` URL, or **scan the QR**. SSH2FA writes the SSH config for you and **test-logs-in before saving**.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
@@ -87,7 +87,20 @@ The app and daemon communicate over a unix-socket JSON-RPC at `~/.ssh2fa/ssh2fa.
 
 ## Install
 
-**From a release (recommended):** download `SSH2FA.dmg` from
+**Fastest — one command.** Paste this in Terminal. It downloads the latest build,
+installs it to `/Applications`, clears the Gatekeeper quarantine flag (so there's
+**no "unverified developer" warning**), and launches it:
+
+```sh
+curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
+  && hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
+  && ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
+  && hdiutil detach /Volumes/SSH2FA -quiet \
+  && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
+  && open /Applications/SSH2FA.app
+```
+
+**Or from a release (GUI):** download `SSH2FA.dmg` from
 [Releases](https://github.com/gasvn/ssh2fa/releases), drag `SSH2FA.app` to
 `/Applications`, and launch it. On first run the app installs the bundled daemon
 and registers the `com.ssh2fa.daemon` LaunchAgent for you — nothing else to set
