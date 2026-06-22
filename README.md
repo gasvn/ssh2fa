@@ -58,8 +58,6 @@ $ ssh gpu-04
 2. **Add Host** → enter the host's **name, address, and your username** (or pick an existing ssh alias), then your **password** and **2FA secret** — type it, paste an `otpauth://` URL, or **scan the QR**. SSH2FA writes the SSH config for you and **test-logs-in before saving**.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
-Prefer Homebrew? `brew install --cask gasvn/tap/ssh2fa` *(once the tap is published — see [docs/RELEASE.md](docs/RELEASE.md#homebrew-cask))*.
-
 Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's wrong.
 
 > **What it's for, honestly:** this is built for **HPC / SLURM clusters that use

@@ -57,7 +57,7 @@ final class FriendlyTextTests: XCTestCase {
     }
 
     func testIdleComputeTunnelWithNodeIsIdle() throws {
-        let t = try makeTunnel(status: "idle", directHost: nil, lastNode: "holygpu01")
+        let t = try makeTunnel(status: "idle", directHost: nil, lastNode: "gpunode01")
         XCTAssertEqual(FriendlyText.tunnelStatusBlurb(t), "Idle")
     }
 }

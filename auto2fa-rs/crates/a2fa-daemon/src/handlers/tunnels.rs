@@ -539,8 +539,8 @@ pub fn tunnel_set_node(
         .as_str()
         .ok_or_else(|| Error::BadParams("name required".into()))?
         .to_owned();
-    // Normalize the raw SLURM nodelist (e.g. "holygpu[01-03]") to the first
-    // concrete hostname ("holygpu01").  Plain hostnames pass through unchanged.
+    // Normalize the raw SLURM nodelist (e.g. "gpunode[01-03]") to the first
+    // concrete hostname ("gpunode01").  Plain hostnames pass through unchanged.
     // Mirrors daemon.py line 378: `node, _is_range = expand_first_node(node)`.
     let node = {
         let raw = params["node"]
@@ -587,7 +587,7 @@ pub fn tunnel_set_node(
     // Fresh node = fresh staleness budget. The miss counter accumulated
     // against the OLD node (legitimately gone from squeue) — carrying it over
     // meant the FIRST miss against the new node could cross the stale
-    // threshold instantly (observed live: txgent re-noded, alive 4 s, then
+    // threshold instantly (observed live: bastion01 re-noded, alive 4 s, then
     // "squeue miss #3" → killed).
     if let Some(rt) = &runtime {
         rt.with_rt_mut(&name, |r| r.consecutive_squeue_misses = 0);
@@ -997,8 +997,8 @@ pub fn discover_nodes(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value
     let cp = active_symlink_path(&host_name);
 
     // Optional explicit cluster account — the jump may log in as a different
-    // user than the one whose jobs the caller wants (rkempner → rzhu while
-    // the jobs belong to shgao). Empty/absent → remote $USER.
+    // user than the one whose jobs the caller wants (alice → bob while
+    // the jobs belong to alice). Empty/absent → remote $USER.
     let user = params
         .get("user")
         .and_then(|v| v.as_str())
@@ -1109,7 +1109,7 @@ mod tests {
             local_port: port,
             remote_port: port,
             jump_candidates: None,
-            last_node: Some("holygpu01".into()),
+            last_node: Some("gpunode01".into()),
             last_user: Some("jdoe".into()),
             direct_host: None,
             auto_start: false,
@@ -1134,7 +1134,7 @@ mod tests {
             local_port: port,
             remote_port: port,
             jump_candidates: None,
-            last_node: Some("holygpu01".into()),
+            last_node: Some("gpunode01".into()),
             last_user: Some("jdoe".into()),
             direct_host: None,
             auto_start: false,
@@ -1306,13 +1306,13 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9500);
         tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            &json!({"name": "nb", "node": "gpunode01", "user": "jdoe"}),
             None,
             None,
         )
         .unwrap();
         let guard = crate::lock_state(&state);
-        assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu01"));
+        assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("gpunode01"));
         assert_eq!(guard.tunnels[0].last_user.as_deref(), Some("jdoe"));
     }
 
@@ -1324,19 +1324,19 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9503);
         let v = tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu07", "user": "jdoe", "start": false}),
+            &json!({"name": "nb", "node": "gpunode07", "user": "jdoe", "start": false}),
             None,
             None,
         )
         .unwrap();
         assert_eq!(v, Value::Null);
         let guard = crate::lock_state(&state);
-        assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("holygpu07"));
+        assert_eq!(guard.tunnels[0].last_node.as_deref(), Some("gpunode07"));
         // Idle stays Idle — no start was attempted (no ssh spawn in tests).
         assert_eq!(guard.tunnels[0].status, TunnelStatus::Idle);
     }
 
-    /// REGRESSION (txgent, observed live): the miss counter accumulated
+    /// REGRESSION (bastion01, observed live): the miss counter accumulated
     /// against the OLD node must reset on set_node — carrying it over meant
     /// the FIRST miss against the new node crossed the stale threshold
     /// (re-noded tunnel alive 4 s, then "squeue miss #3" → killed).
@@ -1348,14 +1348,14 @@ mod tests {
         {
             let mut guard = crate::lock_state(&state);
             guard.tunnels[0].status = TunnelStatus::Alive;
-            guard.tunnels[0].last_node = Some("holygpu99".into());
+            guard.tunnels[0].last_node = Some("gpunode99".into());
         }
         let rt = TunnelRuntime::new();
         rt.with_rt_mut("nb", |r| r.consecutive_squeue_misses = 2);
 
         tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu99", "user": "jdoe"}),
+            &json!({"name": "nb", "node": "gpunode99", "user": "jdoe"}),
             Some(Arc::clone(&rt)),
             None,
         )
@@ -1372,7 +1372,7 @@ mod tests {
         let state = make_state_with_tunnel("nb", 9501);
         tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu[01-03]", "user": "jdoe"}),
+            &json!({"name": "nb", "node": "gpunode[01-03]", "user": "jdoe"}),
             None,
             None,
         )
@@ -1380,7 +1380,7 @@ mod tests {
         let guard = crate::lock_state(&state);
         assert_eq!(
             guard.tunnels[0].last_node.as_deref(),
-            Some("holygpu01"),
+            Some("gpunode01"),
             "SLURM range must be expanded to first node before storage"
         );
     }
@@ -1390,7 +1390,7 @@ mod tests {
         let state = make_state();
         let err = tunnel_set_node(
             &state,
-            &json!({"name": "ghost", "node": "holygpu01"}),
+            &json!({"name": "ghost", "node": "gpunode01"}),
             None,
             None,
         )
@@ -1404,7 +1404,7 @@ mod tests {
         let state = make_tunnel_with_status("nb", 9502, TunnelStatus::Stale);
         tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            &json!({"name": "nb", "node": "gpunode01", "user": "jdoe"}),
             None,
             None,
         )
@@ -1425,7 +1425,7 @@ mod tests {
         let state = make_tunnel_with_status("nb", 9503, TunnelStatus::PortBusy);
         tunnel_set_node(
             &state,
-            &json!({"name": "nb", "node": "holygpu01", "user": "jdoe"}),
+            &json!({"name": "nb", "node": "gpunode01", "user": "jdoe"}),
             None,
             None,
         )

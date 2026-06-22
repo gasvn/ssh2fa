@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// `status` is a Rich-markup display string (free-form); see `HostStatus`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
-    /// The host alias / name (e.g. "k6", "holygpu02").
+    /// The host alias / name (e.g. "k6", "gpunode02").
     pub host: String,
 
     /// Rich-markup display string, e.g. `"[green]Pool Active (0)[/green]"`.
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn safe_host_names() {
         assert!(is_safe_host_name("k6"));
-        assert!(is_safe_host_name("holygpu08.rc.fas.harvard.edu"));
+        assert!(is_safe_host_name("gpunode08.hpc.example.edu"));
         assert!(is_safe_host_name("node-1.cluster"));
         assert!(is_safe_host_name("_x"));
     }

@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn filter_matches_name_and_node() {
         let app = AppModel::with_tunnels(vec![
-            tunnel("jupyter", "holygpu01"),
+            tunnel("jupyter", "gpunode01"),
             tunnel("web", "node2"),
         ]);
         let v = app.visible_tunnels("jup");
@@ -590,10 +590,10 @@ mod tests {
     #[test]
     fn filter_matches_node() {
         let app = AppModel::with_tunnels(vec![
-            tunnel("jupyter", "holygpu01"),
+            tunnel("jupyter", "gpunode01"),
             tunnel("web", "node2"),
         ]);
-        let v = app.visible_tunnels("holygpu");
+        let v = app.visible_tunnels("gpunode");
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "jupyter");
     }

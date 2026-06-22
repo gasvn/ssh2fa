@@ -47,3 +47,6 @@ auto2fa-rs/target/
 
 # Visual-companion brainstorm artifacts
 .superpowers/
+
+# Internal planning docs — never publish (Pages serves docs/)
+docs/superpowers/

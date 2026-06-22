@@ -211,7 +211,7 @@ class CustomNodeScreen(ModalScreen[tuple[str, str] | None]):
         with Vertical():
             yield Label("[b]Custom node[/b]", classes="title")
             yield Label("Node", classes="field")
-            yield Input(placeholder="holygpu8a11103.rc.fas.harvard.edu", id="node")
+            yield Input(placeholder="gpunode8a11103.hpc.example.edu", id="node")
             yield Label("User", classes="field")
             yield Input(value=self.default_user, placeholder=os.environ.get("USER", ""), id="user")
             with Horizontal(classes="buttons"):

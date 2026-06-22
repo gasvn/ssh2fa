@@ -12,8 +12,8 @@ final class OTPSecretTests: XCTestCase {
     }
 
     func testBareBase32KeyIsWrapped() {
-        XCTAssertEqual(OTPSecret.normalize(input: "JBSWY3DPEHPK3PXP", account: "kempner"),
-                       "otpauth://totp/kempner?secret=JBSWY3DPEHPK3PXP")
+        XCTAssertEqual(OTPSecret.normalize(input: "JBSWY3DPEHPK3PXP", account: "login01"),
+                       "otpauth://totp/login01?secret=JBSWY3DPEHPK3PXP")
     }
 
     func testBareKeyStripsSpacesAndUppercases() {

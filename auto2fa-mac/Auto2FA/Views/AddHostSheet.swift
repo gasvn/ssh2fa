@@ -111,7 +111,7 @@ struct AddHostSheet: View {
                 if isGuided {
                     field("Name", TextField("e.g. Cannon, lab server", text: $displayName)
                             .focused($focused, equals: .hostname))
-                    field("Server address", TextField("login.rc.fas.harvard.edu", text: $serverAddress))
+                    field("Server address", TextField("login.hpc.example.edu", text: $serverAddress))
                     field("Username", TextField("your login name on the server", text: $username))
                     DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                         field("Port", TextField("22", text: $portText))

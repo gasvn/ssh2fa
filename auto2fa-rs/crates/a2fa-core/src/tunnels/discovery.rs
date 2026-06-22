@@ -116,8 +116,8 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
 
 /// Expand a SLURM nodelist string to its first concrete node.
 ///
-/// SLURM often returns a compressed nodelist such as `holygpu[01-03]` or
-/// `holygpu[01,03,05]` rather than a single hostname.  This function extracts
+/// SLURM often returns a compressed nodelist such as `gpunode[01-03]` or
+/// `gpunode[01,03,05]` rather than a single hostname.  This function extracts
 /// the first node from the list so it can be used directly as an SSH target.
 ///
 /// # Return value
@@ -132,12 +132,12 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
 /// ```
 /// use a2fa_core::tunnels::expand_first_node;
 ///
-/// assert_eq!(expand_first_node("holygpu01"),          ("holygpu01".into(),                   false));
-/// assert_eq!(expand_first_node("holygpu[01-03]"),     ("holygpu01".into(),                   true));
-/// assert_eq!(expand_first_node("holygpu[01,03,05]"),  ("holygpu01".into(),                   true));
+/// assert_eq!(expand_first_node("gpunode01"),          ("gpunode01".into(),                   false));
+/// assert_eq!(expand_first_node("gpunode[01-03]"),     ("gpunode01".into(),                   true));
+/// assert_eq!(expand_first_node("gpunode[01,03,05]"),  ("gpunode01".into(),                   true));
 /// assert_eq!(
-///     expand_first_node("holygpu[01-03].rc.fas.harvard.edu"),
-///     ("holygpu01.rc.fas.harvard.edu".into(), true)
+///     expand_first_node("gpunode[01-03].hpc.example.edu"),
+///     ("gpunode01.hpc.example.edu".into(), true)
 /// );
 /// ```
 ///
@@ -149,9 +149,9 @@ pub fn parse_squeue(out: &str) -> Vec<Job> {
 pub fn expand_first_node(nodelist: &str) -> (String, bool) {
     // Pattern mirrors the Python reference:
     //   ^([a-zA-Z0-9_.-]+)\[([^\]]+)\](.*)$
-    // Group 1 — prefix (e.g. "holygpu")
+    // Group 1 — prefix (e.g. "gpunode")
     // Group 2 — bracket contents (e.g. "01-03" or "01,03,05")
-    // Group 3 — optional suffix after the bracket (e.g. ".rc.fas.harvard.edu")
+    // Group 3 — optional suffix after the bracket (e.g. ".hpc.example.edu")
     // NB: in this raw string `\\` would be an ESCAPED BACKSLASH inside the
     // character class (accepting a literal `\` in a node prefix) — not needed
     // and not in the Python reference. `-` is literal because it's last.
@@ -181,9 +181,9 @@ pub fn expand_first_node(nodelist: &str) -> (String, bool) {
 /// inject remote commands. Invalid/empty/absent → `$USER` (the remote login
 /// account — the old behavior).
 ///
-/// WHY an explicit user at all (observed live, txgent via rkempner): jump
-/// hosts can log in as DIFFERENT cluster accounts (rkempner → rzhu). The
-/// tunnel's job belongs to `last_user` (shgao); `squeue -u $USER` through
+/// WHY an explicit user at all (observed live, bastion01 via alice): jump
+/// hosts can log in as DIFFERENT cluster accounts (alice → bob). The
+/// tunnel's job belongs to `last_user` (alice); `squeue -u $USER` through
 /// such a jump NEVER lists it, so every staleness check "missed" and a
 /// perfectly working tunnel was repeatedly marked stale and killed.
 fn squeue_user_arg(user: Option<&str>) -> String {
@@ -333,14 +333,14 @@ mod tests {
 
     // ---- squeue_user_arg --------------------------------------------------
 
-    /// REGRESSION (txgent via rkempner): an explicit user must reach `-u`
+    /// REGRESSION (bastion01 via alice): an explicit user must reach `-u`
     /// verbatim — `$USER` through a jump logging in as a different account
     /// never lists the job (every staleness check missed → false stale).
     /// And the value is re-parsed by the REMOTE shell, so anything outside
     /// the whitelist must fall back to `$USER`, never pass through.
     #[test]
     fn squeue_user_arg_validation() {
-        assert_eq!(squeue_user_arg(Some("shgao")), "shgao");
+        assert_eq!(squeue_user_arg(Some("alice")), "alice");
         assert_eq!(squeue_user_arg(Some("j.doe_2-x")), "j.doe_2-x");
         assert_eq!(squeue_user_arg(None), "$USER");
         assert_eq!(squeue_user_arg(Some("")), "$USER");
@@ -358,15 +358,15 @@ mod tests {
         // Each tuple: (input, expected_node, expected_is_range)
         let cases: &[(&str, &str, bool)] = &[
             // Plain hostname — no brackets → returned unchanged, not a range.
-            ("holygpu01",                          "holygpu01",                          false),
+            ("gpunode01",                          "gpunode01",                          false),
             // Dash range → first element extracted, is_range = true.
-            ("holygpu[01-03]",                     "holygpu01",                          true),
+            ("gpunode[01-03]",                     "gpunode01",                          true),
             // Comma list → first element extracted.
-            ("holygpu[01,03,05]",                  "holygpu01",                          true),
+            ("gpunode[01,03,05]",                  "gpunode01",                          true),
             // Suffix after the closing bracket must be preserved.
-            ("holygpu[01-03].rc.fas.harvard.edu",  "holygpu01.rc.fas.harvard.edu",       true),
+            ("gpunode[01-03].hpc.example.edu",  "gpunode01.hpc.example.edu",       true),
             // Malformed / no brackets → returned unchanged, not a range.
-            ("holygpu[unclosed",                   "holygpu[unclosed",                   false),
+            ("gpunode[unclosed",                   "gpunode[unclosed",                   false),
             // Empty string → returned unchanged.
             ("",                                   "",                                   false),
             // A backslash is NOT a valid node-prefix character (the old regex
@@ -391,10 +391,10 @@ mod tests {
     #[test]
     fn parses_squeue_rows() {
         let jobs = parse_squeue(
-            "123|gpu|run|RUNNING|01:00:00|23:00:00|holygpu01\nbad row\n456|cpu|x|PENDING|0:00|NOT_SET|(Resources)\n",
+            "123|gpu|run|RUNNING|01:00:00|23:00:00|gpunode01\nbad row\n456|cpu|x|PENDING|0:00|NOT_SET|(Resources)\n",
         );
         assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].node, "holygpu01");
+        assert_eq!(jobs[0].node, "gpunode01");
         assert_eq!(jobs[0].state, "RUNNING");
         assert_eq!(jobs[0].time_left, "23:00:00");
     }
@@ -405,12 +405,12 @@ mod tests {
         // CONFIGURING job isn't usable yet. Only RUNNING jobs (on a real node)
         // must survive — otherwise the node picker offers bogus targets.
         let jobs = parse_squeue(
-            "1|gpu|train|RUNNING|2:00:00|6:00:00|holygpu01\n\
+            "1|gpu|train|RUNNING|2:00:00|6:00:00|gpunode01\n\
              2|gpu|wait|PENDING|0:00|1-00:00:00|(Resources)\n\
-             3|gpu|cfg|CONFIGURING|0:01|1:00:00|holygpu02\n",
+             3|gpu|cfg|CONFIGURING|0:01|1:00:00|gpunode02\n",
         );
         assert_eq!(jobs.len(), 1, "only the RUNNING job is kept");
-        assert_eq!(jobs[0].node, "holygpu01");
+        assert_eq!(jobs[0].node, "gpunode01");
         assert_eq!(jobs[0].state, "RUNNING");
     }
 
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn parses_multiple_valid_rows() {
-        let raw = "1|gpu|train|RUNNING|2:00:00|6:00:00|holygpu01\n\
+        let raw = "1|gpu|train|RUNNING|2:00:00|6:00:00|gpunode01\n\
                    2|cpu|eval|RUNNING|0:30:00|1:30:00|holycpu05\n";
         let jobs = parse_squeue(raw);
         assert_eq!(jobs.len(), 2);
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn preserves_all_fields() {
-        let jobs = parse_squeue("999|gpu|myrun|RUNNING|03:14:15|20:45:45|holygpu42");
+        let jobs = parse_squeue("999|gpu|myrun|RUNNING|03:14:15|20:45:45|gpunode42");
         assert_eq!(jobs.len(), 1);
         let j = &jobs[0];
         assert_eq!(j.jobid, "999");
@@ -495,6 +495,6 @@ mod tests {
         assert_eq!(j.state, "RUNNING");
         assert_eq!(j.time, "03:14:15");
         assert_eq!(j.time_left, "20:45:45");
-        assert_eq!(j.node, "holygpu42");
+        assert_eq!(j.node, "gpunode42");
     }
 }

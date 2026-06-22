@@ -1056,7 +1056,7 @@ fn heartbeat_loop(
 /// Decide the host-level State fields after a slot-restart outcome.
 ///
 /// Pure (unit-tested). Key rule: a failed SPARE relogin must NOT repaint a
-/// healthy host as failed — observed live (rkempner): slot 1's login timed
+/// healthy host as failed — observed live (alice): slot 1's login timed
 /// out and wrote "Reconnect failed" while the ACTIVE slot 0 master was
 /// verifiably alive, and nothing on the healthy path ever repaired it.
 ///
@@ -1417,7 +1417,7 @@ fn tick_host(
                 // spare-slot relogin (or any stale write) could leave the
                 // host-level status "Reconnect failed" / is_master_ready =
                 // false while the active master is demonstrably alive —
-                // observed live (rkempner): the UI showed a failed host
+                // observed live (alice): the UI showed a failed host
                 // indefinitely because the healthy path wrote nothing back.
                 if slot == pool.active_index && check_result == Some(true) {
                     let alive_count = managers
@@ -1593,10 +1593,10 @@ mod tests {
         }
 
         {
-            let pool = managers.snapshot("cannon");
+            let pool = managers.snapshot("cluster01");
             assert_eq!(
                 pool.consecutive_login_failures, 0,
-                "cannon must start with 0 failures, independent of k6"
+                "cluster01 must start with 0 failures, independent of k6"
             );
         }
     }
@@ -1727,7 +1727,7 @@ mod tests {
         assert_eq!(action, MaintenanceAction::Healthy);
     }
 
-    /// REGRESSION (rkempner, observed live): a failed SPARE relogin must not
+    /// REGRESSION (alice, observed live): a failed SPARE relogin must not
     /// repaint a healthy host as failed when the active master is Ready.
     #[test]
     fn restart_outcome_spare_failure_keeps_host_connected() {
@@ -1755,7 +1755,7 @@ mod tests {
         assert!(msg.contains("reconnected"));
     }
 
-    /// REGRESSION (rkempner, observed live): the Healthy arm must repair
+    /// REGRESSION (alice, observed live): the Healthy arm must repair
     /// stale host-level failure status once the active master verifies alive
     /// — previously the healthy path wrote nothing and "Reconnect failed"
     /// stuck forever despite pool_alive=2.
@@ -1883,7 +1883,7 @@ mod tests {
     fn active_host_names_returns_only_active() {
         let state = state_with_hosts(vec![
             host("k6", true),
-            host("cannon", false),
+            host("cluster01", false),
             host("holy", true),
         ]);
         let names = active_host_names(&state);
@@ -1917,7 +1917,7 @@ mod tests {
     fn boot_autostart_returns_promptly_with_active_hosts() {
         let state = state_with_hosts(vec![
             host("k6", true),
-            host("cannon", true),
+            host("cluster01", true),
             host("idlehost", false),
         ]);
         let managers = HostManagers::new();
@@ -1957,7 +1957,7 @@ mod tests {
         // A different slot on the same host is independent.
         assert!(managers.try_begin_start("k6", 1));
         // A different host is independent.
-        assert!(managers.try_begin_start("cannon", 0));
+        assert!(managers.try_begin_start("cluster01", 0));
 
         // Releasing (k6, 0) lets it be claimed again.
         managers.end_start("k6", 0);
@@ -2000,10 +2000,10 @@ mod tests {
     /// name kicks off nothing.
     #[test]
     fn rebuild_masters_filters_inactive_hosts() {
-        let state = state_with_hosts(vec![host("cannon", false)]);
+        let state = state_with_hosts(vec![host("cluster01", false)]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
-        let n = rebuild_masters(&["cannon".to_string()], &state, &managers, &registry, false);
+        let n = rebuild_masters(&["cluster01".to_string()], &state, &managers, &registry, false);
         assert_eq!(n, 0, "inactive host must not be rebuilt");
     }
 }

@@ -223,7 +223,7 @@ pub fn run() -> Result<()> {
     // when ssh-config edits change a host's resolved path, the old path's
     // masters are never targeted by any per-slot sweep again — they leaked
     // forever (observed live: 6h-old cm-ssh2fa-b8-* masters after b8's base
-    // became cm-ssh2fa-boslogin08…). Resolving every known host's base here
+    // became cm-ssh2fa-login08…). Resolving every known host's base here
     // also pre-warms the control-path cache before the heartbeat starts.
     //
     // SAFETY: only sweep when EVERY host's path resolved AUTHORITATIVELY. If

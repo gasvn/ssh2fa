@@ -3,25 +3,25 @@ import XCTest
 final class SSHConfigParserTests: XCTestCase {
     func testSingleHostWithHostNameAndUser() {
         let cfg = """
-        Host kempner
-            HostName login.rc.fas.harvard.edu
-            User shgao
+        Host login01
+            HostName login.hpc.example.edu
+            User alice
         """
         XCTAssertEqual(SSHConfigParser.parse(cfg),
-                       [ConfigHost(alias: "kempner",
-                                   hostName: "login.rc.fas.harvard.edu",
-                                   user: "shgao")])
+                       [ConfigHost(alias: "login01",
+                                   hostName: "login.hpc.example.edu",
+                                   user: "alice")])
     }
 
     func testMultiAliasOnOneHostLineBothInheritDetails() {
         let cfg = """
         Host fasrc fas
-            HostName boslogin.rc.fas.harvard.edu
+            HostName login.hpc.example.edu
             User u
         """
         XCTAssertEqual(SSHConfigParser.parse(cfg),
-                       [ConfigHost(alias: "fasrc", hostName: "boslogin.rc.fas.harvard.edu", user: "u"),
-                        ConfigHost(alias: "fas", hostName: "boslogin.rc.fas.harvard.edu", user: "u")])
+                       [ConfigHost(alias: "fasrc", hostName: "login.hpc.example.edu", user: "u"),
+                        ConfigHost(alias: "fas", hostName: "login.hpc.example.edu", user: "u")])
     }
 
     func testWildcardHostsAreSkipped() {

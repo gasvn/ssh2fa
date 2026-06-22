@@ -28,7 +28,7 @@ pub struct Tunnel {
     /// `None` means "use any ready host in passwords.json".
     pub jump_candidates: Option<Vec<String>>,
 
-    /// Last compute node this tunnel targeted (e.g. "holygpu01").
+    /// Last compute node this tunnel targeted (e.g. "gpunode01").
     pub last_node: Option<String>,
 
     /// Last UNIX user used for the `user@node` part of the ssh command.

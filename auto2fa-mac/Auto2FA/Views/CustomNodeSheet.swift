@@ -23,7 +23,7 @@ struct CustomNodeSheet: View {
             VStack(alignment: .leading, spacing: Spacing.m) {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text("Node").font(.caption).foregroundStyle(.secondary)
-                    TextField("holygpu8a11103.rc.fas.harvard.edu", text: $node)
+                    TextField("gpunode8a11103.hpc.example.edu", text: $node)
                         .textFieldStyle(.roundedBorder)
                         .focused($focused, equals: .node)
                         .onSubmit { focused = .user }

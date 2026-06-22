@@ -40,12 +40,12 @@ class Job:
 
 
 def expand_first_node(nodelist: str) -> tuple[str, bool]:
-    """Given a SLURM NODELIST string like 'holygpu[01-03]' or 'holygpu01',
+    """Given a SLURM NODELIST string like 'gpunode[01-03]' or 'gpunode01',
     return (first_node, is_range).
 
-    - 'holygpu01' → ('holygpu01', False)
-    - 'holygpu[01-03]' → ('holygpu01', True)
-    - 'holygpu[01,03,05]' → ('holygpu01', True)
+    - 'gpunode01' → ('gpunode01', False)
+    - 'gpunode[01-03]' → ('gpunode01', True)
+    - 'gpunode[01,03,05]' → ('gpunode01', True)
     - Anything malformed → (nodelist, False) as a safe fallback.
     """
     m = re.match(r"^([a-zA-Z0-9_.-]+)\[([^\]]+)\](.*)$", nodelist)

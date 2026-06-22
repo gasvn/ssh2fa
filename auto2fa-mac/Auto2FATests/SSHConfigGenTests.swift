@@ -5,9 +5,9 @@ final class SSHConfigGenTests: XCTestCase {
 
     func testManagedBlockWithConnEmitsHostNameUserPort() {
         let conf = SSHConfigManager.generateManagedConf(
-            hosts: [.init(alias: "cannon", conn: .init(hostName: "login.example.edu", user: "jdoe", port: 2222))],
+            hosts: [.init(alias: "cluster01", conn: .init(hostName: "login.example.edu", user: "jdoe", port: 2222))],
             dir: dir)
-        XCTAssertTrue(conf.contains("Host cannon"))
+        XCTAssertTrue(conf.contains("Host cluster01"))
         XCTAssertTrue(conf.contains("HostName login.example.edu"))
         XCTAssertTrue(conf.contains("User jdoe"))
         XCTAssertTrue(conf.contains("Port 2222"))
@@ -40,19 +40,19 @@ final class SSHConfigGenTests: XCTestCase {
 
     func testSanitizeAlias() {
         XCTAssertEqual(SSHConfigManager.sanitizeAlias("My Lab Server!"), "My-Lab-Server")
-        XCTAssertEqual(SSHConfigManager.sanitizeAlias("login.rc.fas.harvard.edu"), "login.rc.fas.harvard.edu")
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias("login.hpc.example.edu"), "login.hpc.example.edu")
         XCTAssertEqual(SSHConfigManager.sanitizeAlias("  a  b  "), "a-b")
     }
 
     func testConflictDetection() {
-        XCTAssertTrue(SSHConfigManager.aliasConflicts("cannon", userAliases: ["cannon", "other"]))
-        XCTAssertFalse(SSHConfigManager.aliasConflicts("fresh", userAliases: ["cannon"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("cluster01", userAliases: ["cluster01", "other"]))
+        XCTAssertFalse(SSHConfigManager.aliasConflicts("fresh", userAliases: ["cluster01"]))
     }
 
     /// ssh Host matching is case-insensitive — the conflict check must be too.
     func testConflictDetectionCaseInsensitive() {
-        XCTAssertTrue(SSHConfigManager.aliasConflicts("Cannon", userAliases: ["cannon"]))
-        XCTAssertTrue(SSHConfigManager.aliasConflicts("cannon", userAliases: ["CANNON"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("Cannon", userAliases: ["cluster01"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("cluster01", userAliases: ["CANNON"]))
     }
 
     /// A newline in HostName/User must not inject a second config DIRECTIVE line

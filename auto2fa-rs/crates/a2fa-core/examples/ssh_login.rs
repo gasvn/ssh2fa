@@ -11,7 +11,7 @@
 //
 // Example (with real creds, against a cluster that needs password + TOTP):
 //   A2FA_PASSWORD=mysecret A2FA_OTP_SECRET=JBSWY3DPEHPK3PXP \
-//     cargo run --example ssh_login -- cannon.rc.fas.harvard.edu myuser
+//     cargo run --example ssh_login -- cluster01.hpc.example.edu myuser
 //
 // DO NOT run this in CI — it would hang waiting for a real SSH host.
 

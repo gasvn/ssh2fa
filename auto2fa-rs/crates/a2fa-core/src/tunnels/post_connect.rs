@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn sanitize_strips_metacharacters() {
-        assert_eq!(sanitize("holygpu01"), "holygpu01");
+        assert_eq!(sanitize("gpunode01"), "gpunode01");
         assert_eq!(sanitize("user@host.example.com"), "user@host.example.com");
         // Dangerous chars stripped
         let s = sanitize("; rm -rf ~");

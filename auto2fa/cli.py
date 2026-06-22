@@ -10,7 +10,7 @@ Examples:
     auto2fa tunnels                     # tunnels only
     auto2fa start jupyter               # start a tunnel
     auto2fa stop jupyter
-    auto2fa node jupyter holygpu08      # set tunnel node and start
+    auto2fa node jupyter gpunode08      # set tunnel node and start
     auto2fa wake                        # fire wake_recover
     auto2fa logs                        # tail daemon log (--lines N)
     auto2fa raw list_hosts              # send a raw RPC

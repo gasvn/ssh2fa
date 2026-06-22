@@ -13,7 +13,7 @@ final class ManagedHostStoreTests: XCTestCase {
 
     func testUpsertRoundTrips() throws {
         let url = tmp()
-        let c = ManagedHostConn(alias: "cannon", hostName: "login.rc.fas.harvard.edu",
+        let c = ManagedHostConn(alias: "cluster01", hostName: "login.hpc.example.edu",
                                 user: "jdoe", port: 22)
         try ManagedHostStore.upsert(c, in: url)
         XCTAssertEqual(ManagedHostStore.load(from: url), [c])

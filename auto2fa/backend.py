@@ -53,7 +53,7 @@ def generate_passcode_from_secret(secret):
 
 
 # --- Cross-host OTP replay guard --------------------------------------------
-# Many users (e.g. all Harvard FAS-RC login nodes) configure every host with
+# Many users (e.g. all a large HPC center login nodes) configure every host with
 # the same Duo TOTP secret. When the daemon brings several such hosts up in
 # parallel, each spawns ssh, each derives the same 6-digit code, and the
 # server consumes the first while rejecting the rest as replays — which we

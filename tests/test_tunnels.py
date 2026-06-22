@@ -36,10 +36,10 @@ class TestDataClasses(unittest.TestCase):
 
     def test_job_fields(self):
         from tunnels import Job
-        j = Job(jobid="123", partition="kempner", name="run", state="RUNNING",
-                time="01:00:00", node="holygpu01")
+        j = Job(jobid="123", partition="login01", name="run", state="RUNNING",
+                time="01:00:00", node="gpunode01")
         self.assertEqual(j.jobid, "123")
-        self.assertEqual(j.node, "holygpu01")
+        self.assertEqual(j.node, "gpunode01")
 
     def test_discovery_error_is_exception(self):
         from tunnels import DiscoveryError
@@ -55,18 +55,18 @@ class TestNodeDiscoveryParse(unittest.TestCase):
         from tunnels import NodeDiscovery
         # squeue -h -o "%i|%P|%j|%T|%M|%R" -u $USER
         raw = (
-            "14246008|kempner_h|h100x1|RUNNING|23:58:16|holygpu8a11103\n"
-            "13756572|kempner_h|h100x1|RUNNING|1-21:29:48|holygpu8a15203\n"
-            "12975569|kempner|a100x1|RUNNING|5-16:13:17|holygpu8a19403\n"
+            "14246008|login01_h|h100x1|RUNNING|23:58:16|gpunode8a11103\n"
+            "13756572|login01_h|h100x1|RUNNING|1-21:29:48|gpunode8a15203\n"
+            "12975569|login01|a100x1|RUNNING|5-16:13:17|gpunode8a19403\n"
         )
         jobs = NodeDiscovery.parse(raw)
         self.assertEqual(len(jobs), 3)
         self.assertEqual(jobs[0].jobid, "14246008")
-        self.assertEqual(jobs[0].partition, "kempner_h")
+        self.assertEqual(jobs[0].partition, "login01_h")
         self.assertEqual(jobs[0].name, "h100x1")
         self.assertEqual(jobs[0].state, "RUNNING")
         self.assertEqual(jobs[0].time, "23:58:16")
-        self.assertEqual(jobs[0].node, "holygpu8a11103")
+        self.assertEqual(jobs[0].node, "gpunode8a11103")
 
     def test_parse_filters_non_running(self):
         from tunnels import NodeDiscovery
@@ -112,12 +112,12 @@ class TestNodeDiscoveryDiscover(unittest.TestCase):
         from tunnels import NodeDiscovery
         import tunnels as t
         completed = MagicMock(returncode=0,
-                              stdout="14246008|kempner_h|h100x1|RUNNING|23:58:16|holygpu8a11103\n",
+                              stdout="14246008|login01_h|h100x1|RUNNING|23:58:16|gpunode8a11103\n",
                               stderr="")
         with unittest.mock.patch.object(t.subprocess, "run", return_value=completed) as p_run:
             jobs = NodeDiscovery.discover(self._fake_mgr())
             self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0].node, "holygpu8a11103")
+            self.assertEqual(jobs[0].node, "gpunode8a11103")
             # Inspect the command
             args, kwargs = p_run.call_args
             cmd = args[0]
@@ -160,8 +160,8 @@ class TestTunnelManagerPersistence(unittest.TestCase):
         tm = TunnelManager(host_managers={}, config_path=self.cfg)
         tm.tunnels["jupyter"] = TunnelState(
             name="jupyter", local_port=8888, remote_port=8888,
-            jump_candidates=["k1", "k8"], last_node="holygpu01",
-            last_user="shgao", auto_start=True,
+            jump_candidates=["k1", "k8"], last_node="gpunode01",
+            last_user="alice", auto_start=True,
         )
         tm.save()
 
@@ -170,8 +170,8 @@ class TestTunnelManagerPersistence(unittest.TestCase):
         loaded = tm2.tunnels["jupyter"]
         self.assertEqual(loaded.local_port, 8888)
         self.assertEqual(loaded.jump_candidates, ["k1", "k8"])
-        self.assertEqual(loaded.last_node, "holygpu01")
-        self.assertEqual(loaded.last_user, "shgao")
+        self.assertEqual(loaded.last_node, "gpunode01")
+        self.assertEqual(loaded.last_user, "alice")
         self.assertTrue(loaded.auto_start)
         # Runtime fields are reset
         self.assertEqual(loaded.status, "idle")
@@ -353,12 +353,12 @@ class TestTunnelManagerSimpleOps(unittest.TestCase):
         from tunnels import TunnelManager
         tm = TunnelManager(host_managers={}, config_path=self.cfg)
         tm.add("a", self._free_port())
-        tm.set_node("a", "holygpu01", "shgao")
-        self.assertEqual(tm.tunnels["a"].last_node, "holygpu01")
-        self.assertEqual(tm.tunnels["a"].last_user, "shgao")
+        tm.set_node("a", "gpunode01", "alice")
+        self.assertEqual(tm.tunnels["a"].last_node, "gpunode01")
+        self.assertEqual(tm.tunnels["a"].last_user, "alice")
         with open(self.cfg) as f:
             data = json.load(f)
-        self.assertEqual(data["tunnels"]["a"]["last_node"], "holygpu01")
+        self.assertEqual(data["tunnels"]["a"]["last_node"], "gpunode01")
 
     def test_pick_active_jump_with_explicit_candidates(self):
         from tunnels import TunnelManager, TunnelState
@@ -434,7 +434,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         hm = {"k8": self._mgr(ready=False)}
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         tm.add("x", self._free_port())
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
         tm.start("x")
         self.assertEqual(tm.tunnels["x"].status, "idle")
         self.assertIn("waiting for jump", tm.tunnels["x"].last_msg.lower())
@@ -445,7 +445,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         port = self._free_port()
         tm.add("x", port)
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
         # Hold the port between add() and start()
         s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen(1)
         try:
@@ -461,7 +461,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         port = self._free_port()
         tm.add("x", port)
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
         tm.tunnels["x"].consecutive_squeue_misses = 5
 
         child = MagicMock()
@@ -477,7 +477,7 @@ class TestTunnelManagerStart(unittest.TestCase):
             self.assertIn("k8", spawn_argv)
             self.assertIn("-L", spawn_argv)
             self.assertTrue(any(f"{port}:localhost:{port}" == a for a in spawn_argv))
-            self.assertIn("shgao@holygpu01", spawn_argv)
+            self.assertIn("alice@gpunode01", spawn_argv)
 
         self.assertEqual(tm.tunnels["x"].status, "alive")
         self.assertEqual(tm.tunnels["x"].active_jump, "k8")
@@ -495,7 +495,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         port = self._free_port()
         tm.add("x", port)
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
 
         child = MagicMock()
         child.isalive.return_value = True
@@ -520,7 +520,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         port = self._free_port()
         tm.add("x", port)
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
 
         child = MagicMock()
         child.isalive.return_value = True
@@ -541,7 +541,7 @@ class TestTunnelManagerStart(unittest.TestCase):
         tm = TunnelManager(host_managers=hm, config_path=self.cfg)
         port = self._free_port()
         tm.add("x", port)
-        tm.set_node("x", "holygpu01", "shgao")
+        tm.set_node("x", "gpunode01", "alice")
 
         child = MagicMock()
         child.isalive.return_value = True
@@ -678,7 +678,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         dead = MagicMock(); dead.isalive.return_value = False
         ts.child = dead
         # tick() must call stop() first to clear status="alive", THEN start() —
@@ -706,7 +706,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
 
@@ -737,7 +737,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         # pexpect says alive (lying / stale)
         alive_liar = MagicMock(); alive_liar.isalive.return_value = True
         ts.child = alive_liar
@@ -760,7 +760,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         bad = MagicMock()
         bad.isalive.side_effect = RuntimeError("ECHILD or similar")
         ts.child = bad
@@ -782,7 +782,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
 
@@ -802,7 +802,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         ts = tm.tunnels["x"]
         ts.status = "alive"
         ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
         # Force discovery check by setting last_probe_ts to long ago
@@ -828,7 +828,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         tm.add("x", self._free_port())
         ts = tm.tunnels["x"]
         ts.status = "alive"; ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
         ts.last_probe_ts = 0.0
@@ -849,7 +849,7 @@ class TestTunnelManagerTick(unittest.TestCase):
         tm.add("x", self._free_port())
         ts = tm.tunnels["x"]
         ts.status = "alive"; ts.active_jump = "k8"
-        ts.last_node = "node1"; ts.last_user = "shgao"
+        ts.last_node = "node1"; ts.last_user = "alice"
         alive = MagicMock(); alive.isalive.return_value = True
         ts.child = alive
         ts.last_probe_ts = 0.0
@@ -981,21 +981,21 @@ class TestOrphansAndShutdown(unittest.TestCase):
 class TestExpandFirstNode(unittest.TestCase):
     def test_single_node(self):
         from tunnels import expand_first_node
-        self.assertEqual(expand_first_node("holygpu01"), ("holygpu01", False))
+        self.assertEqual(expand_first_node("gpunode01"), ("gpunode01", False))
 
     def test_range(self):
         from tunnels import expand_first_node
-        self.assertEqual(expand_first_node("holygpu[01-03]"), ("holygpu01", True))
+        self.assertEqual(expand_first_node("gpunode[01-03]"), ("gpunode01", True))
 
     def test_comma_list(self):
         from tunnels import expand_first_node
-        self.assertEqual(expand_first_node("holygpu[01,03,05]"), ("holygpu01", True))
+        self.assertEqual(expand_first_node("gpunode[01,03,05]"), ("gpunode01", True))
 
     def test_with_suffix(self):
         from tunnels import expand_first_node
-        # e.g., "holygpu[01-03].rc.fas.harvard.edu"
-        first, is_range = expand_first_node("holygpu[01-03].rc.fas.harvard.edu")
-        self.assertEqual(first, "holygpu01.rc.fas.harvard.edu")
+        # e.g., "gpunode[01-03].hpc.example.edu"
+        first, is_range = expand_first_node("gpunode[01-03].hpc.example.edu")
+        self.assertEqual(first, "gpunode01.hpc.example.edu")
         self.assertTrue(is_range)
 
     def test_malformed_returns_raw(self):
@@ -1082,7 +1082,7 @@ class TestBugHuntFixes(unittest.TestCase):
         ts.status = "alive"; ts.last_node = "oldnode"
         with unittest.mock.patch.object(tm, "stop") as p_stop, \
              unittest.mock.patch.object(tm, "start") as p_start:
-            tm.set_node("x", "newnode", "shgao")
+            tm.set_node("x", "newnode", "alice")
             p_stop.assert_called_once_with("x", user_initiated=False)
             p_start.assert_called_once_with("x")
         self.assertEqual(ts.last_node, "newnode")
@@ -1095,7 +1095,7 @@ class TestBugHuntFixes(unittest.TestCase):
         ts.status = "alive"; ts.last_node = "samenode"
         with unittest.mock.patch.object(tm, "stop") as p_stop, \
              unittest.mock.patch.object(tm, "start") as p_start:
-            tm.set_node("x", "samenode", "shgao")
+            tm.set_node("x", "samenode", "alice")
             p_stop.assert_not_called()
             p_start.assert_not_called()
 

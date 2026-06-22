@@ -9,7 +9,7 @@ quickly.
 SSH2FA is a Textual TUI dashboard that:
 
 1. Maintains persistent SSH ControlMaster connections to login hosts that
-   require TOTP (Harvard RC, etc.), so `ssh host` from any other terminal is
+   require TOTP (an HPC center, etc.), so `ssh host` from any other terminal is
    instant and 2FA-free.
 2. Layers SLURM-aware **two-level port forwards** (login host → compute node)
    on top of those connections, with a node picker, persistence, and
@@ -100,7 +100,7 @@ Discovery (`NodeDiscovery`):
   near-instant once the host is connected.
 - `parse(stdout)` is pure and unit-tested.
 - `expand_first_node(nodelist)` handles SLURM bracket ranges like
-  `holygpu[01-03]`.
+  `gpunode[01-03]`.
 
 Lifecycle (`start`):
 1. Acquire per-tunnel lock.
@@ -196,8 +196,8 @@ Each top-level key must match a `Host` alias in `~/.ssh/config`. Optional
       "local_port": 8888,
       "remote_port": 8888,
       "jump_candidates": null,
-      "last_node": "holygpu8a11103.rc.fas.harvard.edu",
-      "last_user": "shgao",
+      "last_node": "gpunode8a11103.hpc.example.edu",
+      "last_user": "alice",
       "auto_start": true
     }
   }

@@ -50,7 +50,7 @@ enum FriendlyText {
         case .starting:
             return "Connecting…"
         case .stale:
-            // last_msg often "node holygpu8a15301 ended" — keep it.
+            // last_msg often "node gpunode8a15301 ended" — keep it.
             let m = t.lastMsg
             return m.isEmpty ? "Compute node ended — pick a new one" : m
         case .idle:

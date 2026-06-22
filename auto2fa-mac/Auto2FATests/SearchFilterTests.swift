@@ -2,17 +2,17 @@ import XCTest
 
 final class SearchFilterTests: XCTestCase {
     func testBlankQueryMatchesEverything() {
-        XCTAssertTrue(SearchFilter.matches(query: "", in: ["kempner"]))
+        XCTAssertTrue(SearchFilter.matches(query: "", in: ["login01"]))
         XCTAssertTrue(SearchFilter.matches(query: "   ", in: [nil]))
     }
 
     func testCaseInsensitiveSubstring() {
-        XCTAssertTrue(SearchFilter.matches(query: "KEMP", in: ["kempner-login"]))
+        XCTAssertTrue(SearchFilter.matches(query: "KEMP", in: ["login01-login"]))
         XCTAssertTrue(SearchFilter.matches(query: "node01", in: [nil, "Node01", nil]))
     }
 
     func testNoMatchReturnsFalse() {
-        XCTAssertFalse(SearchFilter.matches(query: "zzz", in: ["kempner", "txgent", nil]))
+        XCTAssertFalse(SearchFilter.matches(query: "zzz", in: ["login01", "bastion01", nil]))
     }
 
     func testNilFieldsAreSkipped() {

@@ -86,7 +86,7 @@ mod tests {
             local_port: 8888,
             remote_port: 8888,
             jump_candidates: Some(vec!["k6".into()]),
-            last_node: Some("holygpu01".into()),
+            last_node: Some("gpunode01".into()),
             last_user: Some("user1".into()),
             direct_host: None,
             auto_start: true,
@@ -179,7 +179,7 @@ mod tests {
     fn tunnel_change_key_detects_node_change() {
         let a = sample_tunnel();
         let mut b = a.clone();
-        b.last_node = Some("holygpu02".into());
+        b.last_node = Some("gpunode02".into());
         assert_ne!(tunnel_change_key(&a), tunnel_change_key(&b));
     }
 

@@ -829,12 +829,12 @@ mod tests {
 
     #[test]
     fn autostart_flag_with_node_gives_true() {
-        assert!(should_autostart(true, false, Some("holygpu01"), false));
+        assert!(should_autostart(true, false, Some("gpunode01"), false));
     }
 
     #[test]
     fn wants_alive_with_node_gives_true() {
-        assert!(should_autostart(false, true, Some("holygpu01"), false));
+        assert!(should_autostart(false, true, Some("gpunode01"), false));
     }
 
     #[test]
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn neither_flag_set_gives_false() {
-        assert!(!should_autostart(false, false, Some("holygpu01"), false));
+        assert!(!should_autostart(false, false, Some("gpunode01"), false));
     }
 
     // ---- Child registry (unit-level: store / take / kill) ---------------

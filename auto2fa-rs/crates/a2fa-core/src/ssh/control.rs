@@ -693,7 +693,7 @@ pub fn sweep_duplicate_masters(control_path: &Path, host: &str) -> usize {
 /// strays from a CHANGED path resolution (ssh-config edits): no per-slot
 /// sweep ever targets the old path again, so they leaked forever — observed
 /// live as 6h-old `cm-ssh2fa-b8-*` masters after b8's base became
-/// `cm-ssh2fa-boslogin08…`. Only our own `cm-ssh2fa-` prefix is touched;
+/// `cm-ssh2fa-login08…`. Only our own `cm-ssh2fa-` prefix is touched;
 /// custom user ControlPaths are never swept here.
 pub fn sweep_stray_masters(valid_bases: &[PathBuf]) -> usize {
     let found = match crate::sys::run_cmd_bounded("pgrep", &["-f", "--", "cm-ssh2fa-"], Duration::from_secs(2)) {
@@ -931,11 +931,11 @@ mod tests {
         // concrete value (already %h/~ expanded by ssh) → used verbatim
         let concrete = control_base_from_ssh_g(
             "b8",
-            Some("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu"),
+            Some("/Users/me/.ssh/cm-ssh2fa-login08.hpc.example.edu"),
         );
         assert_eq!(
             concrete,
-            PathBuf::from("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu")
+            PathBuf::from("/Users/me/.ssh/cm-ssh2fa-login08.hpc.example.edu")
         );
     }
 
@@ -982,7 +982,7 @@ mod tests {
         // Single-master (POOL_SIZE=1): only slot -0 is a valid index; the old
         // two-slot -1 suffix is no longer recognized.
         assert_eq!(
-            parse_trailing_index("/Users/me/.ssh/cm-ssh2fa-boslogin08.rc.fas.harvard.edu-1"),
+            parse_trailing_index("/Users/me/.ssh/cm-ssh2fa-login08.hpc.example.edu-1"),
             None
         );
         assert_eq!(parse_trailing_index("cm-ssh2fa-k6-0"), Some(0));

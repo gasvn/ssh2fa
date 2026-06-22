@@ -2,7 +2,7 @@
 //!
 //! # OTP serialization (mirrors backend.py `_get_otp_group_lock` + `_fresh_otp_or_wait`)
 //!
-//! Many sites (e.g. Harvard FAS-RC) configure every login host with the same
+//! Many sites (e.g. a large HPC center) configure every login host with the same
 //! Duo TOTP secret.  When the daemon brings several such hosts up in parallel,
 //! naive code would derive the same 6-digit code from each, send them
 //! simultaneously, and the server would consume the first while rejecting the

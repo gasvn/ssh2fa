@@ -125,7 +125,7 @@ class TestHostNameValidation(unittest.TestCase):
     so they can't traverse out of those locations."""
 
     def test_accepts_normal_names(self):
-        for h in ("k6", "k7", "b8", "kempner", "gpu-node_1", "a.b.c"):
+        for h in ("k6", "k7", "b8", "login01", "gpu-node_1", "a.b.c"):
             self.assertTrue(daemon_mod._valid_host_name(h), h)
 
     def test_rejects_traversal_and_separators(self):

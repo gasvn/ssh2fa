@@ -41,9 +41,9 @@ impl ForwardSpec {
 /// delegates to [`build_forward_argv_with`].
 ///
 /// # Arguments
-/// - `jump`       — jump host (e.g. `"rc.fas.harvard.edu"`)
+/// - `jump`       — jump host (e.g. `"hpc.example.edu"`)
 /// - `user`       — UNIX user on the compute node (e.g. `"jdoe"`)
-/// - `node`       — compute node (e.g. `"holygpu01"`)
+/// - `node`       — compute node (e.g. `"gpunode01"`)
 /// - `local_port` — local port to bind
 /// - `remote_port`— remote port on the node
 ///
@@ -298,15 +298,15 @@ mod tests {
 
     #[test]
     fn argv_contains_no_forward_flag() {
-        let argv = make_argv("rc.fas.harvard.edu", "jdoe", "holygpu01", 8080, 8888);
+        let argv = make_argv("hpc.example.edu", "jdoe", "gpunode01", 8080, 8888);
         assert!(argv.contains(&"-N".to_string()), "must contain -N");
     }
 
     #[test]
     fn argv_contains_jump_flag() {
-        let argv = make_argv("rc.fas.harvard.edu", "jdoe", "holygpu01", 8080, 8888);
+        let argv = make_argv("hpc.example.edu", "jdoe", "gpunode01", 8080, 8888);
         let j_idx = argv.iter().position(|a| a == "-J").expect("-J missing");
-        assert_eq!(argv[j_idx + 1], "rc.fas.harvard.edu");
+        assert_eq!(argv[j_idx + 1], "hpc.example.edu");
     }
 
     #[test]

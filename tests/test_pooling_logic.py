@@ -213,7 +213,7 @@ class TestStartMasterLock(unittest.TestCase):
 
 
 class TestOTPReplayGuard(unittest.TestCase):
-    """Hosts that share an OTP secret (e.g. all Harvard FAS-RC login
+    """Hosts that share an OTP secret (e.g. all a large HPC center login
     nodes) must not submit the same TOTP code in parallel. The guard
     serializes per-secret-group and waits for the next 30s window if
     the same code would otherwise be replayed."""

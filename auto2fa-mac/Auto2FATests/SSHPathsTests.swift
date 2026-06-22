@@ -23,7 +23,7 @@ final class SSHPathsTests: XCTestCase {
     }
 
     func testControlPathFallback() {
-        XCTAssertEqual(SSHPaths.controlPathFallback(dir: "/Users/x/.ssh", alias: "kempner"),
-                       "/Users/x/.ssh/cm-ssh2fa-kempner")
+        XCTAssertEqual(SSHPaths.controlPathFallback(dir: "/Users/x/.ssh", alias: "login01"),
+                       "/Users/x/.ssh/cm-ssh2fa-login01")
     }
 }

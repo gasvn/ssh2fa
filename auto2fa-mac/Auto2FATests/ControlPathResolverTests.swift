@@ -2,9 +2,9 @@ import XCTest
 
 final class ControlPathResolverTests: XCTestCase {
     func testPicksExplicitControlPath() {
-        let g = "user shgao\ncontrolpath /Users/x/.ssh/cm-ssh2fa-kempner\nport 22\n"
-        XCTAssertEqual(ControlPathResolver.pick(fromSSHG: g, alias: "kempner", dir: "/Users/x/.ssh"),
-                       "/Users/x/.ssh/cm-ssh2fa-kempner")
+        let g = "user alice\ncontrolpath /Users/x/.ssh/cm-ssh2fa-login01\nport 22\n"
+        XCTAssertEqual(ControlPathResolver.pick(fromSSHG: g, alias: "login01", dir: "/Users/x/.ssh"),
+                       "/Users/x/.ssh/cm-ssh2fa-login01")
     }
 
     func testExpandsTilde() {

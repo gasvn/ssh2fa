@@ -20,10 +20,10 @@ final class SSHConfigManagerTests: XCTestCase {
     }
 
     func testEnsureIncludePutsRegionAtTop() {
-        let out = SSHConfigManager.ensureInclude(in: "Host kempner\n    User shgao\n")
+        let out = SSHConfigManager.ensureInclude(in: "Host login01\n    User alice\n")
         XCTAssertTrue(out.hasPrefix(SSHConfigManager.beginMarker))
         XCTAssertTrue(out.contains("Include ssh2fa.conf"))
-        XCTAssertTrue(out.contains("Host kempner"))   // user block preserved
+        XCTAssertTrue(out.contains("Host login01"))   // user block preserved
     }
 
     func testEnsureIncludeIsIdempotent() {
@@ -81,14 +81,14 @@ final class SSHConfigManagerTests: XCTestCase {
     func testEnableIncludeBacksUpAndAddsRegion() throws {
         let dir = tempDir()
         let cfg = SSHPaths.configFile(dir: dir)
-        try "Host kempner\n    User shgao\n".write(toFile: cfg, atomically: true, encoding: .utf8)
+        try "Host login01\n    User alice\n".write(toFile: cfg, atomically: true, encoding: .utf8)
         try SSHConfigManager.enableInclude(dir: dir, timestamp: "TS")
         let after = try String(contentsOfFile: cfg, encoding: .utf8)
         XCTAssertTrue(after.hasPrefix(SSHConfigManager.beginMarker))
-        XCTAssertTrue(after.contains("Host kempner"))
+        XCTAssertTrue(after.contains("Host login01"))
         let backup = try String(contentsOfFile: SSHPaths.backupFile(dir: dir, timestamp: "TS"),
                                 encoding: .utf8)
-        XCTAssertEqual(backup, "Host kempner\n    User shgao\n")
+        XCTAssertEqual(backup, "Host login01\n    User alice\n")
     }
 
     func testEnableIncludeCreatesMissingConfig() throws {

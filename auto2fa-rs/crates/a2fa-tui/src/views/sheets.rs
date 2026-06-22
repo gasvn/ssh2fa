@@ -668,8 +668,8 @@ mod tests {
     #[test]
     fn resolve_node_list_mode_returns_selected() {
         let mut sh = NodePickerSheet::new("nb", None, "u".into());
-        sh.set_jobs(vec![job("1", "holygpu01", "R")], None);
-        assert_eq!(sh.resolve_node().as_deref(), Some("holygpu01"));
+        sh.set_jobs(vec![job("1", "gpunode01", "R")], None);
+        assert_eq!(sh.resolve_node().as_deref(), Some("gpunode01"));
     }
 
     #[test]
@@ -685,8 +685,8 @@ mod tests {
         let mut sh = NodePickerSheet::new("nb", None, "u".into());
         sh.enter_custom();
         assert!(sh.custom);
-        sh.node_buf = "  holygpu07  ".into();
-        assert_eq!(sh.resolve_node().as_deref(), Some("holygpu07"));
+        sh.node_buf = "  gpunode07  ".into();
+        assert_eq!(sh.resolve_node().as_deref(), Some("gpunode07"));
     }
 
     #[test]
