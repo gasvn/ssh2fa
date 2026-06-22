@@ -112,15 +112,20 @@ shorthand). The tap is general — it can hold any future casks/formulae too.
 Users install with:
 
 ```sh
-brew install --cask --no-quarantine gasvn/tap/ssh2fa
+# install + clear Gatekeeper + open (works on every Homebrew version):
+brew install --cask gasvn/tap/ssh2fa \
+  && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
+  && open /Applications/SSH2FA.app
 brew upgrade --cask ssh2fa            # update to the latest release
 brew uninstall --zap --cask ssh2fa    # full removal incl. Keychain creds
 ```
 
-`--no-quarantine` is **required** while the app is un-notarized: Homebrew
-quarantines casks by default, so without it Gatekeeper blocks the first launch
-(allow via System Settings → Privacy & Security → "Open Anyway"). The flag skips
-quarantine — same effect as `xattr -dr com.apple.quarantine`. Brew does **not**
+Because the app is un-notarized, Homebrew quarantines it on install, so the first
+launch is blocked until the quarantine flag is cleared. **Do not use the old
+`--no-quarantine` install flag — Homebrew removed it (newer versions error with
+`invalid option: --no-quarantine`).** Instead clear it after install with
+`xattr -dr com.apple.quarantine /Applications/SSH2FA.app` (as above), or allow it
+once via System Settings → Privacy & Security → "Open Anyway". Brew does **not**
 notarize; only a Developer ID + the notary service does (see above).
 
 **Each release — keep the cask in sync in BOTH repos:**

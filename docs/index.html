@@ -475,8 +475,10 @@
     <div class="panel active" id="tab-term">
       <div class="card">
         <p>Open <b>Terminal</b> (press <span class="mono">⌘ Space</span>, type <span class="mono">Terminal</span>, hit Enter), click <b>Copy</b>, paste, and press Enter. SSH2FA downloads, installs, and opens itself — no warnings, nothing else to click.</p>
-        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># Homebrew — also gives you `brew upgrade` later</span>
-brew install --cask --no-quarantine gasvn/tap/ssh2fa</div></div>
+        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># Homebrew — then `brew upgrade --cask ssh2fa` to update later</span>
+brew install --cask gasvn/tap/ssh2fa \
+  &amp;&amp; xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
+  &amp;&amp; open /Applications/SSH2FA.app</div></div>
         <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># No Homebrew? this one needs nothing extra</span>
 curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
   &amp;&amp; hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \

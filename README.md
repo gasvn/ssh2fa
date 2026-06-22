@@ -54,7 +54,7 @@ $ ssh gpu-04
 
 ## 60-second quickstart
 
-1. **Install** — `brew install --cask --no-quarantine gasvn/tap/ssh2fa`, or see [Install](#install) for the one-line script / DMG download.
+1. **Install** — see [Install](#install) below: Homebrew, a one-line script, or click-through. Pick one; each takes under a minute.
 2. **Add Host** → enter the host's **name, address, and your username** (or pick an existing ssh alias), then your **password** and **2FA secret** — type it, paste an `otpauth://` URL, or **scan the QR**. SSH2FA writes the SSH config for you and **test-logs-in before saving**.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
@@ -98,8 +98,10 @@ paste **one** block below, press Enter. SSH2FA downloads, installs, and opens
 itself — no warnings, nothing else to click.
 
 ```sh
-# If you use Homebrew (you also get `brew upgrade` later):
-brew install --cask --no-quarantine gasvn/tap/ssh2fa
+# Homebrew — installs it, clears Gatekeeper, opens it (then `brew upgrade --cask ssh2fa` to update):
+brew install --cask gasvn/tap/ssh2fa \
+  && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
+  && open /Applications/SSH2FA.app
 ```
 
 ```sh
