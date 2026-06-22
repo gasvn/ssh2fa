@@ -210,6 +210,17 @@
   .code{font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.75;background:var(--term);color:#dfe3ea;border-radius:10px;padding:15px 17px;overflow-x:auto;white-space:pre;box-shadow:var(--shadow-sm)}
   .code .c{color:var(--term-dim)}.code a{color:#7aa2ff}.code+.code{margin-top:10px}
   .ins p{color:var(--muted);font-size:14.5px;margin-top:14px}.ins p a{color:var(--accent);font-weight:600}
+  /* foolproof install guide */
+  .guide{max-width:820px;margin:0 auto}
+  .way{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 28px;box-shadow:var(--shadow-sm);margin-bottom:20px}
+  .way h3{font-size:16px;font-weight:700;display:flex;align-items:center;gap:9px;margin-bottom:13px}
+  .way h3 .tag{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:3px 8px;font-weight:600}
+  .way>p{color:var(--muted);font-size:14.5px;line-height:1.6;margin-bottom:14px}.way>p b{color:var(--ink);font-weight:600}
+  ol.steps-n{counter-reset:n;list-style:none;margin:0;padding:0}
+  ol.steps-n li{position:relative;padding:0 0 13px 36px;color:var(--muted);font-size:14.5px;line-height:1.55}
+  ol.steps-n li:last-child{padding-bottom:0}
+  ol.steps-n li::before{counter-increment:n;content:counter(n);position:absolute;left:0;top:-1px;width:23px;height:23px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:700;display:grid;place-items:center;font-family:'JetBrains Mono',monospace}
+  ol.steps-n b{color:var(--ink);font-weight:600}ol.steps-n a{color:var(--accent);font-weight:600}
 
   footer{border-top:1px solid var(--line);padding:44px 0 60px}
   .foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
@@ -439,30 +450,38 @@
 </div></section>
 
 <section id="install"><div class="wrap">
-  <div class="head reveal"><div class="kick">Get started</div><h2>Install in one command.</h2>
-    <p>Not notarized yet (the <a href="#support" class="accent">$99 goal</a>) — so each command below skips the Gatekeeper warning for you, no clicks. Prefer a GUI? Steps further down.</p></div>
-  <div class="reveal" style="max-width:860px;margin:0 auto 18px">
-    <div class="code"><span class="c"># Homebrew — one line, and you get `brew upgrade` for updates</span>
+  <div class="head reveal"><div class="kick">Get started</div><h2>Install SSH2FA.</h2>
+    <p>Pick either way — both take under a minute. It's not notarized yet (the <a href="#support" class="accent">$99 goal</a>), so these steps clear macOS's one-time "unverified developer" warning for you.</p></div>
+
+  <div class="guide">
+    <div class="way reveal">
+      <h3><span class="tag">easiest</span> Paste one line in Terminal</h3>
+      <p>Open <b>Terminal</b> — press <span class="mono">⌘ Space</span>, type <span class="mono">Terminal</span>, hit Enter. Copy <b>one whole block</b> below, paste it, press Enter. SSH2FA downloads, installs, and opens itself — no warnings, nothing else to click.</p>
+      <div class="code"><span class="c"># If you use Homebrew (you also get `brew upgrade` later):</span>
 brew install --cask --no-quarantine gasvn/tap/ssh2fa</div>
-  </div>
-  <div class="reveal" style="max-width:860px;margin:0 auto 46px">
-    <div class="code"><span class="c"># no Homebrew? one line — downloads, installs to /Applications, removes the quarantine flag, launches</span>
+      <div class="code"><span class="c"># No Homebrew? Use this instead — copy all 6 lines:</span>
 curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
   &amp;&amp; hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
   &amp;&amp; ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
   &amp;&amp; hdiutil detach /Volumes/SSH2FA -quiet \
   &amp;&amp; xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
   &amp;&amp; open /Applications/SSH2FA.app</div>
-  </div>
-  <div class="install">
-    <div class="ins reveal"><h3><span class="tag">gui · 1</span> Download &amp; drag</h3>
-      <p style="margin-top:0"><a href="https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg" class="accent" style="font-weight:600">Download SSH2FA.dmg</a> → open it → drag <b style="color:var(--ink)">SSH2FA.app</b> into <span class="mono">/Applications</span>.</p>
     </div>
-    <div class="ins reveal"><h3><span class="tag">gui · 2</span> First launch</h3>
-      <p style="margin-top:0">Double-click it. On the “Apple could not verify…” prompt click <b style="color:var(--ink)">Done</b>, then open <b style="color:var(--ink)">System Settings → Privacy &amp; Security → “Open Anyway.”</b></p>
+
+    <div class="way reveal">
+      <h3><span class="tag">no terminal</span> Or just click through it</h3>
+      <ol class="steps-n">
+        <li><a href="https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg">Download <b>SSH2FA.dmg</b></a> — it saves to your <b>Downloads</b> folder.</li>
+        <li>Double-click the downloaded <b>SSH2FA.dmg</b>. In the window that opens, <b>drag the SSH2FA icon onto the Applications folder</b> shown next to it.</li>
+        <li>Open your <b>Applications</b> folder and double-click <b>SSH2FA</b>. macOS shows “Apple could not verify…” — click <b>Done</b> (don't move it to Trash).</li>
+        <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll to the bottom. You'll see <i>“SSH2FA was blocked…”</i> — click <b>Open Anyway</b>, type your Mac password, then click <b>Open</b>.</li>
+        <li>That's it — SSH2FA's icon is now in your <b>menu bar</b> (top-right of the screen). It has no Dock icon; it lives up there.</li>
+      </ol>
     </div>
   </div>
-  <p class="reveal" style="max-width:860px;margin:30px auto 0;text-align:center;color:var(--faint);font-size:13.5px;line-height:1.7">Or build it yourself — a self-built app signed with your own free Apple ID has zero Gatekeeper friction: <span class="mono" style="color:var(--muted)">git clone https://github.com/gasvn/ssh2fa &amp;&amp; cd ssh2fa/auto2fa-mac &amp;&amp; ./package-app.sh</span></p>
+
+  <p class="reveal" style="max-width:820px;margin:28px auto 0;text-align:center;color:var(--muted);font-size:14.5px">Once it's open, click the <b style="color:var(--ink)">SSH2FA menu-bar icon → Add Host</b> to connect your first cluster.</p>
+  <p class="reveal" style="max-width:820px;margin:14px auto 0;text-align:center;color:var(--faint);font-size:13px;line-height:1.7">Prefer to build it yourself? <span class="mono" style="color:var(--muted)">git clone https://github.com/gasvn/ssh2fa &amp;&amp; cd ssh2fa/auto2fa-mac &amp;&amp; ./package-app.sh</span></p>
 </div></section>
 
 <footer><div class="wrap">

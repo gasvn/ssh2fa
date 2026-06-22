@@ -87,20 +87,23 @@ The app and daemon communicate over a unix-socket JSON-RPC at `~/.ssh2fa/ssh2fa.
 
 ## Install
 
-**Homebrew (recommended).** One line, and `brew upgrade` keeps it current:
+**Two ways — pick one. Both take under a minute.** SSH2FA isn't notarized yet
+(the [$99 goal](https://shgao.site/ssh2fa/#support)), so each one clears macOS's
+one-time "unverified developer" warning for you.
+
+### Easiest — paste one line in Terminal
+
+Open **Terminal** (press <kbd>⌘</kbd><kbd>Space</kbd>, type `Terminal`, hit Enter),
+paste **one** block below, press Enter. SSH2FA downloads, installs, and opens
+itself — no warnings, nothing else to click.
 
 ```sh
+# If you use Homebrew (you also get `brew upgrade` later):
 brew install --cask --no-quarantine gasvn/tap/ssh2fa
 ```
 
-`--no-quarantine` skips the macOS Gatekeeper warning — the app isn't notarized yet
-(the [$99 goal](https://shgao.site/ssh2fa/#support)). Without that flag, allow the
-first launch via **System Settings → Privacy & Security → "Open Anyway."**
-
-**Or one command (no Homebrew).** Downloads, installs to `/Applications`, clears
-the quarantine flag (**no warning**), and launches it:
-
 ```sh
+# No Homebrew? Use this instead — copy all 6 lines:
 curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
   && hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
   && ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
@@ -109,26 +112,22 @@ curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o 
   && open /Applications/SSH2FA.app
 ```
 
-**Or from a release (GUI):** download `SSH2FA.dmg` from
-[Releases](https://github.com/gasvn/ssh2fa/releases), drag `SSH2FA.app` to
-`/Applications`, and launch it. On first run the app installs the bundled daemon
-and registers the `com.ssh2fa.daemon` LaunchAgent for you — nothing else to set
-up. Then use **Add Host** to register a host's credentials (stored in the
-Keychain).
+### No Terminal? Just click through it
 
-**If the release is notarized** (Developer ID), it just opens. **If it isn't** (a
-free, un-notarized build), Gatekeeper blocks the first launch — open it once via
-**System Settings → Privacy & Security → "Open Anyway"**, or clear the quarantine
-flag yourself:
+1. **[Download SSH2FA.dmg](https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg)** — it saves to your **Downloads** folder.
+2. Double-click **SSH2FA.dmg**. In the window that opens, **drag the SSH2FA icon onto the Applications folder** shown beside it.
+3. Open your **Applications** folder and double-click **SSH2FA**. macOS says *"Apple could not verify…"* — click **Done** (not "Move to Trash").
+4. Open **System Settings → Privacy & Security** and scroll to the bottom. You'll see *"SSH2FA was blocked…"* — click **Open Anyway**, type your Mac password, then click **Open**.
+5. Done — SSH2FA's icon is now in your **menu bar** (top-right of the screen). It has no Dock icon; it lives up there.
 
-```sh
-xattr -dr com.apple.quarantine /Applications/SSH2FA.app
-```
+Once it's open, click the **SSH2FA menu-bar icon → Add Host** to connect your first
+cluster (credentials are stored in the macOS Keychain). On first run the app also
+installs its background helper (LaunchAgent `com.ssh2fa.daemon`) — nothing for you
+to configure.
 
-After that it launches normally. See [docs/RELEASE.md](docs/RELEASE.md) for why
-notarization needs a paid Apple Developer account (and how to build/distribute
-without one — a self-built app signed with your own free Apple ID has no
-Gatekeeper friction at all).
+> **When it's notarized** (the $99 Developer ID), all of this collapses to
+> "download → open." See [docs/RELEASE.md](docs/RELEASE.md) for the notarization
+> setup and building from source (a self-built app has zero Gatekeeper friction).
 
 ## Requirements
 
