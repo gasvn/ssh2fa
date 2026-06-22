@@ -2,7 +2,7 @@ cask "ssh2fa" do
   version "1.0.0"
   # Set per release:  shasum -a 256 dist/SSH2FA.dmg
   # (package-app.sh prints this; the release step pastes it here.)
-  sha256 "7d70159355577f4d09cfed2c40243a6fb95ed4fb274a74bc230f45d0223f5b4f"
+  sha256 "dff967cab304d61af31cd920937f02c220b083b3cce7f01be2efd13cf39d59a4"
 
   url "https://github.com/gasvn/ssh2fa/releases/download/v#{version}/SSH2FA.dmg",
       verified: "github.com/gasvn/ssh2fa/"
