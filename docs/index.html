@@ -257,7 +257,7 @@
   <h1>Log into your cluster once. Stay connected.</h1>
   <p class="sub">SSH2FA keeps a warm connection to your 2FA-gated hosts and answers the Duo / TOTP login for you — so your own <span class="mono">ssh</span> connects <b>instantly</b>, with no code to retype and zero ssh-config editing.</p>
   <div class="cta">
-    <a class="btn btn-solid" href="https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg">Download for macOS</a>
+    <a class="btn btn-solid" id="dl" href="https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg">Download for macOS</a>
     <a class="btn btn-out" href="https://github.com/gasvn/ssh2fa">View on GitHub</a>
   </div>
   <div class="micro">v1.0.0 · free &amp; open source · universal (Apple Silicon + Intel) · macOS 26 · MIT</div>
@@ -468,7 +468,7 @@ curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o 
   &amp;&amp; open /Applications/SSH2FA.app</div>
     </div>
 
-    <div class="way reveal">
+    <div class="way reveal" id="clickthrough">
       <h3><span class="tag">no terminal</span> Or just click through it</h3>
       <ol class="steps-n">
         <li><a href="https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg">Download <b>SSH2FA.dmg</b></a> — it saves to your <b>Downloads</b> folder.</li>
@@ -521,6 +521,9 @@ curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o 
       if(e.isIntersecting){navmap.forEach(a=>a.classList.remove('active'));const a=navmap.get(e.target.id);if(a)a.classList.add('active')}}),
       {rootMargin:'-45% 0px -50% 0px'});
     navmap.forEach((_,id)=>{const s=document.getElementById(id);if(s)spy.observe(s)})}
+  // hero Download: let the .dmg download proceed, then jump to the install steps
+  const dl=document.getElementById('dl'),ct=document.getElementById('clickthrough');
+  if(dl&&ct)dl.addEventListener('click',()=>setTimeout(()=>ct.scrollIntoView({behavior:'smooth',block:'start'}),250));
 </script>
 </body>
 </html>
