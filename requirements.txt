@@ -1,0 +1,6 @@
+textual>=0.40
+rich
+pyotp
+pexpect
+python-dotenv
+keyring

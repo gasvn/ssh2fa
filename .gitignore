@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Xcode-generated artifacts (build script regenerates from project.yml)
+auto2fa-mac/Auto2FA.xcodeproj/
+auto2fa-mac/Auto2FA.xcworkspace/
+auto2fa-mac/build/
+auto2fa-mac/DerivedData/
+*.xcuserstate
+
+# Virtual envs / packaging
+.env
+.venv
+env/
+venv/
+
+# Test / cache
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+htmlcov/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Project-specific local debug / backups (kept out of repo on purpose)
+debug_*.py
+*.bak
+*.rich.bak
+auto2fa-mac/build_latest/
+auto2fa-rs/dist/
+auto2fa-rs/target/
+
+# Visual-companion brainstorm artifacts
+.superpowers/

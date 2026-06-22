@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/a2fa-core", "crates/a2fa-daemon", "crates/a2fa-cli", "crates/a2fa-tui"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.78"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+log = "0.4"
+simplelog = "0.12"
+regex = "1"
+
+# Release build optimization. Smaller + faster binary for distribution.
+#
+# IMPORTANT: panic is deliberately LEFT AT THE DEFAULT ("unwind"). The daemon's
+# entire stability model depends on `std::panic::catch_unwind` (per-tick in the
+# heartbeat + tunnel-maintenance loops) and poison-tolerant lock recovery — all
+# of which require stack unwinding. Setting `panic = "abort"` would turn a single
+# recoverable panic into a whole-process abort → launchd respawn → boot spawn
+# storm (the exact machine-hang/crashloop class the 2026-06-07 audit fixed). DO
+# NOT add `panic = "abort"`.
+[profile.release]
+opt-level = 3
+lto = true            # link-time optimization across crates (smaller, faster)
+codegen-units = 1     # max optimization (slower compile, better runtime/size)
+strip = true          # strip symbols (smaller binary)

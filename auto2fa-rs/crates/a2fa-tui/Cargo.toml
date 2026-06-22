@@ -1,0 +1,20 @@
+[package]
+name = "a2fa-tui"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "a2fa-tui"
+path = "src/main.rs"
+
+[dependencies]
+a2fa-core = { path = "../a2fa-core" }
+anyhow.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+
+[lib]
+name = "a2fa_tui"
+path = "src/lib.rs"

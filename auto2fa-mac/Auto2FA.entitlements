@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for Auto2FA (required for notarization).
+
+  Intentionally NOT sandboxed: the app installs + launches the a2fa-daemon,
+  writes ~/.auto2fa and ~/Library/LaunchAgents, and runs launchctl — all of
+  which the App Sandbox forbids. Non-sandboxed apps already have full network
+  + process-spawn access, so no com.apple.security.* exceptions are needed.
+  Both the app and the bundled daemon are signed by the same team, so library
+  validation passes without disable-library-validation.
+
+  Add capabilities here only if a future feature needs them.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Required so the hardened-runtime app can drive Terminal.app via
+         AppleScript (the "Open Terminal" host action). Without this, Apple
+         Events are blocked outright under hardened runtime. The user still
+         grants per-target consent via the Automation TCC prompt. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
