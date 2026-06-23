@@ -2,10 +2,9 @@ cask "ssh2fa" do
   version "1.0.0"
   # Set per release:  shasum -a 256 dist/SSH2FA.dmg
   # (package-app.sh prints this; the release step pastes it here.)
-  sha256 "dff967cab304d61af31cd920937f02c220b083b3cce7f01be2efd13cf39d59a4"
+  sha256 "89aaab99196404a20fc6c3383ec6f55cc5df2bd354d433addb2bd24e255ec1d3"
 
-  url "https://github.com/gasvn/ssh2fa/releases/download/v#{version}/SSH2FA.dmg",
-      verified: "github.com/gasvn/ssh2fa/"
+  url "https://github.com/gasvn/ssh2fa/releases/download/v#{version}/SSH2FA.dmg"
   name "SSH2FA"
   desc "Keeps SSH ControlMaster pools warm and auto-answers Duo/TOTP 2FA logins"
   homepage "https://github.com/gasvn/ssh2fa"
