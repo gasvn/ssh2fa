@@ -120,7 +120,7 @@ curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o 
 2. Double-click **SSH2FA.dmg**. In the window that opens, **drag the SSH2FA icon onto the Applications folder** shown beside it.
 3. Open your **Applications** folder and double-click **SSH2FA**. macOS says *"Apple could not verify…"* — click **Done** (not "Move to Trash").
 4. Open **System Settings → Privacy & Security** and scroll to the bottom. You'll see *"SSH2FA was blocked…"* — click **Open Anyway**, type your Mac password, then click **Open**.
-5. Done — SSH2FA's icon is now in your **menu bar** (top-right of the screen). It has no Dock icon; it lives up there.
+5. Done — SSH2FA is running. Look for its icon in your **menu bar** (top-right of the screen).
 
 Once it's open, click the **SSH2FA menu-bar icon → Add Host** to connect your first
 cluster (credentials are stored in the macOS Keychain). On first run the app also
