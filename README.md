@@ -98,7 +98,7 @@ paste **one** block below, press Enter. SSH2FA downloads, installs, and opens
 itself — no warnings, nothing else to click.
 
 ```sh
-# Homebrew — installs it, clears Gatekeeper, opens it (then `brew upgrade --cask ssh2fa` to update):
+# Homebrew — installs it, clears Gatekeeper, opens it (then `brew reinstall --cask ssh2fa` to update):
 brew install --cask gasvn/tap/ssh2fa \
   && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
   && open /Applications/SSH2FA.app

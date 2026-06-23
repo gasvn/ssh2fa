@@ -116,7 +116,7 @@ Users install with:
 brew install --cask gasvn/tap/ssh2fa \
   && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
   && open /Applications/SSH2FA.app
-brew upgrade --cask ssh2fa            # update to the latest release
+brew reinstall --cask ssh2fa          # update to the latest release
 brew uninstall --zap --cask ssh2fa    # full removal incl. Keychain creds
 ```
 
@@ -128,12 +128,13 @@ launch is blocked until the quarantine flag is cleared. **Do not use the old
 once via System Settings → Privacy & Security → "Open Anyway". Brew does **not**
 notarize; only a Developer ID + the notary service does (see above).
 
-**Each release — keep the cask in sync in BOTH repos:**
-
-1. After `package-app.sh`, copy the printed **DMG sha256**.
-2. Bump `version` + `sha256` in **`Casks/ssh2fa.rb`** (this repo) **and** in
-   `gasvn/homebrew-tap`'s `Casks/ssh2fa.rb`, then push the tap. (Both must match
-   the uploaded DMG or `brew install` fails the checksum.)
+**Cask maintenance — none per release.** The cask uses `version :latest` +
+`sha256 :no_check` and points at `releases/latest/download/SSH2FA.dmg`, because the
+DMG isn't reproducible (its checksum changes every build) and would otherwise need
+a manual re-sync on every release. So a new release needs **no cask change** — it's
+picked up automatically. (Because it's unversioned, users update with
+`brew reinstall --cask ssh2fa`, not `brew upgrade`.) Keep the copy in this repo and
+the one in `gasvn/homebrew-tap` identical when you *do* edit the cask.
 
 The cask quits the app + unloads the LaunchAgent on uninstall; `--zap` also
 trashes `~/.ssh2fa`, the LaunchAgent plist, prefs, and every Keychain credential

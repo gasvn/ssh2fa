@@ -1,18 +1,16 @@
 cask "ssh2fa" do
-  version "1.0.0"
-  # Set per release:  shasum -a 256 dist/SSH2FA.dmg
-  # (package-app.sh prints this; the release step pastes it here.)
-  sha256 "89aaab99196404a20fc6c3383ec6f55cc5df2bd354d433addb2bd24e255ec1d3"
+  version :latest
+  # The DMG isn't reproducible (its checksum changes on every build), so we track
+  # the latest release asset directly and skip the checksum — transport security
+  # is GitHub's HTTPS, and the app is un-notarized regardless. This also means the
+  # cask never needs a per-release sha bump. Update an existing install with:
+  #   brew reinstall --cask ssh2fa     (or: brew upgrade --cask --greedy)
+  sha256 :no_check
 
-  url "https://github.com/gasvn/ssh2fa/releases/download/v#{version}/SSH2FA.dmg"
+  url "https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg"
   name "SSH2FA"
   desc "Keeps SSH ControlMaster pools warm and auto-answers Duo/TOTP 2FA logins"
   homepage "https://github.com/gasvn/ssh2fa"
-
-  livecheck do
-    url :url
-    strategy :github_latest
-  end
 
   depends_on macos: :sonoma
 
