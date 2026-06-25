@@ -51,8 +51,8 @@ final class SSHConfigGenTests: XCTestCase {
 
     /// ssh Host matching is case-insensitive — the conflict check must be too.
     func testConflictDetectionCaseInsensitive() {
-        XCTAssertTrue(SSHConfigManager.aliasConflicts("Cannon", userAliases: ["cluster01"]))
-        XCTAssertTrue(SSHConfigManager.aliasConflicts("cluster01", userAliases: ["CANNON"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("Cluster01", userAliases: ["cluster01"]))
+        XCTAssertTrue(SSHConfigManager.aliasConflicts("cluster01", userAliases: ["CLUSTER01"]))
     }
 
     /// A newline in HostName/User must not inject a second config DIRECTIVE line

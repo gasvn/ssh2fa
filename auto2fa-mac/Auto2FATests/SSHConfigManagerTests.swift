@@ -1,6 +1,46 @@
 import XCTest
 
 final class SSHConfigManagerTests: XCTestCase {
+    // BLOCKER regression: a guided host lives in the sidecar BEFORE the daemon
+    // registers it (registration happens only after the mandatory test-login).
+    // The merge must still emit a Host block for it, or `ssh -F` can't resolve
+    // the alias during the test and the test can never pass.
+    func testMergedManagedHostsEmitsSidecarOnlyAlias() {
+        let sidecar = [ManagedHostConn(alias: "cannon", hostName: "login.example.edu", user: "alice", port: 22)]
+        let merged = SSHConfigManager.mergedManagedHosts(registered: [], sidecar: sidecar)
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.alias, "cannon")
+        XCTAssertEqual(merged.first?.conn?.hostName, "login.example.edu")
+        let conf = SSHConfigManager.generateManagedConf(hosts: merged, dir: "/d")
+        XCTAssertTrue(conf.contains("Host cannon"))
+        XCTAssertTrue(conf.contains("HostName login.example.edu"))
+    }
+
+    func testMergedManagedHostsEnrichesRegisteredAndDoesNotDuplicate() {
+        let sidecar = [ManagedHostConn(alias: "h1", hostName: "h1.example.edu", user: "u", port: 2222)]
+        let merged = SSHConfigManager.mergedManagedHosts(registered: ["h1", "h2"], sidecar: sidecar)
+        XCTAssertEqual(merged.count, 2)                        // h1 not duplicated
+        XCTAssertEqual(merged.first { $0.alias == "h1" }?.conn?.port, 2222)  // enriched
+        XCTAssertNil(merged.first { $0.alias == "h2" }?.conn)  // registered-only stays bare
+    }
+
+    func testSanitizeAliasIsAsciiAndStripsLeadingPunctuation() {
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias("My Cluster"), "My-Cluster")
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias("café"), "caf")         // non-ASCII dropped
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias(".hidden"), "hidden")   // leading dot stripped
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias("-dash"), "dash")       // leading dash stripped
+        XCTAssertEqual(SSHConfigManager.sanitizeAlias("ok_1.2-3"), "ok_1.2-3")
+    }
+
+    func testManagedConfWriteCreatesMissingSSHDir() throws {
+        let base = NSTemporaryDirectory() + "ssh2fa-test-" + UUID().uuidString
+        let dir = base + "/.ssh"                  // parent dir does NOT exist yet
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir))
+        _ = try SSHConfigManager.writeManagedConf(hosts: [.init(alias: "a", conn: nil)], dir: dir)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir + "/ssh2fa.conf"))
+    }
+
     func testGeneratedConfIsSortedWithCorrectControlPath() {
         let out = SSHConfigManager.generateManagedConf(
             hosts: [.init(alias: "b", conn: nil), .init(alias: "a", conn: nil)], dir: "/d")

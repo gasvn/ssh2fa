@@ -7,7 +7,7 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testCaseInsensitiveSubstring() {
-        XCTAssertTrue(SearchFilter.matches(query: "KEMP", in: ["login01-login"]))
+        XCTAssertTrue(SearchFilter.matches(query: "LOGIN", in: ["login01-login"]))
         XCTAssertTrue(SearchFilter.matches(query: "node01", in: [nil, "Node01", nil]))
     }
 

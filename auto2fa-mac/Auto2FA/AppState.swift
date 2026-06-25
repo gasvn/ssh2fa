@@ -822,13 +822,11 @@ final class AppState: ObservableObject {
     func syncManagedSSHConfig() {
         let dir = SSHPaths.sshDir()
         let sidecar = ManagedHostStore.load(from: managedHostsURL)
-        let byAlias = Dictionary(sidecar.map { ($0.alias, $0) }, uniquingKeysWith: { a, _ in a })
-        let managed: [SSHConfigManager.ManagedHost] = hosts.map { h in
-            if let c = byAlias[h.host] {
-                return .init(alias: h.host, conn: .init(hostName: c.hostName, user: c.user, port: c.port))
-            }
-            return .init(alias: h.host, conn: nil)
-        }
+        // Union of registered hosts + sidecar-only aliases, so a guided host
+        // pending its test-login (in the sidecar but not yet registered) still
+        // gets a Host block that `ssh -F` can resolve during the test.
+        let managed = SSHConfigManager.mergedManagedHosts(registered: hosts.map { $0.host },
+                                                          sidecar: sidecar)
         _ = try? SSHConfigManager.writeManagedConf(hosts: managed, dir: dir)
         _ = try? SSHConfigManager.writeDaemonWrapper(dir: dir)
     }

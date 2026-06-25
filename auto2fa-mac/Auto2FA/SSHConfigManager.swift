@@ -50,6 +50,27 @@ enum SSHConfigManager {
         return header + "\n" + blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
     }
 
+    /// Merge the daemon's registered hosts with the sidecar (alias→conn) into the
+    /// list to render. Emits BOTH already-registered hosts AND sidecar-only
+    /// aliases. A guided host is written to the sidecar BEFORE it's registered
+    /// with the daemon (registration happens only after the mandatory
+    /// test-login), so without the sidecar-only pass `ssh -F` cannot resolve the
+    /// alias during the test and the test can never pass.
+    static func mergedManagedHosts(registered: [String], sidecar: [ManagedHostConn]) -> [ManagedHost] {
+        let byAlias = Dictionary(sidecar.map { ($0.alias, $0) }, uniquingKeysWith: { a, _ in a })
+        var out: [ManagedHost] = registered.map { alias in
+            if let c = byAlias[alias] {
+                return .init(alias: alias, conn: .init(hostName: c.hostName, user: c.user, port: c.port))
+            }
+            return .init(alias: alias, conn: nil)
+        }
+        let reg = Set(registered)
+        for c in sidecar where !reg.contains(c.alias) {
+            out.append(.init(alias: c.alias, conn: .init(hostName: c.hostName, user: c.user, port: c.port)))
+        }
+        return out
+    }
+
     /// Collapse any CR/LF in a config value to nothing — a newline would inject
     /// a second directive line into the generated config.
     private static func oneLine(_ s: String) -> String {
@@ -74,10 +95,16 @@ enum SSHConfigManager {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let collapsed = trimmed.replacingOccurrences(of: "\\s+", with: "-",
                                                      options: .regularExpression)
-        let allowed = collapsed.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0) || "-._".unicodeScalars.contains($0)
+        // ASCII-only so the app agrees with the daemon's host-name validator
+        // (a non-ASCII letter passes CharacterSet.alphanumerics here but the
+        // daemon rejects it, surfacing only as a cryptic error at test time).
+        let allowed = collapsed.unicodeScalars.filter { s in
+            (s.value < 128 && CharacterSet.alphanumerics.contains(s)) || "-._".unicodeScalars.contains(s)
         }
-        return String(String.UnicodeScalarView(allowed))
+        var result = String(String.UnicodeScalarView(allowed))
+        // A Host token must start with an alphanumeric/'_', not '.' or '-'.
+        while let f = result.first, f == "." || f == "-" { result.removeFirst() }
+        return result
     }
 
     /// True iff `alias` is already a Host the USER defined in their own config.
@@ -204,6 +231,14 @@ enum SSHConfigManager {
     }
 
     private static func atomicWrite(_ content: String, to path: String, perms: Int) throws {
+        // A brand-new Mac that never used ssh has no ~/.ssh — create the parent
+        // dir (0700) first, or the write throws and managed-config sync fails
+        // silently (the guided test-login then can't resolve the alias).
+        let parent = (path as NSString).deletingLastPathComponent
+        if !parent.isEmpty, !FileManager.default.fileExists(atPath: parent) {
+            try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
         let tmp = path + ".ssh2fa-tmp"
         // Never strand a partial temp file: on a mid-write failure the deferred
         // remove cleans it up; on success the move/replace already consumed it

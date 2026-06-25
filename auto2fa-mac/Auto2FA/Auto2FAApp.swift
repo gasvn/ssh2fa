@@ -89,7 +89,7 @@ struct Auto2FAApp: App {
                 Button("Command Palette…") {
                     NotificationCenter.default.post(name: .a2fShowPalette, object: nil)
                 }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .keyboardShortcut("k", modifiers: [.command])   // ⌘K — matches the docs/site
             }
             CommandGroup(after: .saveItem) {
                 Button("Export Tunnels…") {
