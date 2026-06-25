@@ -114,13 +114,15 @@ SIGN_EXTRA=( --options runtime --timestamp )
 
 # Sign inside-out: the embedded daemon first (pinned identifier → stable
 # Keychain ACL), then the app bundle with entitlements.
-codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" "${SIGN_EXTRA[@]}" \
+# `${arr[@]+"${arr[@]}"}` expands to nothing when the array is empty (ad-hoc:
+# SIGN_EXTRA=()) instead of tripping `set -u`'s "unbound variable" on bash 3.2.
+codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" ${SIGN_EXTRA[@]+"${SIGN_EXTRA[@]}"} \
   "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
 echo "  signed embedded daemon"
 
-APP_SIGN_EXTRA=( "${SIGN_EXTRA[@]}" )
+APP_SIGN_EXTRA=( ${SIGN_EXTRA[@]+"${SIGN_EXTRA[@]}"} )
 [ "$SIGN_ID" != "-" ] && APP_SIGN_EXTRA+=( --entitlements "$ENTITLEMENTS" )
-codesign --force --sign "$SIGN_ID" "${APP_SIGN_EXTRA[@]}" "$STAGE_APP"
+codesign --force --sign "$SIGN_ID" ${APP_SIGN_EXTRA[@]+"${APP_SIGN_EXTRA[@]}"} "$STAGE_APP"
 codesign --verify --strict --deep "$STAGE_APP" 2>/dev/null \
   && echo "  signed + verified $APP_NAME.app" || echo "  WARN: app verify failed"
 
