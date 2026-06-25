@@ -12,7 +12,9 @@ cask "ssh2fa" do
   desc "Keeps SSH ControlMaster pools warm and auto-answers Duo/TOTP 2FA logins"
   homepage "https://github.com/gasvn/ssh2fa"
 
-  depends_on macos: :sonoma
+  # macOS 26 (Tahoe) is the real floor — the app's deployment target is 26.0.
+  # A bare symbol means ">=", so this refuses install on anything older.
+  depends_on macos: ">= :tahoe"
 
   app "SSH2FA.app"
 

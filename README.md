@@ -47,7 +47,7 @@ $ ssh gpu-04
 
 **Set up & stay safe**
 - 🚀 **Zero-config setup** — add a host by **name, address, and username**; SSH2FA writes the SSH config for you, so you never need to know or edit `~/.ssh/config`. Already have aliases? **One-click import** reads them from your config.
-- 📷 **QR / paste the secret** — scan a Duo / TOTP **QR code**, or paste the `otpauth://` URL, to capture the 2FA secret (no Base32 to type).
+- 📷 **QR / paste the secret** — screenshot a Duo / TOTP **QR code** to the clipboard and SSH2FA reads it, or paste the `otpauth://` URL, to capture the 2FA secret (no Base32 to type).
 - 🔒 **Locked down** — passwords and TOTP secrets live in the macOS **Keychain**; an optional **Touch ID** lock gates revealing a credential. No telemetry.
 - 🩺 **Safe by default** — a Troubleshoot panel runs health checks, hosts are **test-logged-in before saving** (never a lockout), and you're warned if a host drifts out of your ssh config.
 - 🍎 **Native macOS 26** — Liquid Glass UI, universal binary, iCloud preference sync, update notifications.
@@ -87,9 +87,12 @@ The app and daemon communicate over a unix-socket JSON-RPC at `~/.ssh2fa/ssh2fa.
 
 ## Install
 
+**Requires macOS 26 (Tahoe) or later** — on older macOS the app cannot launch at all.
+
 **Two ways — pick one. Both take under a minute.** SSH2FA isn't notarized yet
 (the [$99 goal](https://shgao.site/ssh2fa/#support)), so each one clears macOS's
-one-time "unverified developer" warning for you.
+one-time "unverified developer" warning for you. **No Homebrew? Use the second
+block** — it needs nothing extra.
 
 ### Easiest — paste one line in Terminal
 
@@ -105,13 +108,14 @@ brew install --cask gasvn/tap/ssh2fa \
 ```
 
 ```sh
-# No Homebrew? Use this instead — copy all 6 lines:
-curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
-  && hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
-  && ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
-  && hdiutil detach /Volumes/SSH2FA -quiet \
+# No Homebrew needed (admin account; auto-cleans its temp mount) — copy the whole block:
+d="$(mktemp -d)" \
+  && curl -fL --retry 3 --retry-all-errors https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o "$d/SSH2FA.dmg" \
+  && hdiutil attach "$d/SSH2FA.dmg" -nobrowse -quiet -mountpoint "$d/mnt" \
+  && ditto "$d/mnt/SSH2FA.app" /Applications/SSH2FA.app \
   && xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
-  && open /Applications/SSH2FA.app
+  && open /Applications/SSH2FA.app; \
+  hdiutil detach "$d/mnt" -quiet 2>/dev/null; rm -rf "$d"
 ```
 
 ### No Terminal? Just click through it

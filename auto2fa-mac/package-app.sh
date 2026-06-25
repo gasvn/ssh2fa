@@ -41,16 +41,27 @@ rm -rf "$DIST" "$DD"; mkdir -p "$DIST"
 echo "→ building a2fa-daemon (release)"
 ( cd "$RS_DIR" && cargo build --release --target "$ARM_TARGET" -p a2fa-daemon )
 DAEMON_UNIVERSAL="$DIST/ssh2fa-daemon"
+# The app binary is forced universal (ARCHS below), so the embedded daemon MUST be
+# universal too or the .app is broken on Intel. Auto-install the x86_64 target if
+# missing; hard-fail if that can't be done (set AUTO2FA_ALLOW_ARM64_ONLY=1 to
+# deliberately ship an arm64-only build).
+if ! rustup target list --installed 2>/dev/null | grep -q "^$X86_TARGET"; then
+  echo "  x86_64-apple-darwin target missing — adding it (needed for a universal daemon)"
+  rustup target add "$X86_TARGET" || true
+fi
 if rustup target list --installed 2>/dev/null | grep -q "^$X86_TARGET"; then
   ( cd "$RS_DIR" && cargo build --release --target "$X86_TARGET" -p a2fa-daemon )
   lipo -create -output "$DAEMON_UNIVERSAL" \
     "$RS_DIR/target/$ARM_TARGET/release/ssh2fa-daemon" \
     "$RS_DIR/target/$X86_TARGET/release/ssh2fa-daemon"
   echo "  universal daemon (arm64 + x86_64)"
-else
+elif [ "${AUTO2FA_ALLOW_ARM64_ONLY:-0}" = "1" ]; then
   cp "$RS_DIR/target/$ARM_TARGET/release/ssh2fa-daemon" "$DAEMON_UNIVERSAL"
-  echo "  NOTE: x86_64-apple-darwin not installed — arm64-only daemon."
-  echo "        run 'rustup target add x86_64-apple-darwin' for a universal build."
+  echo "  WARNING: shipping an ARM64-ONLY daemon (AUTO2FA_ALLOW_ARM64_ONLY=1). The app will NOT work on Intel."
+else
+  echo "ERROR: cannot build a universal daemon — x86_64-apple-darwin target unavailable." >&2
+  echo "       run 'rustup target add x86_64-apple-darwin', or set AUTO2FA_ALLOW_ARM64_ONLY=1 to ship arm64-only." >&2
+  exit 1
 fi
 chmod +x "$DAEMON_UNIVERSAL"
 

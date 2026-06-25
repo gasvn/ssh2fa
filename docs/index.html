@@ -398,9 +398,9 @@
       <div class="copy">
         <div class="rk"><span class="dot"></span>2FA SETUP</div>
         <h3>Add a host's 2FA in one scan.</h3>
-        <p>Enrolling a new host? Point SSH2FA at the Duo / TOTP QR your cluster shows you and the secret is captured straight into the Keychain — no long Base32 string to copy by hand, and no typos to lock you out.</p>
+        <p>Enrolling a new host? Screenshot the Duo / TOTP QR to your clipboard (<span class="mono">⌘⇧⌃4</span>) and SSH2FA reads the secret straight into the Keychain — no long Base32 string to copy by hand, and no typos to lock you out.</p>
         <ul>
-          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Scan from the screen or drop in an image</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Screenshot the QR to the clipboard, then "Scan QR from clipboard"</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Parses the <span class="mono">otpauth://</span> secret automatically</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Stored in the Keychain, never in plain text</li>
         </ul>
@@ -464,7 +464,7 @@
 
 <section id="install"><div class="wrap">
   <div class="head reveal"><div class="kick">Get started</div><h2>Install SSH2FA.</h2>
-    <p>Pick a method. It's not notarized yet (the <a href="#support" class="accent">$99 goal</a>), so each one clears macOS's one-time "unverified developer" warning for you.</p></div>
+    <p>Requires <b>macOS 26 (Tahoe)</b> or later. Pick a method below — it's not notarized yet (the <a href="#support" class="accent">$99 goal</a>), so each one clears macOS's one-time "unverified developer" warning for you.</p></div>
 
   <div class="installer reveal">
     <div class="tabs" role="tablist">
@@ -474,18 +474,19 @@
 
     <div class="panel active" id="tab-term">
       <div class="card">
-        <p>Open <b>Terminal</b> (press <span class="mono">⌘ Space</span>, type <span class="mono">Terminal</span>, hit Enter), click <b>Copy</b>, paste, and press Enter. SSH2FA downloads, installs, and opens itself — no warnings, nothing else to click.</p>
-        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># Homebrew — then `brew reinstall --cask ssh2fa` to update later</span>
+        <p>Open <b>Terminal</b> (press <span class="mono">⌘ Space</span>, type <span class="mono">Terminal</span>, hit Enter), click <b>Copy</b> on whichever applies, paste, and press Enter. SSH2FA downloads, installs, and opens itself — no warnings, nothing else to click. <b>No Homebrew? Use the second command</b> — it needs nothing extra.</p>
+        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># Have Homebrew? (then `brew reinstall --cask ssh2fa` to update later)</span>
 brew install --cask gasvn/tap/ssh2fa \
   &amp;&amp; xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
   &amp;&amp; open /Applications/SSH2FA.app</div></div>
-        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># No Homebrew? this one needs nothing extra</span>
-curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o /tmp/SSH2FA.dmg \
-  &amp;&amp; hdiutil attach /tmp/SSH2FA.dmg -nobrowse -quiet \
-  &amp;&amp; ditto /Volumes/SSH2FA/SSH2FA.app /Applications/SSH2FA.app \
-  &amp;&amp; hdiutil detach /Volumes/SSH2FA -quiet \
+        <div class="cmd"><button class="cp" type="button">Copy</button><div class="code"><span class="c"># No Homebrew needed (admin account; auto-cleans its temp mount)</span>
+d="$(mktemp -d)" \
+  &amp;&amp; curl -fL --retry 3 --retry-all-errors https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o "$d/SSH2FA.dmg" \
+  &amp;&amp; hdiutil attach "$d/SSH2FA.dmg" -nobrowse -quiet -mountpoint "$d/mnt" \
+  &amp;&amp; ditto "$d/mnt/SSH2FA.app" /Applications/SSH2FA.app \
   &amp;&amp; xattr -dr com.apple.quarantine /Applications/SSH2FA.app \
-  &amp;&amp; open /Applications/SSH2FA.app</div></div>
+  &amp;&amp; open /Applications/SSH2FA.app; \
+  hdiutil detach "$d/mnt" -quiet 2>/dev/null; rm -rf "$d"</div></div>
       </div>
     </div>
 
@@ -498,6 +499,7 @@ curl -fL https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg -o 
           <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll to the bottom. You'll see <i>“SSH2FA was blocked…”</i> — click <b>Open Anyway</b>, type your Mac password, then click <b>Open</b>.</li>
           <li>That's it — SSH2FA is running. Look for its icon in your <b>menu bar</b> (top-right of the screen).</li>
         </ol>
+        <p style="color:var(--faint);font-size:13px;margin-top:14px">Nothing in the menu bar after a few seconds? The bundled helper can stay quarantined on this path — run <span class="mono">xattr -dr com.apple.quarantine /Applications/SSH2FA.app</span> once in Terminal, then reopen SSH2FA.</p>
       </div>
     </div>
   </div>
