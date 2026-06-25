@@ -182,6 +182,22 @@ final class DaemonProcess {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Best-effort: strip the Gatekeeper quarantine flag from this .app bundle so
+    /// the embedded, un-notarized daemon (run in place from Contents/Resources)
+    /// isn't refused at exec. The GUI "Open Anyway" install path clears only the
+    /// app shell; the Terminal/brew paths run `xattr -dr` themselves.
+    nonisolated static func clearBundleQuarantine() {
+        let bundlePath = Bundle.main.bundlePath
+        guard bundlePath.hasSuffix(".app") else { return }
+        DaemonProcess.runProcess("/usr/bin/xattr", ["-dr", "com.apple.quarantine", bundlePath])
+    }
+
+    /// True iff launchd has the service loaded in this user's GUI domain — the
+    /// plist file merely existing does NOT imply it was loaded.
+    nonisolated private static func serviceLoaded(_ target: String) -> Bool {
+        runLaunchctl(["print", target]) == 0
+    }
+
     /// First-run / post-update install: register the per-user LaunchAgent that
     /// keeps the daemon running (RunAtLoad + KeepAlive) and re-adopts live
     /// masters across reboots.
@@ -207,6 +223,9 @@ final class DaemonProcess {
             NSLog("[SSH2FA] no bundled daemon (dev build) — skipping first-run install")
             return
         }
+        // GUI installs ("Open Anyway") clear quarantine on the app shell only;
+        // the embedded daemon can stay quarantined → launchd's exec is refused.
+        DaemonProcess.clearBundleQuarantine()
         let home = NSHomeDirectory()
         let autoDir = home + "/.ssh2fa"
         let marker = autoDir + "/.daemon-bundle-version"
@@ -298,24 +317,36 @@ final class DaemonProcess {
         let uid = getuid()
         let domain = "gui/\(uid)"
         let target = "\(domain)/\(label)"
-        if plistChanged {
-            DaemonProcess.runLaunchctl(["bootout", target])  // async; ignore "not loaded"
-            var loaded = false
+        func bootstrapWithRetry() -> Bool {
             for attempt in 0..<6 {
-                if DaemonProcess.runLaunchctl(["bootstrap", domain, plistPath]) == 0 {
-                    loaded = true
-                    break
-                }
+                if DaemonProcess.runLaunchctl(["bootstrap", domain, plistPath]) == 0 { return true }
                 // bootout not finished yet (or transient) — back off briefly.
                 if attempt < 5 { Thread.sleep(forTimeInterval: 0.5) }
             }
+            return false
+        }
+        if plistChanged {
+            DaemonProcess.runLaunchctl(["bootout", target])  // async; ignore "not loaded"
+            let loaded = bootstrapWithRetry()
             if !loaded {
                 NSLog("[SSH2FA] LaunchAgent bootstrap did not succeed after retries — the daemon may need a manual relaunch")
             }
             return loaded
-        } else if daemonWasUpdated {
+        }
+        // Plist unchanged: the file existing does NOT mean launchd loaded it — a
+        // prior bootstrap may have failed (and nothing retried, so the daemon was
+        // left unmanaged with no recovery). Self-heal by bootstrapping if the
+        // service isn't actually loaded. (Bootstrapping the legit LaunchAgent is
+        // safe — it never spawns a competing copy.)
+        if !DaemonProcess.serviceLoaded(target) {
+            let loaded = bootstrapWithRetry()
+            if !loaded {
+                NSLog("[SSH2FA] LaunchAgent present but not loaded; bootstrap retry failed — daemon may need a manual relaunch")
+            }
+            return loaded
+        }
+        if daemonWasUpdated {
             DaemonProcess.runLaunchctl(["kickstart", "-k", target])
-            return true
         }
         return true
     }
