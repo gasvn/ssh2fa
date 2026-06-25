@@ -14,7 +14,7 @@ cask "ssh2fa" do
 
   # macOS 26 (Tahoe) is the real floor — the app's deployment target is 26.0.
   # A bare symbol means ">=", so this refuses install on anything older.
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "SSH2FA.app"
 
