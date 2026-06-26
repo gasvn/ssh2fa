@@ -103,14 +103,26 @@ if [ -z "$SIGN_ID" ]; then
   [ -n "$SIGN_ID" ] && IS_DEVELOPER_ID=1
 fi
 if [ -z "$SIGN_ID" ]; then
-  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-              | awk -F'"' '/Apple Development/{print $2; exit}')"
+  # Our self-signed code-signing cert: a STABLE identity (so the daemon's
+  # Keychain "Always Allow" survives updates — see docs) with NO revocation risk.
+  # Deliberately NOT falling back to an Apple *Development* cert: it's dev-only,
+  # Gatekeeper rejects it anyway, and a revoked one makes macOS 26 delete the app
+  # on launch. `-v` is omitted because an untrusted self-signed cert isn't listed
+  # as "valid", yet codesign signs with it fine by name.
+  SIGN_ID="$(security find-identity -p codesigning 2>/dev/null \
+              | awk -F'"' '/SSH2FA Code Signing/{print $2; exit}')"
 fi
 [ -z "$SIGN_ID" ] && SIGN_ID="-"
 echo "→ signing identity: $SIGN_ID  (developer-id=$IS_DEVELOPER_ID)"
 
-SIGN_EXTRA=( --options runtime --timestamp )
-[ "$SIGN_ID" = "-" ] && SIGN_EXTRA=()   # ad-hoc: no hardened runtime / timestamp
+# Hardened runtime + secure timestamp + entitlements are ONLY for a real
+# Developer ID (a build headed for notarization). Ad-hoc AND the self-signed cert
+# are signed plain: hardened runtime on an un-notarized build tends to refuse to
+# launch, and a self-signed cert can't satisfy team-scoped entitlements. The
+# self-signed cert still gives a STABLE designated requirement (cert-based, not
+# cdhash), which is all the Keychain ACL needs to stop re-prompting on updates.
+SIGN_EXTRA=()
+[ "$IS_DEVELOPER_ID" = "1" ] && SIGN_EXTRA=( --options runtime --timestamp )
 
 # Sign inside-out: the embedded daemon first (pinned identifier → stable
 # Keychain ACL), then the app bundle with entitlements.
@@ -121,7 +133,7 @@ codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" ${SIGN_EXTR
 echo "  signed embedded daemon"
 
 APP_SIGN_EXTRA=( ${SIGN_EXTRA[@]+"${SIGN_EXTRA[@]}"} )
-[ "$SIGN_ID" != "-" ] && APP_SIGN_EXTRA+=( --entitlements "$ENTITLEMENTS" )
+[ "$IS_DEVELOPER_ID" = "1" ] && APP_SIGN_EXTRA+=( --entitlements "$ENTITLEMENTS" )
 codesign --force --sign "$SIGN_ID" ${APP_SIGN_EXTRA[@]+"${APP_SIGN_EXTRA[@]}"} "$STAGE_APP"
 codesign --verify --strict --deep "$STAGE_APP" 2>/dev/null \
   && echo "  signed + verified $APP_NAME.app" || echo "  WARN: app verify failed"
