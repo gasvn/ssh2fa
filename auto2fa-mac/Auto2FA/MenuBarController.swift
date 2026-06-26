@@ -105,38 +105,35 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         } else {
             button.title = "A2F"
         }
-        // Always show a small alive/total count to the right of the icon so
-        // the user can see at a glance how many tunnels are up.
-        let alive = appState?.tunnels.filter { $0.displayState == .alive }.count ?? 0
-        let total = appState?.tunnels.count ?? 0
-        button.title = total > 0 ? " \(alive)/\(total)" : ""
+        // The icon's COLOR already conveys aggregate health, so the numeric
+        // alive/total badge was dropped (it added noise without much meaning).
+        // Keep only a small ⬆︎ marker when a newer release is waiting.
+        let mark = (appState?.availableUpdate != nil) ? " ⬆︎" : ""
+        button.title = mark
+        // Give the otherwise-cryptic ⬆︎ a hover tooltip + VoiceOver label, and
+        // restore the default ones when no update is pending.
+        if let upd = appState?.availableUpdate {
+            let v = UpdateCheckCore.displayVersion(upd.version)
+            button.toolTip = "SSH2FA update available — \(v). Click for options."
+            button.image?.accessibilityDescription = "SSH2FA, update available \(v)"
+        } else {
+            button.toolTip = "SSH2FA — click for menu"
+            button.image?.accessibilityDescription = "SSH2FA"
+        }
     }
 
     @objc private func buttonClicked(_ sender: Any?) {
-        let event = NSApp.currentEvent
-        let isRightClick = event?.type == .rightMouseUp
-                        || (event?.modifierFlags.contains(.control) ?? false)
-        if isRightClick {
-            // Present the menu manually at the button's location. Detach
-            // AFTER the menu closes (via NSMenuDelegate.menuDidClose), not
-            // on the next runloop tick — the previous async approach
-            // could detach while the user was still keyboard-navigating
-            // the menu, causing AppKit to dismiss it unexpectedly.
-            if let menu = buildMenuOptional(), let button = statusItem?.button {
-                menu.delegate = self
-                statusItem.menu = menu
-                button.performClick(nil)
-            }
-        } else {
-            // Left click → bring the main window forward (or open one if
-            // user previously closed it).
-            NSApp.activate(ignoringOtherApps: true)
-            if let win = window {
-                win.makeKeyAndOrderFront(nil)
-            } else if let any = NSApp.windows.first(where: { $0.title == "SSH2FA" }) {
-                any.makeKeyAndOrderFront(nil)
-                self.window = any
-            }
+        // BOTH left- and right-click present the menu (per user request — a
+        // normal click on the logo opens the menu). The dashboard window is
+        // reached via the "Open SSH2FA" item at the top of that menu.
+        //
+        // Detach the menu AFTER it closes (via NSMenuDelegate.menuDidClose),
+        // not on the next runloop tick — the previous async approach could
+        // detach while the user was still keyboard-navigating, dismissing it.
+        if let menu = buildMenuOptional(), let button = statusItem?.button {
+            menu.delegate = self
+            statusItem.menu = menu
+            button.performClick(nil)
         }
     }
 
@@ -161,6 +158,46 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
+
+        // Primary action: open the desktop dashboard window. Now that a click on
+        // the logo shows this menu (instead of opening the window directly), this
+        // is how the user reaches the app window.
+        let openApp = NSMenuItem(title: "Open SSH2FA", action: #selector(openMainWindow(_:)),
+                                 keyEquivalent: "0")
+        openApp.target = self
+        openApp.toolTip = "Open the SSH2FA dashboard window."
+        menu.addItem(openApp)
+        menu.addItem(.separator())
+
+        // Update available (notify-only) — surfaced at the top. A submenu gives
+        // the user an actual path: how to update (for their install method),
+        // release notes, and a way to skip a version they don't want. The app
+        // never downloads or installs on its own.
+        if let upd = appState?.availableUpdate {
+            let v = UpdateCheckCore.displayVersion(upd.version)
+            let item = NSMenuItem(title: "⬆︎ Update available — \(v)", action: nil, keyEquivalent: "")
+            item.toolTip = "A newer SSH2FA release is available."
+            let sub = NSMenu()
+            let how = NSMenuItem(title: "How to update…",
+                                 action: #selector(openUpdateInstructions(_:)), keyEquivalent: "")
+            how.target = self
+            how.toolTip = "Open Settings → About for one-step update instructions."
+            sub.addItem(how)
+            let notes = NSMenuItem(title: "View release notes",
+                                   action: #selector(viewReleaseNotes(_:)), keyEquivalent: "")
+            notes.target = self
+            notes.representedObject = upd.url
+            sub.addItem(notes)
+            sub.addItem(.separator())
+            let skip = NSMenuItem(title: "Skip \(v)",
+                                  action: #selector(skipUpdateVersion(_:)), keyEquivalent: "")
+            skip.target = self
+            skip.representedObject = upd.version
+            sub.addItem(skip)
+            item.submenu = sub
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         // Hosts
         let hostsHeader = NSMenuItem(title: "Hosts", action: nil, keyEquivalent: "")
@@ -213,12 +250,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        // Footer
-        let open = NSMenuItem(title: "Open Dashboard…", action: #selector(openMainWindow(_:)),
-                              keyEquivalent: "0")
-        open.target = self
-        menu.addItem(open)
-
+        // Footer ("Open SSH2FA" now lives at the top of the menu as the primary
+        // action, so it's no longer repeated here.)
         let logs = NSMenuItem(title: "Show Daemon Logs…",
                               action: #selector(openLogs(_:)), keyEquivalent: "l")
         logs.keyEquivalentModifierMask = [.command, .shift]
@@ -238,11 +271,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let uninstall = NSMenuItem(title: "Uninstall SSH2FA…",
-                                   action: #selector(uninstall(_:)), keyEquivalent: "")
-        uninstall.target = self
-        menu.addItem(uninstall)
-
+        // Uninstall lives in Settings → Troubleshoot now (it's a rare, heavy
+        // action — no need to carry it in the quick menu).
         let quit = NSMenuItem(title: "Quit SSH2FA", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -283,6 +313,24 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         guard let name = sender.representedObject as? String,
               let t = appState?.tunnels.first(where: { $0.name == name }) else { return }
         Task { await appState?.toggleTunnel(t) }
+    }
+
+    /// "How to update…" → deep-link to Settings → About, which now shows
+    /// copy-paste update commands for both Homebrew and manual installs.
+    @objc private func openUpdateInstructions(_ sender: Any?) {
+        UserDefaults.standard.set(SettingsTab.about, forKey: SettingsKey.settingsTab)
+        showSettingsWindow()
+    }
+
+    @objc private func viewReleaseNotes(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func skipUpdateVersion(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? String else { return }
+        appState?.skipUpdate(v)
+        refresh()   // drop the menu-bar marker right away
     }
 
     @objc private func copyTunnelURL(_ sender: NSMenuItem) {
@@ -357,8 +405,15 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     @objc private func quit(_ sender: NSMenuItem) {
         NSApp.terminate(nil)
     }
+}
 
-    @objc private func uninstall(_ sender: Any?) {
+/// The interactive Uninstall flow, shared so it can live in Settings (it used to
+/// be a menu-bar item). Confirms (with an opt-in to also delete saved hosts/
+/// tunnels), removes the daemon + LaunchAgent + Keychain creds, reveals the app
+/// for the user to trash, then quits.
+@MainActor
+enum UninstallFlow {
+    static func runInteractive() {
         let alert = NSAlert()
         alert.messageText = "Uninstall SSH2FA?"
         alert.informativeText = "This stops and removes the background daemon, deletes its LaunchAgent, and removes every credential SSH2FA saved in your Keychain. Afterward, drag SSH2FA.app to the Trash yourself."

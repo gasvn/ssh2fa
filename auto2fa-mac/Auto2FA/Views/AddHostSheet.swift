@@ -109,7 +109,7 @@ struct AddHostSheet: View {
             // Fields wrapped in a glass card panel
             VStack(alignment: .leading, spacing: Spacing.m) {
                 if isGuided {
-                    field("Name", TextField("e.g. Cannon, lab server", text: $displayName)
+                    field("Name", TextField("e.g. lab server, gpu cluster", text: $displayName)
                             .focused($focused, equals: .hostname))
                     field("Server address", TextField("login.hpc.example.edu", text: $serverAddress))
                     field("Username", TextField("your login name on the server", text: $username))

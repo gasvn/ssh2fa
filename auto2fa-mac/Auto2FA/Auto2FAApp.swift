@@ -75,6 +75,10 @@ struct Auto2FAApp: App {
                     NSLog("[SSH2FA] spawnDaemonOnLaunch=off; assuming external daemon")
                 }
                 await appState.bootstrap()
+                // Notify-only update reminder: daily background check that
+                // surfaces a menu-bar item + one notification per new release.
+                // Opt-out via Settings → About. Starts once; never blocks launch.
+                appState.startUpdateReminderLoop()
             }
         }
         .defaultSize(width: 820, height: 540)
@@ -122,6 +126,7 @@ struct Auto2FAApp: App {
         // ⌘, opens this automatically.
         Settings {
             SettingsView()
+                .environmentObject(appState)
         }
 
         // A separate WindowGroup for the log viewer. SwiftUI auto-adds a
@@ -172,7 +177,12 @@ struct Auto2FAApp: App {
                 // a single wake fires both monitors, and the second call is
                 // coalesced (daemon- or client-side). Claiming "Probing
                 // tunnels…" for a no-op was misleading.
-                let ran = (try? await appState.client.wakeRecover()) ?? false
+                //
+                // force: true — a NetworkMonitor fire means the local network
+                // identity changed (new IP), so every master's old TCP is dead
+                // by definition. Rebuild them instead of trusting `ssh -O check`,
+                // which keeps reporting "alive" for minutes after a switch.
+                let ran = (try? await appState.client.wakeRecover(force: true)) ?? false
                 if ran {
                     appState.notchPresenter.show(
                         systemImage: "network",

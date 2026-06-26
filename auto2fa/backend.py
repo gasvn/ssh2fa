@@ -509,7 +509,7 @@ class SSHHostManager(threading.Thread):
                 finally:
                     if otp_lock is not None:
                         otp_lock.release()
-                # Timeout 60s (was 20s): Cannon's MOTD is ~50 lines + slurm
+                # Timeout 60s (was 20s): a busy login node's MOTD is ~50 lines + slurm
                 # stats table, and the server slows down for a few minutes
                 # after a burst of failed logins. 20s timed out mid-banner
                 # and we missed the trailing $ prompt, falsely reporting
@@ -771,7 +771,7 @@ class SSHHostManager(threading.Thread):
                 self.last_rotate_ts = now
 
         try:
-            # 10s (was 3s): 3s was way too aggressive for Cannon's loaded
+            # 10s (was 3s): 3s was way too aggressive for a heavily loaded
             # login nodes — a slow round-trip ≠ dead master. We saw 257
             # probe timeouts in 2 hours doing zero useful work and
             # flapping the active-pool symlink endlessly.

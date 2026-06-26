@@ -499,8 +499,14 @@ actor BackendClient {
     /// `false` when coalesced (client-side guards or the daemon's own
     /// in-flight/debounce guard). Callers use this to avoid toasting
     /// activity that didn't happen (one wake fires BOTH Mac monitors).
+    /// `force == true` is sent on a confirmed network-IDENTITY change (the local
+    /// IP changed). The daemon then rebuilds ALL active masters instead of
+    /// trusting `ssh -O check`, which keeps reporting "Master running" for
+    /// minutes after a switch silently kills the TCP. Coalescing still applies
+    /// (rate-limit safety); the shortened master keepalive is the backstop for
+    /// any coalesced-out call.
     @discardableResult
-    func wakeRecover() async throws -> Bool {
+    func wakeRecover(force: Bool = false) async throws -> Bool {
         // Coalesce: if a wake_recover is already in flight, or one completed
         // within the last few seconds, skip — the two Mac monitors fire on a
         // single wake. Actor isolation makes this check/set atomic.
@@ -518,7 +524,8 @@ actor BackendClient {
             wakeRecoverInFlight = false
             lastWakeRecoverAt = Date()
         }
-        let data = try await sendRaw(method: "wake_recover", params: [:])
+        NSLog("[SSH2FA] wakeRecover(force: \(force)) → daemon")
+        let data = try await sendRaw(method: "wake_recover", params: ["force": force])
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let coalesced = obj["coalesced"] as? Bool {
             return !coalesced

@@ -11,8 +11,8 @@ settings:
     # NOTE: the bundle version actually shown/used comes from
     # Auto2FA/Resources/Info.plist (GENERATE_INFOPLIST_FILE: NO). Keep these in
     # sync with that file when cutting a release.
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "100"
+    MARKETING_VERSION: "1.0.1"
+    CURRENT_PROJECT_VERSION: "101"
     SWIFT_VERSION: "5.10"
     PRODUCT_NAME: "SSH2FA"
     PRODUCT_BUNDLE_IDENTIFIER: "com.ssh2fa.app"
@@ -53,8 +53,8 @@ targets:
       # for the displayed/checked version — keep RELEASE.md in step.
       path: Auto2FA/Resources/Info.plist
       properties:
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "100"
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "101"
 
   Auto2FATests:
     type: bundle.unit-test
@@ -78,6 +78,8 @@ targets:
       - path: Auto2FA/Models/Tunnel.swift
       - path: Auto2FA/FriendlyText.swift
       - path: Auto2FA/ManagedHostStore.swift
+      - path: Auto2FA/UpdateCheckCore.swift
+      - path: Auto2FA/NetworkMonitor.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

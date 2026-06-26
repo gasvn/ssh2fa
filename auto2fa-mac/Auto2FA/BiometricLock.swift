@@ -49,6 +49,11 @@ final class BiometricLock: ObservableObject {
 struct LockGate<Content: View>: View {
     @EnvironmentObject private var lock: BiometricLock
     @Environment(\.scenePhase) private var scenePhase
+    // Observe the setting itself so flipping "Require Touch ID" takes effect
+    // immediately — without this, toggling it on while a window was already open
+    // did nothing (the gate only re-checked on appear/active), which read as
+    // "the toggle has no effect".
+    @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @State private var unlocked = false
     @State private var authing = false
     @ViewBuilder var content: () -> Content
@@ -62,7 +67,17 @@ struct LockGate<Content: View>: View {
             }
         }
         .onAppear { evaluate() }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { evaluate() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                evaluate()
+            } else if lock.enabled {
+                // Re-lock as the window leaves the foreground so coming back
+                // re-challenges (subject to the grace window) — this is the
+                // "re-locks after you close the window" behavior.
+                unlocked = false
+            }
+        }
+        .onChange(of: requireTouchID) { _, _ in evaluate() }
         .onChange(of: lock.lastSuccessfulAuth) { _, _ in evaluate() }
     }
 

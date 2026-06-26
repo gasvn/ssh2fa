@@ -28,6 +28,20 @@ enum SettingsKey {
     /// Which Settings tab is shown — lets the menu-bar "Troubleshoot…" deep-link
     /// straight to that tab instead of dumping the user on General.
     static let settingsTab = "auto2fa.settingsTab"
+    /// Notify-only auto-update reminder: check GitHub once a day for a newer
+    /// release and notify. Default on; never downloads or installs anything.
+    static let autoCheckUpdates = "auto2fa.autoCheckUpdates"
+    /// Epoch seconds of the last automatic update check (throttle bookkeeping).
+    static let lastUpdateCheckAt = "auto2fa.lastUpdateCheckAt"
+    /// The release version we last raised a notification for — so the reminder
+    /// fires once per new release, not once per check.
+    static let lastNotifiedVersion = "auto2fa.lastNotifiedUpdateVersion"
+    /// A version the user chose "Skip this version" on — never surfaced/notified.
+    static let skippedUpdateVersion = "auto2fa.skippedUpdateVersion"
+    /// Persisted copy of the currently-surfaced update so the menu-bar marker
+    /// survives a relaunch (instead of vanishing until the next 24h check).
+    static let availableUpdateVersion = "auto2fa.availableUpdateVersion"
+    static let availableUpdateURL = "auto2fa.availableUpdateURL"
 }
 
 /// Settings tab identifiers (also the persisted `settingsTab` values).
@@ -50,6 +64,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.warmReuseEnabled) private var warmReuseEnabled = false
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
+    @AppStorage(SettingsKey.autoCheckUpdates) private var autoCheckUpdates = true
     @AppStorage(SettingsKey.settingsTab) private var settingsTab = SettingsTab.general
     // launch-at-login state isn't a persisted preference (it's owned by
     // macOS via SMAppService); we just mirror it in @State for the Toggle.
@@ -195,6 +210,16 @@ struct SettingsView: View {
                             .foregroundStyle(.orange)
                     }
                 } header: { Text("Sync") }
+
+                Section {
+                    Toggle("Automatically check for updates", isOn: $autoCheckUpdates)
+                        .onChange(of: autoCheckUpdates) { _, on in
+                            appState.updateAutoCheckChanged(enabled: on)
+                        }
+                    Text("Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Updates") }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
@@ -269,6 +294,19 @@ private struct TroubleshootPane: View {
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 }
+            }
+
+            Divider()
+            HStack {
+                Button(role: .destructive) {
+                    UninstallFlow.runInteractive()
+                } label: {
+                    Label("Uninstall SSH2FA…", systemImage: "trash")
+                }
+                .tint(.red)
+                Text("Removes the background daemon, its LaunchAgent, and Keychain credentials.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
             }
         }
         .padding(20)
@@ -488,12 +526,23 @@ final class DiagnosticsModel: ObservableObject {
 }
 
 private struct AboutPane: View {
+    @EnvironmentObject private var appState: AppState
     @StateObject private var updater = UpdateChecker()
+    @State private var copied: String?
 
     private var versionString: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         return "Version \(v) (build \(b))"
+    }
+
+    /// The update to offer instructions for: a fresh manual-check result wins,
+    /// else the background-surfaced one — so the instructions appear even if the
+    /// user lands here straight from the notification without clicking "Check".
+    private var pendingUpdate: (version: String, url: URL)? {
+        if case .updateAvailable(let v, let u) = updater.result { return (v, u) }
+        if let a = appState.availableUpdate { return (a.version, a.url) }
+        return nil
     }
 
     var body: some View {
@@ -514,13 +563,16 @@ private struct AboutPane: View {
             Link("github.com/gasvn/ssh2fa",
                  destination: URL(string: "https://github.com/gasvn/ssh2fa")!)
                 .font(.callout)
-            Link("Made by Shanghua Gao · shgao.site",
-                 destination: URL(string: "https://shgao.site")!)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text("Made by Shanghua Gao ·")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Link("shgao.site", destination: URL(string: "https://shgao.site")!)
+                    .font(.callout)
+            }
 
-            // ---- Update check ----
-            VStack(spacing: 6) {
+            // ---- Update check + how-to-update instructions ----
+            VStack(spacing: 8) {
                 Button {
                     Task { await updater.check() }
                 } label: {
@@ -532,22 +584,20 @@ private struct AboutPane: View {
                 }
                 .disabled({ if case .checking = updater.result { return true } else { return false } }())
 
-                switch updater.result {
-                case .idle, .checking:
-                    EmptyView()
-                case .upToDate:
-                    Label("You're on the latest version.", systemImage: "checkmark.circle")
-                        .font(.caption).foregroundStyle(.green)
-                case .updateAvailable(let latest, let url):
-                    VStack(spacing: 4) {
-                        Label("Version \(latest) is available.", systemImage: "arrow.down.circle")
-                            .font(.caption).foregroundStyle(.blue)
-                        Link("Open the releases page", destination: url).font(.caption)
+                if let upd = pendingUpdate {
+                    updateInstructions(version: upd.version, url: upd.url)
+                } else {
+                    switch updater.result {
+                    case .upToDate:
+                        Label("You're on the latest version.", systemImage: "checkmark.circle")
+                            .font(.caption).foregroundStyle(.green)
+                    case .failed(let msg):
+                        Label("Update check failed: \(msg)", systemImage: "exclamationmark.triangle")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    default:
+                        EmptyView()
                     }
-                case .failed(let msg):
-                    Label("Update check failed: \(msg)", systemImage: "exclamationmark.triangle")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
                 }
             }
             .padding(.top, 4)
@@ -555,6 +605,59 @@ private struct AboutPane: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Concrete, copy-paste-able update path for every install method — so the
+    /// reminder is never a dead-end. Each command includes the de-quarantine
+    /// step (the un-notarized build is quarantined on download).
+    @ViewBuilder
+    private func updateInstructions(version: String, url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("\(UpdateCheckCore.displayVersion(version)) is available",
+                  systemImage: "arrow.down.circle")
+                .font(.callout.weight(.medium)).foregroundStyle(.blue)
+            Text("Update with ONE of these (SSH2FA never installs on its own):")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            commandRow(label: "Homebrew", command: UpdateCheckCore.brewUpdateCommand)
+            commandRow(label: "Terminal (any install)", command: UpdateCheckCore.manualUpdateCommand)
+
+            HStack(spacing: 14) {
+                Link("Download DMG", destination: URL(string:
+                    "https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg")!)
+                Link("Release notes", destination: url)
+                Button("Skip this version") { appState.skipUpdate(version) }
+                    .buttonStyle(.link)
+            }
+            .font(.caption)
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func commandRow(label: String, command: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .frame(width: 130, alignment: .leading)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+                copied = label
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                    if copied == label { copied = nil }
+                }
+            } label: {
+                Label(copied == label ? "Copied ✓" : "Copy command",
+                      systemImage: copied == label ? "checkmark" : "doc.on.doc")
+                    .font(.caption2)
+            }
+            Spacer()
+        }
     }
 }
 
@@ -587,9 +690,19 @@ final class UpdateChecker: ObservableObject {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
+    /// Manual "Check for Updates" path (About pane): drives the @Published
+    /// `result` so the button can show progress + outcome.
     func check() async {
         result = .checking
-        var req = URLRequest(url: Self.releasesAPI)
+        result = await Self.fetchLatest()
+    }
+
+    /// Network fetch + version comparison with NO @Published side-effects, so
+    /// the background auto-check (AppState) can reuse the exact same logic
+    /// without touching the per-view About-pane state. All version decisions go
+    /// through the unit-tested `UpdateCheckCore`.
+    static func fetchLatest() async -> Result {
+        var req = URLRequest(url: releasesAPI)
         req.timeoutInterval = 10
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         do {
@@ -597,45 +710,23 @@ final class UpdateChecker: ObservableObject {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             // 404 = no published releases yet → "up to date" (nothing to offer)
             // rather than an error in the user's face.
-            if code == 404 {
-                result = .upToDate(current: Self.currentVersion)
-                return
-            }
-            guard code == 200 else {
-                result = .failed("GitHub returned HTTP \(code)")
-                return
-            }
+            if code == 404 { return .upToDate(current: currentVersion) }
+            guard code == 200 else { return .failed("GitHub returned HTTP \(code)") }
             guard
                 let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let tag = obj["tag_name"] as? String
             else {
-                result = .failed("Unexpected response from GitHub")
-                return
+                return .failed("Unexpected response from GitHub")
             }
-            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            let pageURL = (obj["html_url"] as? String).flatMap(URL.init) ?? Self.releasesPage
-            if Self.isNewer(latest, than: Self.currentVersion) {
-                result = .updateAvailable(latest: latest, url: pageURL)
+            let latest = UpdateCheckCore.normalizeTag(tag)
+            let pageURL = (obj["html_url"] as? String).flatMap(URL.init) ?? releasesPage
+            if UpdateCheckCore.isNewer(latest, than: currentVersion) {
+                return .updateAvailable(latest: latest, url: pageURL)
             } else {
-                result = .upToDate(current: Self.currentVersion)
+                return .upToDate(current: currentVersion)
             }
         } catch {
-            result = .failed(error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
-    }
-
-    /// Compare dotted numeric versions ("1.2.10" > "1.2.9"). Non-numeric parts
-    /// compare as 0, so a tag the parser doesn't understand is "not newer"
-    /// (never nag on garbage).
-    static func isNewer(_ a: String, than b: String) -> Bool {
-        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
-        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
-        let n = max(pa.count, pb.count)
-        for i in 0..<n {
-            let x = i < pa.count ? pa[i] : 0
-            let y = i < pb.count ? pb[i] : 0
-            if x != y { return x > y }
-        }
-        return false
     }
 }

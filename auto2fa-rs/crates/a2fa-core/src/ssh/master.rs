@@ -331,6 +331,48 @@ pub fn probe_to_check(
 }
 
 // ---------------------------------------------------------------------------
+// Master keepalive
+// ---------------------------------------------------------------------------
+
+/// SSH keepalive for the long-lived ControlPersist master.
+///
+/// When the network changes (Wi-Fi → Wi-Fi, VPN up/down, Ethernet plug) the
+/// master's TCP connection silently black-holes — no RST ever arrives, so the
+/// master process (and its unix control socket) keep running, and EVERY local
+/// liveness signal we have (`master_probe` unix-socket connect, `ssh -O check`
+/// control query) keeps reporting "alive". The ONLY thing that notices the dead
+/// link is ssh's own keepalive: after `INTERVAL × COUNT_MAX` seconds of silence
+/// it tears the master down, at which point the heartbeat detects Dead and
+/// rebuilds it.
+///
+/// So `INTERVAL × COUNT_MAX` is exactly the worst-case window during which the
+/// app shows "connected" but traffic doesn't flow after a network switch. It
+/// was 15×12 = 180s, which felt like "it won't reconnect". Lowered to 15×3 =
+/// 45s (matching the host reconnect path in handlers/hosts.rs) so a real switch
+/// recovers ~4× faster, while 45s of total silence still tolerates a brief
+/// HPC-login-node lag without needlessly tearing down a healthy master (which
+/// would burn a fresh 2FA login).
+pub const MASTER_SERVER_ALIVE_INTERVAL_SECS: u32 = 15;
+pub const MASTER_SERVER_ALIVE_COUNT_MAX: u32 = 3;
+
+/// Worst-case seconds a network-dead master keeps reporting "alive" before ssh
+/// exits and the heartbeat can rebuild it. Keep this small enough that a network
+/// switch reconnects promptly.
+pub const MASTER_DEAD_DETECT_SECS: u32 =
+    MASTER_SERVER_ALIVE_INTERVAL_SECS * MASTER_SERVER_ALIVE_COUNT_MAX;
+
+/// The `-o ServerAlive*` argv fragment for the master spawn. Factored out so the
+/// dead-detection window is a single tested source of truth.
+pub fn master_keepalive_args() -> Vec<String> {
+    vec![
+        "-o".into(),
+        format!("ServerAliveInterval={MASTER_SERVER_ALIVE_INTERVAL_SECS}"),
+        "-o".into(),
+        format!("ServerAliveCountMax={MASTER_SERVER_ALIVE_COUNT_MAX}"),
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // start_master
 // ---------------------------------------------------------------------------
 
@@ -370,7 +412,7 @@ pub fn start_master(
     //       -o StrictHostKeyChecking=no \
     //       -o UserKnownHostsFile=/dev/null \
     //       -o ServerAliveInterval=15 \
-    //       -o ServerAliveCountMax=12 \
+    //       -o ServerAliveCountMax=3 \   (see master_keepalive_args)
     //       -o ConnectTimeout=10 \
     //       -o ControlMaster=auto \
     //       -o ControlPath=<path> \
@@ -409,8 +451,9 @@ pub fn start_master(
         "-E".into(),      log_file,
         "-o".into(),      "StrictHostKeyChecking=no".into(),
         "-o".into(),      "UserKnownHostsFile=/dev/null".into(),
-        "-o".into(),      "ServerAliveInterval=15".into(),
-        "-o".into(),      "ServerAliveCountMax=12".into(),
+    ]);
+    argv.extend(master_keepalive_args());
+    argv.extend([
         "-o".into(),      "ConnectTimeout=10".into(),
         "-o".into(),      "ControlMaster=auto".into(),
         "-o".into(),      format!("ControlPath={control_path_str}"),
@@ -540,6 +583,27 @@ pub fn stop_all(state: &mut PoolState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn master_keepalive_detects_dead_network_within_a_minute() {
+        // After a network switch the master's TCP black-holes silently; only
+        // ssh keepalive (INTERVAL × COUNT_MAX) notices, and until then the app
+        // shows "connected" with no traffic flowing. Regression guard for the
+        // 180s (15×12) lingering-"connected" bug: a real switch must be
+        // recoverable within ~1 minute, not 3.
+        assert!(
+            MASTER_DEAD_DETECT_SECS <= 60,
+            "dead-master detection is {MASTER_DEAD_DETECT_SECS}s — too slow after a network switch; lower ServerAliveCountMax"
+        );
+        // …and the spawned argv must actually carry those keepalive settings.
+        let args = master_keepalive_args();
+        assert!(args
+            .iter()
+            .any(|a| a == &format!("ServerAliveInterval={MASTER_SERVER_ALIVE_INTERVAL_SECS}")));
+        assert!(args
+            .iter()
+            .any(|a| a == &format!("ServerAliveCountMax={MASTER_SERVER_ALIVE_COUNT_MAX}")));
+    }
 
     #[test]
     fn probe_to_check_maps_with_hysteresis() {

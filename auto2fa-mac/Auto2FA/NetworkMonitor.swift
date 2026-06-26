@@ -40,19 +40,58 @@ final class NetworkMonitor {
         pendingFireTask?.cancel()
     }
 
+    /// Pure signature builder — kept separate so the "did the network identity
+    /// change?" decision is unit-tested without a live NWPathMonitor.
+    nonisolated static func makeSignature(statusKey: String, primary: String, addresses: [String]) -> String {
+        "\(statusKey)|\(primary)|\(addresses.joined(separator: ","))"
+    }
+
+    /// IPv4 addresses of the REAL connectivity interfaces in this path (Wi-Fi /
+    /// Ethernet / cellular). Switching between two Wi-Fi networks keeps the
+    /// interface type "wifi" but changes en0's IP, so the IP is what makes the
+    /// switch detectable. Docker bridges and VPN utuns are type `.other` and are
+    /// deliberately excluded so they don't spuriously trip recovery — though
+    /// over-firing is now cheap anyway: the daemon only force-rebuilds masters
+    /// whose connection is genuinely dead.
+    nonisolated static func physicalIPv4Addresses(path: NWPath) -> [String] {
+        let names = Set(path.availableInterfaces
+            .filter { $0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular }
+            .map { $0.name })
+        guard !names.isEmpty else { return [] }
+
+        var out: [String] = []
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0 else { return [] }
+        defer { freeifaddrs(ifap) }
+        var ptr = ifap
+        while let cur = ptr {
+            defer { ptr = cur.pointee.ifa_next }
+            let ifa = cur.pointee
+            guard let addr = ifa.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: ifa.ifa_name)
+            guard names.contains(name) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let r = getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+            if r == 0 { out.append("\(name)=\(String(cString: host))") }
+        }
+        return out.sorted()
+    }
+
     private func handle(path: NWPath) {
-        // Build a signature using ONLY the primary connectivity interface
-        // type (wifi vs ethernet vs cellular) + path status. Docker spinning
-        // up a bridge interface or VPN flapping a utun would otherwise
-        // mutate `availableInterfaces` and falsely trigger a recovery
-        // every few seconds.
+        // Signature = path status + primary interface TYPE + the IPv4 addresses
+        // of the real connectivity interfaces. The address component is what
+        // catches a Wi-Fi→Wi-Fi switch (same type/status, different IP) that the
+        // old type-only signature missed — the reason ssh masters stayed dead
+        // with no recovery fired.
         let primary: String
         if path.usesInterfaceType(.wifi) { primary = "wifi" }
         else if path.usesInterfaceType(.wiredEthernet) { primary = "eth" }
         else if path.usesInterfaceType(.cellular) { primary = "cell" }
         else if path.usesInterfaceType(.loopback) { primary = "lo" }
         else { primary = "other" }
-        let signature = "\(path.status)|\(primary)"
+        let signature = Self.makeSignature(statusKey: "\(path.status)", primary: primary,
+                                           addresses: Self.physicalIPv4Addresses(path: path))
         guard signature != lastInterfaceSignature else { return }
         let prev = lastInterfaceSignature
         lastInterfaceSignature = signature

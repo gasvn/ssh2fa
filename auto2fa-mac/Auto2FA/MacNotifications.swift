@@ -18,8 +18,10 @@ enum MacNotifications {
     private static let categoryTunnelFail = "auto2fa.tunnelFail"
     private static let actionRestart = "auto2fa.restart"
     private static let actionShowActivity = "auto2fa.showActivity"
+    static let categoryUpdate = "auto2fa.updateAvailable"
+    static let actionViewRelease = "auto2fa.viewRelease"
 
-    /// Install the notification category. Called once at app launch.
+    /// Install the notification categories. Called once at app launch.
     static func registerCategories() {
         let restart = UNNotificationAction(
             identifier: actionRestart, title: "Restart",
@@ -35,7 +37,17 @@ enum MacNotifications {
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([cat])
+        let viewRelease = UNNotificationAction(
+            identifier: actionViewRelease, title: "View Release",
+            options: [.foreground]
+        )
+        let updateCat = UNNotificationCategory(
+            identifier: categoryUpdate,
+            actions: [viewRelease],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([cat, updateCat])
     }
 
     @MainActor
@@ -72,6 +84,38 @@ enum MacNotifications {
         }
     }
 
+    /// Post a "new release available" reminder with a "View Release" button.
+    /// `url` is stuffed into userInfo so the delegate (and the default tap) can
+    /// open the release page. Notify-only — nothing is downloaded or installed.
+    ///
+    /// Returns `true` only if the toast was actually scheduled (permission
+    /// granted). We `await` authorization BEFORE adding the request — the old
+    /// fire-and-forget `Task { ensureAuthorized() }` + immediate `add()` raced,
+    /// so the very first reminder (on a Mac that never granted notifications) was
+    /// silently dropped. The caller uses the return value to decide whether to
+    /// record "already notified" — a dropped post then retries next check, and
+    /// the persistent menu-bar marker is the fallback if the user denied.
+    @MainActor
+    @discardableResult
+    static func postUpdateAvailable(version: String, url: URL) async -> Bool {
+        guard await ensureAuthorized() else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "SSH2FA \(UpdateCheckCore.displayVersion(version)) is available"
+        content.body = "You're on \(UpdateCheckCore.displayVersion(UpdateChecker.currentVersion)). Click for the release, or open Settings → About for one-step update instructions."
+        content.sound = .default
+        content.categoryIdentifier = categoryUpdate
+        content.userInfo = ["updateURL": url.absoluteString]
+        // One stable id per version so a repeat post coalesces instead of stacking.
+        let req = UNNotificationRequest(identifier: "update.\(version)",
+                                        content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req) { err in
+            if let err {
+                NSLog("[SSH2FA] update notification post failed: \(err.localizedDescription)")
+            }
+        }
+        return true
+    }
+
     /// Plain notification for generic events (no actions).
     @MainActor
     static func post(title: String, body: String, identifier: String? = nil) {
@@ -103,6 +147,16 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         let name = userInfo["tunnel"] as? String
         Task { @MainActor in
+            // Update reminder: "View Release" button OR tapping the toast body
+            // opens the release page. Handle before the tunnel-only guard.
+            if let urlStr = userInfo["updateURL"] as? String, let url = URL(string: urlStr) {
+                if id == MacNotifications.actionViewRelease
+                    || id == UNNotificationDefaultActionIdentifier {
+                    NSWorkspace.shared.open(url)
+                }
+                completionHandler()
+                return
+            }
             guard let name, let state = self.appState else {
                 completionHandler()
                 return

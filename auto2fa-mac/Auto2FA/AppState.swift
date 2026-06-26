@@ -27,6 +27,12 @@ enum ActiveSheet: Identifiable, Equatable {
     }
 }
 
+/// A newer release surfaced by the notify-only update reminder.
+struct AvailableUpdate: Equatable {
+    let version: String
+    let url: URL
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var hosts: [SSHHost] = [] {
@@ -56,6 +62,11 @@ final class AppState: ObservableObject {
     /// successful delete.
     @Published var undoableDelete: Tunnel?
     private var undoExpireTask: Task<Void, Never>?
+    /// A newer release found by the notify-only background check. Drives the
+    /// menu-bar "Update available" item + status-item marker. nil = up to date
+    /// (or not yet checked / check disabled).
+    @Published var availableUpdate: AvailableUpdate?
+    private var updateLoopStarted = false
 
     let client = BackendClient()
     private var eventTask: Task<Void, Never>?
@@ -68,6 +79,118 @@ final class AppState: ObservableObject {
     /// connection watcher already shows "Daemon reconnected". Show the cold-launch
     /// "ready" toast only ONCE so a respawn doesn't fire two toasts.
     private var hasShownReadyToast = false
+
+    // MARK: - Update reminder (notify-only)
+
+    /// Start the daily background "is there a newer release?" reminder. Safe to
+    /// call repeatedly — only the first call starts the loop. Fire-and-forget:
+    /// it sleeps before the first check so it never competes with launch, and
+    /// every check is gated to once/24h (and to the user toggle) inside.
+    func startUpdateReminderLoop() {
+        guard !updateLoopStarted else { return }
+        updateLoopStarted = true
+        // Re-hydrate a previously-found update immediately so the menu-bar marker
+        // survives a relaunch (it would otherwise disappear until the next 24h
+        // check). Off the network — just reads UserDefaults.
+        loadPersistedAvailableUpdate()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000) // let launch settle
+            await self?.autoCheckForUpdatesIfDue()
+            while !Task.isCancelled {
+                // Tick every 6h; the 24h throttle inside decides if it actually
+                // hits the network. Cheap, and catches long-running sessions.
+                try? await Task.sleep(nanoseconds: 6 * 60 * 60 * 1_000_000_000)
+                await self?.autoCheckForUpdatesIfDue()
+            }
+        }
+    }
+
+    /// One throttled, opt-out-able update check. Notify-only: on finding a newer
+    /// (un-skipped) release it surfaces `availableUpdate` (menu-bar marker, About
+    /// pane) and raises at most one notification per version. Never downloads or
+    /// installs. All decisions go through the unit-tested `UpdateCheckCore`.
+    func autoCheckForUpdatesIfDue(now: Date = Date()) async {
+        let d = UserDefaults.standard
+        let enabled = d.object(forKey: SettingsKey.autoCheckUpdates) as? Bool ?? true
+        guard enabled else { setAvailableUpdate(nil); return } // opted out → no marker
+        let last = (d.object(forKey: SettingsKey.lastUpdateCheckAt) as? Double)
+            .map { Date(timeIntervalSince1970: $0) }
+        guard UpdateCheckCore.shouldCheckNow(enabled: enabled, lastCheck: last,
+                                             now: now, interval: 24 * 60 * 60) else { return }
+        d.set(now.timeIntervalSince1970, forKey: SettingsKey.lastUpdateCheckAt)
+
+        switch await UpdateChecker.fetchLatest() {
+        case .updateAvailable(let latest, let url):
+            let current = UpdateChecker.currentVersion
+            let skipped = d.string(forKey: SettingsKey.skippedUpdateVersion)
+            guard UpdateCheckCore.shouldSurface(latest: latest, current: current, skipped: skipped) else {
+                setAvailableUpdate(nil); return    // skipped or not actually newer
+            }
+            setAvailableUpdate(AvailableUpdate(version: latest, url: url))
+            let lastNotified = d.string(forKey: SettingsKey.lastNotifiedVersion)
+            if UpdateCheckCore.shouldNotify(latest: latest, current: current,
+                                            lastNotified: lastNotified, skipped: skipped) {
+                // Record "already notified" ONLY if the toast actually posted
+                // (permission granted) — else let it retry next check so the
+                // first-ever reminder isn't silently lost when the auth prompt
+                // raced the post.
+                if await MacNotifications.postUpdateAvailable(version: latest, url: url) {
+                    d.set(latest, forKey: SettingsKey.lastNotifiedVersion)
+                }
+            }
+        case .upToDate:
+            setAvailableUpdate(nil)   // clear a stale marker if the user updated
+        case .idle, .checking, .failed:
+            break                     // transient — leave any existing marker as-is
+        }
+    }
+
+    /// Restore `availableUpdate` from a prior session (set on disk), unless the
+    /// user has since skipped that version, auto-check is off, or it's no longer
+    /// newer than the running build.
+    private func loadPersistedAvailableUpdate() {
+        let d = UserDefaults.standard
+        guard (d.object(forKey: SettingsKey.autoCheckUpdates) as? Bool ?? true) else { return }
+        guard let v = d.string(forKey: SettingsKey.availableUpdateVersion),
+              let s = d.string(forKey: SettingsKey.availableUpdateURL),
+              let url = URL(string: s) else { return }
+        let skipped = d.string(forKey: SettingsKey.skippedUpdateVersion)
+        if UpdateCheckCore.shouldSurface(latest: v, current: UpdateChecker.currentVersion, skipped: skipped) {
+            availableUpdate = AvailableUpdate(version: v, url: url)
+        } else {
+            setAvailableUpdate(nil)
+        }
+    }
+
+    /// Set + persist (or clear) the surfaced update so it survives relaunch.
+    private func setAvailableUpdate(_ u: AvailableUpdate?) {
+        availableUpdate = u
+        let d = UserDefaults.standard
+        if let u {
+            d.set(u.version, forKey: SettingsKey.availableUpdateVersion)
+            d.set(u.url.absoluteString, forKey: SettingsKey.availableUpdateURL)
+        } else {
+            d.removeObject(forKey: SettingsKey.availableUpdateVersion)
+            d.removeObject(forKey: SettingsKey.availableUpdateURL)
+        }
+    }
+
+    /// "Skip this version" — stop surfacing + notifying for `version`.
+    func skipUpdate(_ version: String) {
+        UserDefaults.standard.set(version, forKey: SettingsKey.skippedUpdateVersion)
+        setAvailableUpdate(nil)
+    }
+
+    /// React to the General → "Automatically check for updates" toggle: turning
+    /// it off clears the marker immediately; turning it on re-checks.
+    func updateAutoCheckChanged(enabled: Bool) {
+        if enabled {
+            UserDefaults.standard.removeObject(forKey: SettingsKey.lastUpdateCheckAt) // re-check now
+            Task { await autoCheckForUpdatesIfDue() }
+        } else {
+            setAvailableUpdate(nil)
+        }
+    }
 
     func bootstrap() async {
         NSLog("[SSH2FA] bootstrap: connecting to daemon")
