@@ -78,11 +78,17 @@ struct ContentView: View {
                     .focused($searchFocused)
             }
         }
-        // Add Host / New Tunnel live in their section headers; Logs / Export /
-        // Import live in the menu bar (Window / File). The toolbar gets a DIRECT
-        // Settings button — one click opens it, no dropdown.
+        // Add Host / New Tunnel live in their section headers; Export / Import
+        // live in the File menu. Logs + Settings are direct toolbar buttons here
+        // in the dashboard (they used to be in the menu-bar dropdown).
         ToolbarItem(placement: .primaryAction) {
             SponsorButton()
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { openWindow(id: "logs") } label: {
+                Label("Logs", systemImage: "doc.text.magnifyingglass")
+            }
+            .help("Show daemon logs")
         }
         ToolbarItem(placement: .primaryAction) {
             Button { openSettings() } label: {

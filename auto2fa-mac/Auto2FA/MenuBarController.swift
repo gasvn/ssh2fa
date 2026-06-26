@@ -252,27 +252,17 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
 
         // Footer ("Open SSH2FA" now lives at the top of the menu as the primary
         // action, so it's no longer repeated here.)
-        let logs = NSMenuItem(title: "Show Daemon Logs…",
-                              action: #selector(openLogs(_:)), keyEquivalent: "l")
-        logs.keyEquivalentModifierMask = [.command, .shift]
-        logs.target = self
-        menu.addItem(logs)
-
+        // Settings is the single entry point to the advanced stuff — logs live
+        // on a toolbar button in the dashboard, and Troubleshoot / Uninstall are
+        // tabs/sections inside Settings. The quick menu stays focused on
+        // everyday actions (open app, hosts, tunnels).
         let prefs = NSMenuItem(title: "Settings…",
                                action: #selector(openSettings(_:)), keyEquivalent: ",")
         prefs.target = self
         menu.addItem(prefs)
 
-        let troubleshoot = NSMenuItem(title: "Troubleshoot…",
-                                      action: #selector(openTroubleshoot(_:)), keyEquivalent: "")
-        troubleshoot.target = self
-        troubleshoot.toolTip = "Open Settings → Troubleshoot to run health checks."
-        menu.addItem(troubleshoot)
-
         menu.addItem(.separator())
 
-        // Uninstall lives in Settings → Troubleshoot now (it's a rare, heavy
-        // action — no need to carry it in the quick menu).
         let quit = NSMenuItem(title: "Quit SSH2FA", action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -368,29 +358,8 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         }
     }
 
-    @objc private func openLogs(_ sender: Any?) {
-        // Bring main window forward + signal the ContentView to open the
-        // logs WindowGroup via the SwiftUI Environment(\.openWindow) API.
-        // Previously we tried `newWindowForTab:` (a Safari-style selector
-        // that doesn't apply to non-tabbed SwiftUI windows) — silently
-        // no-op'd on macOS 14+.
-        NSApp.activate(ignoringOtherApps: true)
-        if let win = NSApp.windows.first(where: { $0.title == "SSH2FA Logs" }) {
-            win.makeKeyAndOrderFront(nil)
-            return
-        }
-        NotificationCenter.default.post(name: .a2fShowLogs, object: nil)
-    }
-
     @objc private func openSettings(_ sender: Any?) {
         UserDefaults.standard.set(SettingsTab.general, forKey: SettingsKey.settingsTab)
-        showSettingsWindow()
-    }
-
-    /// Deep-link straight to the Troubleshoot tab (the menu item that promised
-    /// "Open Settings → Troubleshoot" used to dump the user on General).
-    @objc private func openTroubleshoot(_ sender: Any?) {
-        UserDefaults.standard.set(SettingsTab.troubleshoot, forKey: SettingsKey.settingsTab)
         showSettingsWindow()
     }
 
