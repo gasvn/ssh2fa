@@ -269,25 +269,28 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         return menu
     }
 
+    // A menu (unlike the dashboard) can't color these dots, so each state gets a
+    // DISTINCT glyph + plain-English word — no raw "Stale"/"Port busy" jargon,
+    // and states no longer look identical at a glance.
     private func label(for s: SSHHost.DisplayState) -> String {
         switch s {
         case .connected: return "● Connected"
-        case .connecting: return "◐ Connecting…"
-        case .failed: return "● Failed"
-        case .stopped: return "○ Stopped"
-        case .unknown: return "?"
+        case .connecting: return "◌ Connecting…"
+        case .failed: return "✕ Failed"
+        case .stopped: return "○ Off"
+        case .unknown: return "– Unknown"
         }
     }
 
     private func label(for s: Tunnel.DisplayState) -> String {
         switch s {
         case .alive: return "● Connected"
-        case .starting: return "◐ Connecting…"
-        case .stale: return "○ Stale"
-        case .idle: return "○ Idle"
-        case .portBusy: return "● Port busy"
-        case .failed: return "● Failed"
-        case .unknown: return "?"
+        case .starting: return "◌ Connecting…"
+        case .stale: return "◑ Reconnecting…"
+        case .idle: return "○ Off"
+        case .portBusy: return "⚠ Port in use"
+        case .failed: return "✕ Failed"
+        case .unknown: return "– Unknown"
         }
     }
 

@@ -62,6 +62,12 @@ final class AppState: ObservableObject {
     /// successful delete.
     @Published var undoableDelete: Tunnel?
     private var undoExpireTask: Task<Void, Never>?
+    /// Transient in-window error for a user action (toggle/start/clone/batch).
+    /// Shown in a dashboard banner that does NOT depend on the Dynamic Notch
+    /// toggle — notch toasts can be turned off, which used to silently swallow
+    /// every failure. Auto-clears after a few seconds; also manually dismissable.
+    @Published var actionError: String?
+    private var actionErrorClearTask: Task<Void, Never>?
     /// A newer release found by the notify-only background check. Drives the
     /// menu-bar "Update available" item + status-item marker. nil = up to date
     /// (or not yet checked / check disabled).
@@ -642,6 +648,16 @@ final class AppState: ObservableObject {
     /// could read them — a daemon rejection like "port busy" was effectively
     /// invisible.
     func showActionError(_ message: String) {
+        // Always surface an in-window banner — independent of the Dynamic Notch
+        // toggle. Routing only through the notch (gated on notchEnabled) meant a
+        // user who had toasts off never saw "port busy", a failed clone/batch,
+        // etc. The banner is the reliable channel; the notch is a bonus on top.
+        actionError = message
+        actionErrorClearTask?.cancel()
+        actionErrorClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 7_000_000_000)
+            if !Task.isCancelled { self?.actionError = nil }
+        }
         notchPresenter.show(
             systemImage: "exclamationmark.triangle.fill",
             title: "Action failed",

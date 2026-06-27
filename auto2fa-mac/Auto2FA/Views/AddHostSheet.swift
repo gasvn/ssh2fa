@@ -175,7 +175,7 @@ struct AddHostSheet: View {
                             Text(qrError).font(.caption2).foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text("Paste the full otpauth:// URL or the bare base32 secret — either works. Or screenshot the QR and click “Scan QR”.")
+                        Text("Needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         DisclosureGroup(isExpanded: $showOTPHelp) {
@@ -394,7 +394,7 @@ struct AddHostSheet: View {
             }
             guard !password.isEmpty else { error = "Password is required."; return }
             guard OTPSecret.normalize(input: otpauthURL, account: name) != nil else {
-                error = "Enter a 2FA secret — an otpauth:// URL or a base32 key."
+                error = "SSH2FA needs your TOTP secret key (otpauth:// URL or base32) — not Duo Push. See “How do I get this?” below."
                 focused = .otpauth; return
             }
             error = nil
@@ -405,7 +405,7 @@ struct AddHostSheet: View {
         guard !h.isEmpty else { error = "Hostname is required."; focused = .hostname; return }
         guard !password.isEmpty else { error = "Password is required."; focused = .password; return }
         guard OTPSecret.normalize(input: otpauthURL, account: hostname) != nil else {
-            error = "Enter a 2FA secret — an otpauth:// URL or a base32 key."
+            error = "SSH2FA needs your TOTP secret key (otpauth:// URL or base32) — not Duo Push. See “How do I get this?” below."
             focused = .otpauth; return
         }
         error = nil

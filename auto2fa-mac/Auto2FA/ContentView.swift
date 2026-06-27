@@ -100,26 +100,64 @@ struct ContentView: View {
 
     @ViewBuilder
     private var errorBanner: some View {
-        if let err = appState.connectionError {
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                Text(FriendlyText.friendlyError(err))
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.primary)
+        VStack(spacing: Spacing.s) {
+            if let err = appState.connectionError {
+                // Connection problems → offer a path to the diagnostics (which
+                // live in Settings → Troubleshoot) instead of a tap-to-dismiss
+                // dead-end.
+                bannerRow(text: FriendlyText.friendlyError(err), rawHelp: err, tint: .red,
+                          action: ("Troubleshoot", { openTroubleshoot() }),
+                          dismiss: { appState.connectionError = nil })
             }
-            .padding(.horizontal, Spacing.m)
-            .padding(.vertical, Spacing.s)
-            .glassChrome()
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                    .strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
-            )
-            .padding(.top, Spacing.m)
-            .transition(.move(edge: .top).combined(with: .opacity))
-            .onTapGesture { appState.connectionError = nil }
-            .help(err)  // hover for the raw underlying message
+            if let act = appState.actionError {
+                bannerRow(text: act, rawHelp: act, tint: .orange,
+                          action: nil,
+                          dismiss: { appState.actionError = nil })
+            }
         }
+        .padding(.top, Spacing.m)
+        .animation(.easeInOut(duration: 0.2), value: appState.connectionError)
+        .animation(.easeInOut(duration: 0.2), value: appState.actionError)
+    }
+
+    @ViewBuilder
+    private func bannerRow(text: String, rawHelp: String, tint: Color,
+                           action: (String, () -> Void)?,
+                           dismiss: @escaping () -> Void) -> some View {
+        HStack(spacing: Spacing.s) {
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(tint)
+            Text(text)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Spacing.s)
+            if let (label, run) = action {
+                Button(label, action: run)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, Spacing.m)
+        .padding(.vertical, Spacing.s)
+        .glassChrome()
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .strokeBorder(tint.opacity(0.45), lineWidth: 1)
+        )
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .help(rawHelp)
+    }
+
+    /// Deep-link to Settings → Troubleshoot (uses the same mechanism the menu
+    /// bar uses for About/General — the troubleshoot tab tag already exists).
+    private func openTroubleshoot() {
+        UserDefaults.standard.set(SettingsTab.troubleshoot, forKey: SettingsKey.settingsTab)
+        openSettings()
     }
 
     @ViewBuilder
