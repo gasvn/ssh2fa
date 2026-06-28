@@ -66,7 +66,8 @@ struct HostRow: View {
                     .accessibilityLabel("Warning: \(host.host) is not in ~/.ssh/config and won't connect")
             }
 
-            // Spinner + progress text while busy, else flexible hostname column.
+            // Spinner + progress text while busy; the failure reason INLINE when
+            // failed (so the user sees WHY without hovering); else hostname column.
             if isBusy {
                 HStack(spacing: Spacing.xs) {
                     ProgressView()
@@ -80,6 +81,14 @@ struct HostRow: View {
                         .truncationMode(.tail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } else if host.displayState == .failed {
+                Text(friendlyMessage.isEmpty ? "Connection failed" : friendlyMessage)
+                    .font(.rowMeta)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(friendlyMessage)
             } else {
                 // Resolved hostname (secondary), flexible column. The model only
                 // carries the alias (`host.host`); there is no separate resolved

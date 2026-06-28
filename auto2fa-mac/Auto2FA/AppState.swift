@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 /// Observable mirror of daemon state. Lives for the lifetime of the app.
 ///
@@ -543,10 +544,16 @@ final class AppState: ObservableObject {
             // action buttons (Restart / Show Activity) so user can react
             // without switching back to the app.
             if status == "failed" || status == "stale" {
-                MacNotifications.postTunnelFailed(
-                    name: name,
-                    body: lastMsg.isEmpty ? "see app for details" : lastMsg
-                )
+                // Only raise a Notification Center banner when the app ISN'T
+                // frontmost — otherwise it doubles up with the in-app notch toast
+                // + the row going red. When you're in another app, the banner
+                // (with Restart / Show Activity) is how you find out.
+                if !NSApplication.shared.isActive {
+                    MacNotifications.postTunnelFailed(
+                        name: name,
+                        body: lastMsg.isEmpty ? "see app for details" : lastMsg
+                    )
+                }
             }
         case .notification(let severity, let title, let message):
             notchPresenter.show(

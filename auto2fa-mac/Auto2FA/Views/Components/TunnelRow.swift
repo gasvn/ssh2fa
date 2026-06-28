@@ -39,6 +39,13 @@ struct TunnelRow: View {
         tunnel.displayState == .alive || tunnel.displayState == .starting
     }
 
+    /// A compute (non-direct) tunnel with no node chosen and not running —
+    /// "Start" can't do anything until a node is picked, so the primary action
+    /// should open the node picker instead of being a dead button.
+    private var needsNode: Bool {
+        !tunnel.isDirect && tunnel.lastNode == nil && !tunnelIsOn
+    }
+
     /// A failure state where the user needs a recovery action (Retry / re-pick node).
     private var isFailedState: Bool {
         switch tunnel.displayState {
@@ -115,12 +122,15 @@ struct TunnelRow: View {
             // which overflowed the old fixed 110pt column and clipped the remote
             // port's tail. fixedSize lets it take its natural width at any font
             // size; minWidth keeps short ports aligned with the column.
-            Text(":\(tunnel.localPort) → :\(tunnel.remotePort)")
+            Text(tunnel.localPort == tunnel.remotePort
+                 ? ":\(tunnel.localPort)"
+                 : ":\(tunnel.localPort) → :\(tunnel.remotePort)")
                 .font(.rowIdentifier)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(minWidth: 110, alignment: .leading)
+                .help(":\(tunnel.localPort) (local) → :\(tunnel.remotePort) (remote)")
 
             // Node + via + metadata — shown at rest, hidden on hover OR when the
             // tunnel is failed (so the action bar / recovery buttons get the full
@@ -166,6 +176,15 @@ struct TunnelRow: View {
                 // Metadata: aliveSince + fail count — compact fixed column.
                 metadata
                     .frame(width: 92, alignment: .leading)
+            } else if isFailedState && !hovering {
+                // Failed → show WHY inline (previously only in the hover tooltip).
+                Text(FriendlyText.tunnelStatusBlurb(tunnel))
+                    .font(.rowMeta)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(rowTooltip)
             }
 
             Spacer(minLength: Spacing.s)
@@ -283,8 +302,10 @@ struct TunnelRow: View {
             HStack(spacing: Spacing.xs) {
                 glassActionButton(id: "toggle",
                                   disabled: appState.inFlightTunnels.contains(tunnel.name),
-                                  help: tunnelIsOn ? "Stop tunnel" : "Start tunnel") {
-                    Task { await appState.toggleTunnel(tunnel) }
+                                  help: needsNode ? "Pick a compute node, then start"
+                                                  : (tunnelIsOn ? "Stop tunnel" : "Start tunnel")) {
+                    if needsNode { appState.presentNodePicker(for: tunnel) }
+                    else { Task { await appState.toggleTunnel(tunnel) } }
                 } label: {
                     if isBusy {
                         HStack(spacing: Spacing.xs) {
@@ -292,6 +313,8 @@ struct TunnelRow: View {
                                 .frame(width: 14, height: 14)
                             Text(tunnelIsOn ? "Stop" : "Start").font(.caption)
                         }
+                    } else if needsNode {
+                        Label("Pick node", systemImage: "list.bullet.rectangle")
                     } else {
                         Label(tunnelIsOn ? "Stop" : "Start",
                               systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
@@ -319,7 +342,7 @@ struct TunnelRow: View {
                 glassActionButton(id: "copy",
                                   disabled: false,
                                   help: "Copy localhost URL") {
-                    copyURL(tunnel.url)
+                    copyURL(tunnel.browserURL)
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
@@ -375,10 +398,15 @@ struct TunnelRow: View {
     @ViewBuilder
     private var tunnelMenuItems: some View {
         Button {
-            Task { await appState.toggleTunnel(tunnel) }
+            if needsNode { appState.presentNodePicker(for: tunnel) }
+            else { Task { await appState.toggleTunnel(tunnel) } }
         } label: {
-            Label(tunnelIsOn ? "Stop" : "Start",
-                  systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
+            if needsNode {
+                Label("Pick node & start…", systemImage: "list.bullet.rectangle")
+            } else {
+                Label(tunnelIsOn ? "Stop" : "Start",
+                      systemImage: tunnelIsOn ? "stop.fill" : "play.fill")
+            }
         }
         .disabled(appState.inFlightTunnels.contains(tunnel.name))
 
@@ -407,7 +435,7 @@ struct TunnelRow: View {
         Button {
             copyURL(tunnel.url)
         } label: {
-            Label("Copy localhost:\(tunnel.localPort)", systemImage: "doc.on.doc")
+            Label("Copy URL", systemImage: "doc.on.doc")
         }
 
         Button {
@@ -471,6 +499,14 @@ struct TunnelRow: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(url, forType: .string)
+        // Confirm the copy (same channel as "Open in browser") — a silent copy
+        // gave no feedback, and the copied value now matches what Open opens.
+        appState.notchPresenter.show(
+            systemImage: "doc.on.doc.fill",
+            title: "Copied",
+            description: url,
+            tint: .blue
+        )
     }
 
     private func openInBrowser(_ t: Tunnel) {

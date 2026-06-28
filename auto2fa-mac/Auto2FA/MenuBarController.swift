@@ -60,11 +60,15 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
     ///   - yellow if anything is connecting/starting
     ///   - green if all enabled things are healthy
     ///   - grey  if nothing is enabled / idle
-    private func aggregateTint() -> NSColor {
-        guard let appState else { return .secondaryLabelColor }
+    /// Aggregate health across hosts + tunnels → a tint AND a distinct SF Symbol
+    /// + label. The failed state gets its own SHAPE (warning triangle), not just
+    /// a red tint, so colorblind / quick-glance users can tell something's wrong
+    /// without relying on color.
+    private func aggregateHealth() -> (tint: NSColor, symbol: String, label: String) {
+        let base = "point.3.connected.trianglepath.dotted"
+        guard let appState else { return (.secondaryLabelColor, base, "idle") }
         // Explicit loops instead of compound contains() expressions —
-        // Swift's type checker would otherwise time out on this body
-        // (it tries every overload of `==` for each variant).
+        // Swift's type checker would otherwise time out on this body.
         var anyFailed = false
         var anyBusy = false
         var anyAlive = false
@@ -84,41 +88,40 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
             default: break
             }
         }
-        if anyFailed { return .systemRed }
-        if anyBusy { return .systemYellow }
-        return anyAlive ? .systemGreen : .secondaryLabelColor
+        if anyFailed { return (.systemRed, "exclamationmark.triangle.fill", "a connection failed") }
+        if anyBusy { return (.systemYellow, base, "connecting…") }
+        if anyAlive { return (.systemGreen, base, "connected") }
+        return (.secondaryLabelColor, base, "idle")
     }
 
     private func renderButton() {
         guard let button = statusItem?.button else { return }
-        let tint = aggregateTint()
-        var image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
-                            accessibilityDescription: "SSH2FA")
+        let health = aggregateHealth()
+        var image = NSImage(systemSymbolName: health.symbol, accessibilityDescription: "SSH2FA")
                 ?? NSImage(systemSymbolName: "network", accessibilityDescription: "SSH2FA")
         if let img = image {
             // .palette renders the symbol in our chosen color (and respects
             // dark/light mode automatically because we're working in NSColor).
-            let cfg = NSImage.SymbolConfiguration(paletteColors: [tint])
+            let cfg = NSImage.SymbolConfiguration(paletteColors: [health.tint])
             image = img.withSymbolConfiguration(cfg)
             button.image = image
             button.imagePosition = .imageLeading
         } else {
             button.title = "A2F"
         }
-        // The icon's COLOR already conveys aggregate health, so the numeric
-        // alive/total badge was dropped (it added noise without much meaning).
+        // The icon's COLOR + SHAPE convey aggregate health (no numeric badge).
         // Keep only a small ⬆︎ marker when a newer release is waiting.
         let mark = (appState?.availableUpdate != nil) ? " ⬆︎" : ""
         button.title = mark
-        // Give the otherwise-cryptic ⬆︎ a hover tooltip + VoiceOver label, and
-        // restore the default ones when no update is pending.
+        // Tooltip + VoiceOver describe the health state (and the update if any),
+        // so the meaning isn't color-only.
         if let upd = appState?.availableUpdate {
             let v = UpdateCheckCore.displayVersion(upd.version)
-            button.toolTip = "SSH2FA update available — \(v). Click for options."
-            button.image?.accessibilityDescription = "SSH2FA, update available \(v)"
+            button.toolTip = "SSH2FA — \(health.label). Update available \(v). Click for options."
+            button.image?.accessibilityDescription = "SSH2FA, \(health.label), update available \(v)"
         } else {
-            button.toolTip = "SSH2FA — click for menu"
-            button.image?.accessibilityDescription = "SSH2FA"
+            button.toolTip = "SSH2FA — \(health.label). Click for menu."
+            button.image?.accessibilityDescription = "SSH2FA, \(health.label)"
         }
     }
 
@@ -205,10 +208,24 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         menu.addItem(hostsHeader)
         for host in appState?.hosts ?? [] {
             let title = "\(host.host)  —  \(label(for: host.displayState))"
-            let item = NSMenuItem(title: title, action: #selector(toggleHost(_:)),
-                                  keyEquivalent: "")
-            item.target = self
-            item.representedObject = host.host
+            // A submenu (like tunnels) — a plain click used to silently
+            // Disconnect, dropping the warm connection. Now Disconnect is an
+            // explicit choice.
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            if host.isMasterReady {
+                let term = NSMenuItem(title: "Open Terminal",
+                                      action: #selector(openHostTerminal(_:)), keyEquivalent: "")
+                term.target = self
+                term.representedObject = host.host
+                sub.addItem(term)
+            }
+            let toggle = NSMenuItem(title: host.active ? "Disconnect" : "Connect",
+                                    action: #selector(toggleHost(_:)), keyEquivalent: "")
+            toggle.target = self
+            toggle.representedObject = host.host
+            sub.addItem(toggle)
+            item.submenu = sub
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -256,6 +273,12 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         // on a toolbar button in the dashboard, and Troubleshoot / Uninstall are
         // tabs/sections inside Settings. The quick menu stays focused on
         // everyday actions (open app, hosts, tunnels).
+        let palette = NSMenuItem(title: "Command Palette…",
+                                 action: #selector(openPalette(_:)), keyEquivalent: "k")
+        palette.target = self
+        palette.toolTip = "Quick actions — also ⌘K inside the dashboard."
+        menu.addItem(palette)
+
         let prefs = NSMenuItem(title: "Settings…",
                                action: #selector(openSettings(_:)), keyEquivalent: ",")
         prefs.target = self
@@ -306,6 +329,25 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         guard let name = sender.representedObject as? String,
               let t = appState?.tunnels.first(where: { $0.name == name }) else { return }
         Task { await appState?.toggleTunnel(t) }
+    }
+
+    @objc private func openHostTerminal(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        TerminalLauncher.openSSH(host: name)
+    }
+
+    /// Surface the Command Palette from the menu bar (it was only reachable via
+    /// an undiscoverable ⌘K). Brings the dashboard forward first so the palette
+    /// sheet has a host window.
+    @objc private func openPalette(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        if let win = window {
+            win.makeKeyAndOrderFront(nil)
+        } else if let any = NSApp.windows.first(where: { $0.title == "SSH2FA" }) {
+            any.makeKeyAndOrderFront(nil)
+            self.window = any
+        }
+        NotificationCenter.default.post(name: .a2fShowPalette, object: nil)
     }
 
     /// "How to update…" → deep-link to Settings → About, which now shows

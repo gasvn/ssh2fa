@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import LocalAuthentication
 
 /// Optional biometric gate for the app's private windows. Uses
@@ -56,6 +57,7 @@ struct LockGate<Content: View>: View {
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @State private var unlocked = false
     @State private var authing = false
+    @State private var authFailed = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -63,7 +65,7 @@ struct LockGate<Content: View>: View {
             if unlocked {
                 content()
             } else {
-                LockedView(authing: authing) { Task { await attempt() } }
+                LockedView(authing: authing, failed: authFailed) { Task { await attempt() } }
             }
         }
         .onAppear { evaluate() }
@@ -97,23 +99,36 @@ struct LockGate<Content: View>: View {
     private func attempt() async {
         guard !authing else { return }
         authing = true
+        authFailed = false
         let ok = await lock.authenticate()
         authing = false
-        if ok { unlocked = true }
+        if ok { unlocked = true } else { authFailed = true }
     }
 }
 
 struct LockedView: View {
     let authing: Bool
+    var failed: Bool = false
     let unlock: () -> Void
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 40)).foregroundStyle(.secondary)
             Text("SSH2FA is locked").font(.title3)
+            if failed && !authing {
+                Text("Authentication was cancelled or failed. Try again, or quit.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             Button(authing ? "Authenticating…" : "Unlock", action: unlock)
                 .controlSize(.large)
                 .disabled(authing)
+            // An escape hatch: if biometrics keep failing, the only other way
+            // out used to be the menu bar. Let the user quit from here.
+            Button("Quit SSH2FA") { NSApplication.shared.terminate(nil) }
+                .controlSize(.small)
+                .buttonStyle(.link)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
