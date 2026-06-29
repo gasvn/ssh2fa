@@ -146,6 +146,40 @@ struct SettingsView: View {
                 } header: { Text("Warm connection reuse") }
 
                 Section {
+                    Toggle("Automatically check for updates", isOn: $autoCheckUpdates)
+                        .onChange(of: autoCheckUpdates) { _, on in
+                            appState.updateAutoCheckChanged(enabled: on)
+                        }
+                    Text("Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Updates") }
+
+                Section {
+                    Toggle("Require Touch ID to open the dashboard", isOn: $requireTouchID)
+                    Text("Locks the dashboard and log windows behind Touch ID (falls back to your Mac login password). The menu-bar icon stays visible. Re-locks ~60s after you close the window.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if requireTouchID && !BiometricLock.availability().ok {
+                        Text("⚠︎ This Mac can't evaluate Touch ID or a login password right now — the lock may not engage.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } header: { Text("Privacy & Security") }
+
+                Section {
+                    Toggle("Open localhost URL in browser when tunnel comes up", isOn: $autoOpenBrowser)
+                    Text("Triggers once per tunnel transition idle → alive. If your tunnel hosts a notebook server (jupyter etc.), this saves you a click.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Compact row mode", isOn: $compactRows)
+                    Text("Tighter row height + smaller font for the tunnel table. Helpful when you have more than 10 tunnels.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Tunnels") }
+
+                // ── Advanced ──────────────────────────────────────────────
+                Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)
                     Text("Tunnel state changes appear as toasts over the notch. This controls ONLY the notch — failures still show in the dashboard, and macOS notifications still fire when SSH2FA isn't frontmost.")
                         .font(.caption)
@@ -161,17 +195,6 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Dynamic Notch toasts") }
-
-                Section {
-                    Toggle("Open localhost URL in browser when tunnel comes up", isOn: $autoOpenBrowser)
-                    Text("Triggers once per tunnel transition idle → alive. If your tunnel hosts a notebook server (jupyter etc.), this saves you a click.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Toggle("Compact row mode", isOn: $compactRows)
-                    Text("Tighter row height + smaller font for the tunnel table. Helpful when you have more than 10 tunnels.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: { Text("Tunnels") }
 
                 Section {
                     Toggle("Rebuild SSH masters + restart tunnels on wake", isOn: $autoRecoverOnWake)
@@ -193,18 +216,6 @@ struct SettingsView: View {
                 } header: { Text("Background helper") }
 
                 Section {
-                    Toggle("Require Touch ID to open the dashboard", isOn: $requireTouchID)
-                    Text("Locks the dashboard and log windows behind Touch ID (falls back to your Mac login password). The menu-bar icon stays visible. Re-locks ~60s after you close the window.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if requireTouchID && !BiometricLock.availability().ok {
-                        Text("⚠︎ This Mac can't evaluate Touch ID or a login password right now — the lock may not engage.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } header: { Text("Privacy & Security") }
-
-                Section {
                     Toggle("Sync preferences via iCloud Drive (free)", isOn: $syncPrefsViaICloud)
                     Text("Syncs only these app preferences across your Macs via a file in iCloud Drive — no paid Apple Developer account needed. Never includes your hosts, tunnels, or 2FA secret.")
                         .font(.caption)
@@ -215,16 +226,6 @@ struct SettingsView: View {
                             .foregroundStyle(.orange)
                     }
                 } header: { Text("Sync") }
-
-                Section {
-                    Toggle("Automatically check for updates", isOn: $autoCheckUpdates)
-                        .onChange(of: autoCheckUpdates) { _, on in
-                            appState.updateAutoCheckChanged(enabled: on)
-                        }
-                    Text("Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: { Text("Updates") }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }

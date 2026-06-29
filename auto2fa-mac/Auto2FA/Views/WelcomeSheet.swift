@@ -86,6 +86,15 @@ struct WelcomeSheet: View {
                     .padding(Spacing.m)
                     .groupedContent(cornerRadius: Radius.control)
             }
+            // First-run warmup: the welcome sheet sits over the dashboard's error
+            // banner, so surface daemon-startup status here too.
+            if let err = appState.connectionError {
+                Label("Starting the background helper… \(FriendlyText.friendlyError(err))",
+                      systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(Spacing.xl)
     }

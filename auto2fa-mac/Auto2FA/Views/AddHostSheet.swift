@@ -30,6 +30,11 @@ struct AddHostSheet: View {
     @State private var error: String?
     @State private var qrError: String?
     @State private var showOTPHelp = false
+    /// For a GUIDED host, "Test login" writes the managed config so `ssh -F` can
+    /// resolve the alias. If the user then cancels without saving, that entry is
+    /// an orphan — track the alias (only when newly created, not when editing an
+    /// existing host) so Cancel can clean it up.
+    @State private var orphanAlias: String?
     /// nil = not checked / empty; false = typed alias isn't a Host in ssh config.
     @State private var hostInConfig: Bool? = nil
 
@@ -337,7 +342,7 @@ struct AddHostSheet: View {
 
     private var footer: some View {
         HStack {
-            Button("Cancel") { appState.dismissSheet() }
+            Button("Cancel") { cleanupOrphanIfNeeded(); appState.dismissSheet() }
                 .keyboardShortcut(.cancelAction)
                 .disabled(submitting)
             Spacer()
@@ -376,6 +381,15 @@ struct AddHostSheet: View {
     /// STALE result and saved untested credentials (auto-retry login storm).
     private func invalidateTest() {
         testResult = nil
+    }
+
+    /// Remove the managed-config entry that "Test login" wrote, if the user is
+    /// bailing out without saving (so a tested-but-unsaved host doesn't linger).
+    private func cleanupOrphanIfNeeded() {
+        guard let alias = orphanAlias else { return }
+        _ = try? ManagedHostStore.remove(alias: alias, in: appState.managedHostsURL)
+        appState.syncManagedSSHConfig()
+        orphanAlias = nil
     }
 
     private func advance() {
@@ -431,12 +445,16 @@ struct AddHostSheet: View {
                 // in ~/.ssh/config).
                 let alias = SSHConfigManager.sanitizeAlias(displayName)
                 let port = Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 22
+                let preExisting = ManagedHostStore.load(from: appState.managedHostsURL)
+                    .contains { $0.alias == alias }
                 _ = try? ManagedHostStore.upsert(
                     ManagedHostConn(alias: alias,
                                     hostName: serverAddress.trimmingCharacters(in: .whitespacesAndNewlines),
                                     user: username.trimmingCharacters(in: .whitespacesAndNewlines), port: port),
                     in: appState.managedHostsURL)
                 appState.syncManagedSSHConfig()
+                // Newly created just for the test → clean up on cancel.
+                if !preExisting { orphanAlias = alias }
                 (ok, reason) = try await appState.client.testHostCredentials(
                     host: alias, password: password,
                     otpauthURL: OTPSecret.normalize(input: otpauthURL, account: alias)
@@ -476,6 +494,7 @@ struct AddHostSheet: View {
                 ) {
                     error = msg; submitting = false
                 } else {
+                    orphanAlias = nil   // saved → it's a real host now, not an orphan
                     appState.notchPresenter.show(
                         systemImage: "checkmark.circle.fill",
                         title: "Added “\(alias)”",
