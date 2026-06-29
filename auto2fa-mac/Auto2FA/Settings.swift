@@ -147,7 +147,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Show Dynamic Notch toasts", isOn: $notchEnabled)
-                    Text("Notifications for tunnel state changes appear over the MacBook Pro notch. Disabling falls back to no UI feedback.")
+                    Text("Tunnel state changes appear as toasts over the notch. This controls ONLY the notch — failures still show in the dashboard, and macOS notifications still fire when SSH2FA isn't frontmost.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle("Do Not Disturb (compact notch)", isOn: $notchDoNotDisturb)
@@ -160,7 +160,7 @@ struct SettingsView: View {
                     Text("When any tunnel is alive or transitioning, a small persistent indicator sits over the notch. Click for the full toast. Off by default — can be visually busy.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } header: { Text("Notifications") }
+                } header: { Text("Dynamic Notch toasts") }
 
                 Section {
                     Toggle("Open localhost URL in browser when tunnel comes up", isOn: $autoOpenBrowser)
@@ -185,6 +185,11 @@ struct SettingsView: View {
                     Text("SSH2FA uses a small background helper to keep your connections alive. Leave this on unless you run it yourself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if !spawnDaemonOnLaunch {
+                        Text("⚠︎ Off: SSH2FA won't start the helper — your hosts won't connect and nothing here will work unless you run ssh2fa-daemon yourself.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 } header: { Text("Background helper") }
 
                 Section {
@@ -283,10 +288,11 @@ private struct TroubleshootPane: View {
             Divider()
             HStack {
                 Button("Restart daemon") { model.restartDaemon() }
-                Button("Open daemon log") {
+                Button("Reveal log file…") {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: "/tmp/ssh2fa_daemon.log")])
                 }
+                .help("Show /tmp/ssh2fa_daemon.log in Finder (the dashboard's “Logs” button opens the live in-app viewer).")
                 Spacer()
                 Button(copied ? "Copied ✓" : "Copy diagnostics") {
                     NSPasteboard.general.clearContents()

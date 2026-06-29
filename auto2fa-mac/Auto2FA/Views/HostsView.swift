@@ -8,16 +8,30 @@ struct HostsView: View {
         !onboardingDismissed && OnboardingChecklist.shouldShow(
             hostCount: appState.hosts.count,
             anyConnected: appState.hosts.contains { $0.displayState == .connected },
-            usedTerminal: UserDefaults.standard.bool(forKey: SettingsKey.usedTerminal))
+            usedTerminal: UserDefaults.standard.bool(forKey: SettingsKey.usedTerminal),
+            warmReuse: UserDefaults.standard.bool(forKey: SettingsKey.warmReuseEnabled))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             header
             if appState.hosts.isEmpty {
-                // No hosts yet → the checklist IS the empty state (carries the CTAs).
-                GetStartedChecklist(compact: false)
+                if appState.connectionError != nil {
+                    // Daemon unreachable/starting — DON'T show "no hosts / get
+                    // started" as if the user's hosts vanished. The error banner
+                    // above carries the detail + a Troubleshoot button.
+                    VStack(spacing: Spacing.s) {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting to the background helper…")
+                            .foregroundStyle(.secondary)
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(Spacing.l)
+                } else {
+                    // No hosts yet → the checklist IS the empty state (carries the CTAs).
+                    GetStartedChecklist(compact: false)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else {
                 // Has hosts but onboarding not finished → slim guide above the list.
                 if onboardingActive {

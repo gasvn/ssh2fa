@@ -1137,6 +1137,14 @@ final class AppState: ObservableObject {
                 description: names.joined(separator: ", "),
                 tint: okCount == results.count ? .green : .orange
             )
+            // Surface WHY the rest didn't make it (was discarded — the toast just
+            // said "0/2 started"). Goes to the always-visible action banner.
+            if okCount < results.count {
+                let detail = results.filter { !$0.ok }
+                    .map { "\($0.name): \($0.error ?? "failed")" }
+                    .joined(separator: "; ")
+                showActionError("\(results.count - okCount) of \(results.count) didn't \(action) — \(detail)")
+            }
         } catch { showActionError(error) }
         await reloadTunnelsOnly()
     }

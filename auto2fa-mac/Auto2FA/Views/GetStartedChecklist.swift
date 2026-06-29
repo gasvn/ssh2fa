@@ -15,7 +15,8 @@ struct GetStartedChecklist: View {
         OnboardingChecklist.completed(
             hostCount: appState.hosts.count,
             anyConnected: appState.hosts.contains { $0.displayState == .connected },
-            usedTerminal: UserDefaults.standard.bool(forKey: SettingsKey.usedTerminal))
+            usedTerminal: UserDefaults.standard.bool(forKey: SettingsKey.usedTerminal),
+            warmReuse: UserDefaults.standard.bool(forKey: SettingsKey.warmReuseEnabled))
     }
 
     var body: some View {

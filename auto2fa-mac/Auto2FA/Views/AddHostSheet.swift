@@ -111,6 +111,12 @@ struct AddHostSheet: View {
                 if isGuided {
                     field("Name", TextField("e.g. lab server, gpu cluster", text: $displayName)
                             .focused($focused, equals: .hostname))
+                    let alias = SSHConfigManager.sanitizeAlias(displayName)
+                    if !alias.isEmpty && alias != displayName {
+                        Text("Saved as SSH alias “\(alias)” (used for ssh \(alias)).")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     field("Server address", TextField("login.hpc.example.edu", text: $serverAddress))
                     field("Username", TextField("your login name on the server", text: $username))
                     DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
@@ -308,16 +314,10 @@ struct AddHostSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
-                    Text("Click \"Test login\" to verify before saving.")
+                    Text("Press Return (or the “Test login” button below) to verify before saving.")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    Task { await testLogin() }
-                } label: {
-                    Text(testing ? "Testing…" : "Test login")
-                }
-                .disabled(testing)
             }
             .padding(.vertical, Spacing.xs)
 
@@ -345,12 +345,18 @@ struct AddHostSheet: View {
                 Button("Back") { step -= 1; error = nil }
                     .disabled(submitting)
             }
-            Button(step == 0 ? "Next" : "Add Host") {
-                if step == 0 { advance() } else { submit() }
+            // Step 2 still requires a successful test before saving (prevents the
+            // bad-creds → auto-retry rate-limit cascade), but instead of a DEAD
+            // disabled "Add Host" bound to Return, the primary button IS "Test
+            // login" until the test passes — so Return always does the next step.
+            let needsTest = (step == 1 && testResult?.ok != true)
+            Button(step == 0 ? "Next" : (needsTest ? "Test login" : "Add Host")) {
+                if step == 0 { advance() }
+                else if needsTest { Task { await testLogin() } }
+                else { submit() }
             }
             .keyboardShortcut(.defaultAction)
-            // On step 1, only allow Add Host after a successful test login.
-            .disabled(submitting || (step == 1 && (testResult?.ok != true)))
+            .disabled(submitting || testing)
         }
         .padding(.horizontal, Spacing.xl)
         .padding(.vertical, Spacing.m)
@@ -470,6 +476,12 @@ struct AddHostSheet: View {
                 ) {
                     error = msg; submitting = false
                 } else {
+                    appState.notchPresenter.show(
+                        systemImage: "checkmark.circle.fill",
+                        title: "Added “\(alias)”",
+                        description: autoConnect ? "connecting… open a Terminal from its row once it's ready"
+                                                 : "find it in the dashboard",
+                        tint: .green)
                     appState.dismissSheet()
                 }
             }
@@ -491,6 +503,12 @@ struct AddHostSheet: View {
                 // can keep enabling more in one sitting.
                 appState.presentImport()
             } else {
+                appState.notchPresenter.show(
+                    systemImage: "checkmark.circle.fill",
+                    title: "Added “\(hostname.trimmingCharacters(in: .whitespacesAndNewlines))”",
+                    description: autoConnect ? "connecting… open a Terminal from its row once it's ready"
+                                             : "find it in the dashboard",
+                    tint: .green)
                 appState.dismissSheet()
             }
         }

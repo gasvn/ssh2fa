@@ -45,6 +45,11 @@ struct WelcomeSheet: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+            Text("On first connect, macOS asks permission for SSH2FA to use its own saved credentials in your Keychain — click “Always Allow”.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
                 .padding(.bottom, Spacing.l)
         }
     }
