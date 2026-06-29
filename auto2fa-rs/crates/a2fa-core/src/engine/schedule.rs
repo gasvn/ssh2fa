@@ -35,6 +35,41 @@ pub const WAKE_RETRY_DELAYS: &[Duration] = &[
     Duration::from_secs(120),
 ];
 
+/// Per-host spacing between staggered master rebuilds in one batch.
+///
+/// When a wake/network event condemns the whole fleet, firing every host's
+/// `start_master` (ssh + pty + 2FA) at the *same instant* slams CPU and the
+/// network and makes each master's local control socket momentarily refuse
+/// connects (listen-backlog full) — which the heartbeat then mis-reads as
+/// "dead" and condemns a *live* master (the false-dead churn). Spreading the
+/// batch by this step removes the simultaneity spike.
+pub const REBUILD_STAGGER_STEP: Duration = Duration::from_secs(2);
+
+/// Cap on the staggered start delay so a large fleet never waits minutes for
+/// its last master — the stagger only needs to break simultaneity, not fully
+/// serialize.
+pub const REBUILD_STAGGER_MAX: Duration = Duration::from_secs(12);
+
+/// A short settle delay applied to the FIRST host of a network-triggered
+/// rebuild batch, giving the freshly-changed network (routes / DNS / DHCP)
+/// a moment to come up before we spend a 2FA login that would otherwise
+/// time out against a not-yet-ready link.
+pub const NETWORK_SETTLE_DELAY: Duration = Duration::from_secs(3);
+
+/// Compute the start delay for the `index`-th host of a staggered rebuild
+/// batch: `base + index*STEP`, clamped so the spread never exceeds
+/// `base + REBUILD_STAGGER_MAX`.
+///
+/// `base` is the settle delay applied to every host (e.g.
+/// [`NETWORK_SETTLE_DELAY`] for the wake path, `ZERO` for an explicit user
+/// reset that should act immediately).
+pub fn rebuild_stagger_delay(index: usize, base: Duration) -> Duration {
+    let spread = REBUILD_STAGGER_STEP
+        .saturating_mul(index as u32)
+        .min(REBUILD_STAGGER_MAX);
+    base.saturating_add(spread)
+}
+
 // ---------------------------------------------------------------------------
 // Timing predicates
 // ---------------------------------------------------------------------------
@@ -148,5 +183,44 @@ mod tests {
         for i in 1..d.len() {
             assert!(d[i] > d[i - 1], "delays must be ascending: {:?}", d);
         }
+    }
+
+    #[test]
+    fn rebuild_stagger_first_host_is_base_only() {
+        // Index 0 starts after exactly the base settle delay — no extra spacing.
+        assert_eq!(
+            rebuild_stagger_delay(0, NETWORK_SETTLE_DELAY),
+            NETWORK_SETTLE_DELAY
+        );
+        // With a zero base (explicit user reset) the first host acts immediately.
+        assert_eq!(rebuild_stagger_delay(0, Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn rebuild_stagger_spaces_hosts_apart() {
+        // Each subsequent host is spaced one STEP further out, breaking the
+        // all-at-once thundering herd.
+        let base = Duration::ZERO;
+        for i in 1..5usize {
+            let prev = rebuild_stagger_delay(i - 1, base);
+            let cur = rebuild_stagger_delay(i, base);
+            assert!(
+                cur > prev,
+                "host {i} must start after host {}: {cur:?} vs {prev:?}",
+                i - 1
+            );
+            assert_eq!(cur - prev, REBUILD_STAGGER_STEP);
+        }
+    }
+
+    #[test]
+    fn rebuild_stagger_is_capped() {
+        // A large fleet must not wait minutes for its last host — the spread is
+        // clamped to base + REBUILD_STAGGER_MAX.
+        let base = NETWORK_SETTLE_DELAY;
+        let huge = rebuild_stagger_delay(1000, base);
+        assert_eq!(huge, base + REBUILD_STAGGER_MAX);
+        // And the cap is actually reached before index 1000.
+        assert!(rebuild_stagger_delay(100, base) <= base + REBUILD_STAGGER_MAX);
     }
 }

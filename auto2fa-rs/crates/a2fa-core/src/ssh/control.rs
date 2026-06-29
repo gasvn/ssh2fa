@@ -444,6 +444,89 @@ pub fn master_probe(control_path: &Path) -> MasterLiveness {
     }
 }
 
+/// Pure decision core for [`master_alive_authoritative`].
+///
+/// The fast `master_probe` connect refuses (ECONNREFUSED → `Dead`) not only
+/// when a master is truly gone, but also when a *live* master's listen backlog
+/// is momentarily full — which happens precisely during a wake/network rebuild
+/// storm when many mux clients + probes hit every master at once. Condemning on
+/// that signal alone burns a needless 2FA re-login on a master that was alive
+/// the whole time (the "marked Dead but master is ALIVE" churn in the logs).
+///
+/// So when the fast probe is NOT a confident `Alive`, fall back to the
+/// authoritative `ssh -O check` mux query, which waits for the master's own
+/// reply and therefore tolerates a transiently-busy master. `o_check` is
+/// evaluated lazily so the (forking, up-to-5s) check is skipped whenever the
+/// cheap probe already proves the master is up.
+pub fn authoritative_alive(probe: MasterLiveness, o_check: impl FnOnce() -> bool) -> bool {
+    match probe {
+        MasterLiveness::Alive => true,
+        // Dead OR Inconclusive: don't trust the raw connect — ask the master.
+        MasterLiveness::Dead | MasterLiveness::Inconclusive => o_check(),
+    }
+}
+
+/// Authoritative liveness for the condemn/adopt decision: cheap probe first,
+/// then the `ssh -O check` mux query as a tiebreaker when the probe isn't a
+/// confident `Alive`.
+///
+/// MUST be called only off the heartbeat hot path (e.g. inside a restart
+/// worker thread), because the fallback forks `ssh` and can block up to
+/// [`MASTER_CHECK_TIMEOUT`]. This is safe against the network-switch
+/// false-connected bug: it only runs after `master_probe` already reported the
+/// *local* socket as Dead/Inconclusive, so a network-dead-but-process-alive
+/// master (whose local socket still accepts connects) never reaches here.
+pub fn master_alive_authoritative(control_path: &Path, host: &str) -> bool {
+    let probe = master_probe(control_path);
+    authoritative_alive(probe, || master_check(control_path, host))
+}
+
+/// True iff `name` is one of OUR ControlPath entries (current `cm-ssh2fa-` or
+/// legacy `cm-auto2fa-` prefix). Used to scope the dangling-symlink sweep so it
+/// never touches an unrelated user symlink in `~/.ssh`.
+fn is_our_control_entry(name: &str) -> bool {
+    name.starts_with("cm-ssh2fa-") || name.starts_with("cm-auto2fa-")
+}
+
+/// Remove dangling `cm-*` ControlPath **symlinks** left behind in `dir` by
+/// older daemon versions. The pre-single-master pool/rotation scheme kept an
+/// active-slot symlink (`cm-…-<host>` → `cm-…-<host>-<index>`); when the scheme
+/// changed those symlinks were orphaned and now dangle (their target is gone),
+/// cluttering `~/.ssh`. Only *dangling symlinks* whose name matches our
+/// ControlPath prefix are removed — never a real socket file (which could be a
+/// live master) and never a symlink that still resolves.
+///
+/// Returns the number of stale symlinks removed. Errors (unreadable dir, race
+/// on remove) are swallowed: this is best-effort housekeeping, never fatal.
+pub fn sweep_dangling_control_symlinks(dir: &Path) -> usize {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !is_our_control_entry(&name) {
+            continue;
+        }
+        let path = entry.path();
+        // symlink_metadata does NOT follow the link → confirms it IS a symlink
+        // (we must never remove a real socket file — it could be a live master).
+        let is_symlink = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_symlink {
+            continue;
+        }
+        // metadata FOLLOWS the link → Err means the target is gone (dangling).
+        if std::fs::metadata(&path).is_err() && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Send `ssh -O exit` to cleanly shut down the ControlMaster for a pool slot.
 ///
 /// Failures are logged but not propagated — an exit may legitimately fail if
@@ -799,6 +882,37 @@ fn dirs_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    // ----- authoritative_alive ----------------------------------------------
+
+    #[test]
+    fn authoritative_alive_trusts_a_live_probe_without_o_check() {
+        // A confident Alive must short-circuit: the (forking, up-to-5s) o_check
+        // is never even called.
+        let called = Cell::new(false);
+        let alive = authoritative_alive(MasterLiveness::Alive, || {
+            called.set(true);
+            false
+        });
+        assert!(alive);
+        assert!(!called.get(), "o_check must be skipped when probe is Alive");
+    }
+
+    #[test]
+    fn authoritative_alive_adopts_busy_master_via_o_check() {
+        // Probe refused (backlog full under herd load) but the mux query proves
+        // the master is up → adopt, do NOT condemn / re-2FA.
+        assert!(authoritative_alive(MasterLiveness::Dead, || true));
+        assert!(authoritative_alive(MasterLiveness::Inconclusive, || true));
+    }
+
+    #[test]
+    fn authoritative_alive_condemns_when_o_check_also_fails() {
+        // Probe refused AND the mux query agrees the master is gone → really dead.
+        assert!(!authoritative_alive(MasterLiveness::Dead, || false));
+        assert!(!authoritative_alive(MasterLiveness::Inconclusive, || false));
+    }
 
     // ----- parse_master_pid --------------------------------------------------
 
@@ -1051,6 +1165,50 @@ mod tests {
 mod probe_tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn sweep_removes_dangling_control_symlinks_only() {
+        let dir = std::env::temp_dir().join(format!("a2fa-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // (a) a dangling legacy-scheme symlink → must be removed.
+        let dangling = dir.join("cm-auto2fa-b8");
+        std::os::unix::fs::symlink(dir.join("cm-auto2fa-b8-1-missing"), &dangling).unwrap();
+
+        // (b) a live socket (a real master) → must be untouched.
+        let live = dir.join("cm-ssh2fa-k8");
+        let _ = std::fs::remove_file(&live);
+        let listener = UnixListener::bind(&live).unwrap();
+
+        // (c) a VALID symlink pointing at the live socket → must be untouched.
+        let good_link = dir.join("cm-ssh2fa-active");
+        std::os::unix::fs::symlink(&live, &good_link).unwrap();
+
+        // (d) a dangling symlink that is NOT ours → must be untouched.
+        let unrelated = dir.join("some-other-link");
+        std::os::unix::fs::symlink(dir.join("whatever-missing"), &unrelated).unwrap();
+
+        let removed = sweep_dangling_control_symlinks(&dir);
+
+        assert_eq!(removed, 1, "exactly the one dangling cm- symlink");
+        assert!(
+            std::fs::symlink_metadata(&dangling).is_err(),
+            "dangling cm- symlink must be removed"
+        );
+        assert!(live.exists(), "live master socket must survive the sweep");
+        assert!(
+            std::fs::symlink_metadata(&good_link).is_ok(),
+            "a still-resolving symlink must survive"
+        );
+        assert!(
+            std::fs::symlink_metadata(&unrelated).is_ok(),
+            "a non-ours symlink must survive even if dangling"
+        );
+
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn probe_alive_when_listener_present() {

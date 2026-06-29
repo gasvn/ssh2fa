@@ -746,10 +746,13 @@ pub fn spawn_master_rebuild(
     state: Arc<Mutex<State>>,
     managers: Arc<HostManagers>,
     reset_breakers: bool,
+    start_delay: Duration,
 ) {
     // In-flight guard on slot 0 (the slot this rebuild starts). The stop_all
     // phase doesn't need guarding, but holding the guard for the whole worker
     // prevents a concurrent start of slot 0 while this rebuild is in flight.
+    // Claimed synchronously HERE (before the staggered sleep below) so a second
+    // wake arriving during the spread can't double-spawn this slot.
     if !managers.try_begin_start(&host_name, 0) {
         info!("[{host_name}] master-rebuild: start already in flight for slot 0, skipping");
         return;
@@ -768,6 +771,16 @@ pub fn spawn_master_rebuild(
                 host: guard_host,
                 slot: 0,
             };
+
+            // Staggered start: spread a fleet-wide rebuild so the hosts don't all
+            // spawn ssh+pty+2FA at the same instant (the thundering herd that
+            // slams CPU/network, fills every master's listen backlog → false
+            // "dead" reads, and times out logins against a not-yet-settled
+            // network). The slot-0 guard is already held, so this only delays
+            // THIS host's login, never the others'. Off all locks.
+            if !start_delay.is_zero() {
+                std::thread::sleep(start_delay);
+            }
 
             // --- Phase 0: read Keychain creds in-thread ---
             let (password, secret) = load_creds(&host_name);
@@ -867,6 +880,7 @@ pub fn rebuild_masters(
     managers: &Arc<HostManagers>,
     registry: &Arc<OtpRegistry>,
     reset_breakers: bool,
+    base_delay: Duration,
 ) -> usize {
     // Filter the requested hosts down to those currently active (brief lock).
     let to_rebuild: Vec<String> = {
@@ -884,16 +898,21 @@ pub fn rebuild_masters(
     };
 
     let mut count = 0;
-    for host_name in to_rebuild {
+    for (index, host_name) in to_rebuild.into_iter().enumerate() {
+        // Stagger the batch: `base_delay` (a network-settle pause on the wake
+        // path; ZERO for an explicit user reset) + a per-host step so the fleet
+        // doesn't re-2FA in one thundering instant. See `rebuild_stagger_delay`.
+        let start_delay = a2fa_core::engine::schedule::rebuild_stagger_delay(index, base_delay);
         // NOTE: NO Keychain read here — `spawn_master_rebuild` reads creds
         // inside its own worker thread (no-wedge invariant).
-        info!("[{host_name}] rebuild_masters: spawning master rebuild");
+        info!("[{host_name}] rebuild_masters: spawning master rebuild (start_delay={start_delay:?})");
         spawn_master_rebuild(
             host_name,
             Arc::clone(registry),
             Arc::clone(state),
             Arc::clone(managers),
             reset_breakers,
+            start_delay,
         );
         count += 1;
     }
@@ -1255,17 +1274,30 @@ fn tick_host(
                             return;
                         }
 
-                        // Adopt-before-restart: re-probe RIGHT before the
+                        // Adopt-before-restart: re-check RIGHT before the
                         // destructive restart. If a master is listening now (it
                         // came back, or never actually died — a probe blip / load
                         // spike), DO NOT kill it and DO NOT burn a 2FA login.
                         // Adopt it back to Ready. This is the gate that makes a
                         // false condemnation non-destructive.
+                        //
+                        // Use the AUTHORITATIVE check (cheap probe, then `ssh -O
+                        // check` as a tiebreaker) rather than the raw socket
+                        // probe: during a wake/network rebuild storm a LIVE
+                        // master's listen backlog fills, so a plain connect()
+                        // refuses (ECONNREFUSED → "Dead") and we'd needlessly
+                        // re-2FA a master that was up the whole time. The mux
+                        // query waits for the master's own reply, so it tolerates
+                        // a transiently-busy master. Safe vs. the network-switch
+                        // false-connected bug: we only reach here after the local
+                        // socket probe already reported Dead, which a
+                        // network-dead-but-process-alive master never does.
                         {
                             let path = managers2.snapshot(&host_owned).pool_path(slot);
-                            if a2fa_core::ssh::control::master_probe(&path)
-                                == a2fa_core::ssh::control::MasterLiveness::Alive
-                            {
+                            if a2fa_core::ssh::control::master_alive_authoritative(
+                                &path,
+                                &host_owned,
+                            ) {
                                 info!("[{host_owned}] hb-restart: master ALIVE on re-probe — adopting (no kill, no 2FA)");
                                 managers2.with_pool_mut(&host_owned, |p| {
                                     p.slot_status[slot] = SlotStatus::Ready;
@@ -1903,7 +1935,7 @@ mod tests {
         let state = state_with_hosts(vec![host("k6", true)]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
-        let n = rebuild_masters(&[], &state, &managers, &registry, false);
+        let n = rebuild_masters(&[], &state, &managers, &registry, false, Duration::ZERO);
         assert_eq!(n, 0);
     }
 
@@ -2003,7 +2035,14 @@ mod tests {
         let state = state_with_hosts(vec![host("cluster01", false)]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
-        let n = rebuild_masters(&["cluster01".to_string()], &state, &managers, &registry, false);
+        let n = rebuild_masters(
+            &["cluster01".to_string()],
+            &state,
+            &managers,
+            &registry,
+            false,
+            Duration::ZERO,
+        );
         assert_eq!(n, 0, "inactive host must not be rebuilt");
     }
 }

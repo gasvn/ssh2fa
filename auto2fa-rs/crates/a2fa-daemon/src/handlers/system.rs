@@ -23,9 +23,21 @@ use crate::managers::{self, active_host_names};
 /// Minimum interval (seconds) between two real `wake_recover` runs. A second
 /// wake that arrives within this window after the previous run *completed* is
 /// coalesced into a no-op. Two independent Mac monitors (SleepWakeMonitor +
-/// NetworkMonitor) fire on a single wake, so without this the inline 5s×N
-/// `ssh -O check` probe loop would run several times over.
-const WAKE_RECOVER_MIN_INTERVAL_SECS: u64 = 12;
+/// NetworkMonitor) fire on a single wake, and a settling network (DHCP renew,
+/// VPN negotiation, Wi-Fi roam) can emit several IP-identity changes a few
+/// seconds apart — each of which would otherwise re-condemn the whole fleet
+/// mid-rebuild and restart the thundering-herd 2FA storm. Widened from 12s to
+/// 20s to swallow that settling burst; a genuinely distinct change arriving
+/// later is still handled, and the 5s heartbeat backstops anything missed.
+const WAKE_RECOVER_MIN_INTERVAL_SECS: u64 = 20;
+
+/// Pure debounce predicate (extracted from [`WakeRecoverGuard::try_claim`] so
+/// the policy is unit-tested without real time): a wake arriving at `now`
+/// (Unix seconds) is coalesced iff the previous run completed less than
+/// `window_secs` ago. `last_completed == 0` means "never run" → never debounce.
+fn wake_debounce_active(now: u64, last_completed: u64, window_secs: u64) -> bool {
+    last_completed != 0 && now.saturating_sub(last_completed) < window_secs
+}
 
 /// Daemon-global coalescing guard for `wake_recover`.
 ///
@@ -78,7 +90,7 @@ impl WakeRecoverGuard {
         // not elapsed, release the flag and bail (so we don't leak it).
         let now = Self::now_secs();
         let last = self.last_completed.load(Ordering::SeqCst);
-        if last != 0 && now.saturating_sub(last) < WAKE_RECOVER_MIN_INTERVAL_SECS {
+        if wake_debounce_active(now, last, WAKE_RECOVER_MIN_INTERVAL_SECS) {
             self.in_flight.store(false, Ordering::SeqCst);
             return None;
         }
@@ -228,12 +240,16 @@ pub fn reset_all(ctx: &crate::dispatch::DaemonCtx, _params: &Value) -> Result<Va
     // 3. Force-rebuild every active host's master (background threads).
     //    reset_breakers=true: this is the user's EXPLICIT "reset everything"
     //    — clearing cooldown/flap backoffs is the point.
+    // base_delay = ZERO: an explicit user "reset" should act immediately (no
+    // network-settle pause); rebuild_masters still applies the per-host stagger
+    // step so the fleet doesn't 2FA in one instant.
     let masters_rebuilt = managers::rebuild_masters(
         &active_host_names(&ctx.state),
         &ctx.state,
         &ctx.managers,
         &ctx.registry,
         true,
+        std::time::Duration::ZERO,
     );
 
     log::info!(
@@ -376,7 +392,18 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, params: &Value) -> Result<
     //    breakers here meant an oscillating network re-armed a fresh full
     //    login every up-phase forever (FAS-RC rate-limit incident class).
     //    Hosts in cooldown stay in cooldown; the heartbeat recovers them.
-    managers::rebuild_masters(&masters_failed, &ctx.state, &ctx.managers, &ctx.registry, false);
+    //    base_delay = NETWORK_SETTLE_DELAY: a network-identity change just fired,
+    //    so pause briefly before the first 2FA login to let the new link's
+    //    routes/DNS come up (avoids the 60s login timeouts seen mid-storm), then
+    //    stagger the rest of the fleet.
+    managers::rebuild_masters(
+        &masters_failed,
+        &ctx.state,
+        &ctx.managers,
+        &ctx.registry,
+        false,
+        a2fa_core::engine::schedule::NETWORK_SETTLE_DELAY,
+    );
 
     // 4. Decide which tunnels to restart: jump master failed OR ssh -L child
     //    is dead/missing.
@@ -523,6 +550,24 @@ mod tests {
         let ctx = ctx_with_state(state);
         let v = wake_recover(&ctx, &json!({})).unwrap();
         assert_eq!(v["tunnels_restarting"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn wake_debounce_suppresses_a_closely_following_wake() {
+        let window = WAKE_RECOVER_MIN_INTERVAL_SECS;
+        // A wake 5s after the last run completed → within the window → coalesced.
+        assert!(wake_debounce_active(1_000 + 5, 1_000, window));
+        // Exactly at the boundary → window has elapsed → allowed to run.
+        assert!(!wake_debounce_active(1_000 + window, 1_000, window));
+        // Well past the window → a genuinely distinct wake runs.
+        assert!(!wake_debounce_active(1_000 + window + 30, 1_000, window));
+    }
+
+    #[test]
+    fn wake_debounce_never_suppresses_the_first_ever_run() {
+        // last_completed == 0 means "never run" — must never be debounced.
+        assert!(!wake_debounce_active(0, 0, WAKE_RECOVER_MIN_INTERVAL_SECS));
+        assert!(!wake_debounce_active(9_999, 0, WAKE_RECOVER_MIN_INTERVAL_SECS));
     }
 
     #[test]

@@ -145,6 +145,15 @@ pub fn run() -> Result<()> {
     let tunnels_path = cfg_dir.join("tunnels.json");
     let passwords_p = passwords_path();
 
+    // 5-pre0. Sweep dangling ControlPath symlinks left by older daemon versions
+    //         (the pre-single-master pool/rotation scheme's `cm-…-<host>` active
+    //         symlinks, now orphaned). Best-effort housekeeping — removes only
+    //         dangling symlinks matching our prefix, never a live master socket.
+    let swept = a2fa_core::ssh::control::sweep_dangling_control_symlinks(&cfg_dir);
+    if swept > 0 {
+        log::info!("boot: swept {swept} stale ControlPath symlink(s) from {cfg_dir:?}");
+    }
+
     // 5-pre. Migrate passwords.json v1 → v2 (one-time, idempotent).
     //        Must run BEFORE State::new, which calls load_meta and silently
     //        returns zero hosts for any non-v2 file.

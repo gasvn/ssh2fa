@@ -6,13 +6,13 @@ final class SSHConfigManagerTests: XCTestCase {
     // The merge must still emit a Host block for it, or `ssh -F` can't resolve
     // the alias during the test and the test can never pass.
     func testMergedManagedHostsEmitsSidecarOnlyAlias() {
-        let sidecar = [ManagedHostConn(alias: "cannon", hostName: "login.example.edu", user: "alice", port: 22)]
+        let sidecar = [ManagedHostConn(alias: "cluster01", hostName: "login.example.edu", user: "alice", port: 22)]
         let merged = SSHConfigManager.mergedManagedHosts(registered: [], sidecar: sidecar)
         XCTAssertEqual(merged.count, 1)
-        XCTAssertEqual(merged.first?.alias, "cannon")
+        XCTAssertEqual(merged.first?.alias, "cluster01")
         XCTAssertEqual(merged.first?.conn?.hostName, "login.example.edu")
         let conf = SSHConfigManager.generateManagedConf(hosts: merged, dir: "/d")
-        XCTAssertTrue(conf.contains("Host cannon"))
+        XCTAssertTrue(conf.contains("Host cluster01"))
         XCTAssertTrue(conf.contains("HostName login.example.edu"))
     }
 
