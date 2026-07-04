@@ -386,8 +386,16 @@ final class AppState: ObservableObject {
             // separately by the connection watcher (startConnectionWatcher).
             reloadFailStreak += 1
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
-            if reloadFailStreak >= 3 {
+            if ConnectionRecovery.shouldShowSlowBanner(failStreak: reloadFailStreak) {
                 connectionError = "Daemon is slow to respond — retrying…"
+            }
+            // A dead heartbeat means the socket is gone even if NWConnection
+            // never reported it (silently half-open post-sleep). Force-drop it
+            // ONCE at the crossing so the connection watcher reconnects instead
+            // of the poll timing out forever. (No-op if already disconnected.)
+            if ConnectionRecovery.shouldForceReconnect(failStreak: reloadFailStreak) {
+                NSLog("[SSH2FA] reloadAll streak \(reloadFailStreak) — force-dropping wedged socket to trigger reconnect")
+                await client.forceDrop()
             }
         }
     }

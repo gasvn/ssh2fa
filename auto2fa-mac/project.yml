@@ -80,6 +80,7 @@ targets:
       - path: Auto2FA/ManagedHostStore.swift
       - path: Auto2FA/UpdateCheckCore.swift
       - path: Auto2FA/NetworkMonitor.swift
+      - path: Auto2FA/ConnectionRecovery.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

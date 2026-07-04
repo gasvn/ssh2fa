@@ -226,6 +226,21 @@ actor BackendClient {
         pendingRequests.removeAll()
     }
 
+    /// Force-tear-down the current connection and emit the "down" edge, so the
+    /// connection watcher's `reconnectWithBackoff` loop runs.
+    ///
+    /// Needed because a request TIMEOUT only fails that one request — it never
+    /// tears the socket down. On a silently half-open unix socket (the classic
+    /// post-sleep case) `NWConnection` never reports `.failed`/close, so
+    /// `handleClosed` (the sole source of the "down" edge) never fires and the
+    /// poll times out forever with no reconnect. The poll heartbeat calls this
+    /// once its failure streak proves the socket is dead. No-op when already
+    /// disconnected, so it can't cancel an in-flight reconnect.
+    func forceDrop() {
+        guard connection != nil else { return }
+        handleClosed(connection)
+    }
+
     // MARK: - Request / receive
 
     /// Per-method timeout defaults. Most methods are listing/setter
