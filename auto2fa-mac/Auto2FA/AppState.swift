@@ -388,13 +388,15 @@ final class AppState: ObservableObject {
             if ConnectionRecovery.shouldShowSlowBanner(failStreak: reloadFailStreak) {
                 connectionError = "Reconnecting to the background helper…"
             }
-            // A dead heartbeat means the socket is gone even if NWConnection
-            // never reported it (silently half-open post-sleep). Force-drop it
-            // ONCE at the crossing so the connection watcher reconnects instead
-            // of the poll timing out forever. (No-op if already disconnected.)
+            // A dead heartbeat means the connection is gone — either a silently
+            // half-open socket (post-sleep) that NWConnection never reported, or
+            // a bootstrap connect() that failed into a daemon-restart window (so
+            // there's no socket at all and no "down" edge was ever emitted).
+            // Both leave the poll timing out forever. Emit the down edge ONCE at
+            // the crossing so the connection watcher reconnects.
             if ConnectionRecovery.shouldForceReconnect(failStreak: reloadFailStreak) {
-                NSLog("[SSH2FA] reloadAll streak \(reloadFailStreak) — force-dropping wedged socket to trigger reconnect")
-                await client.forceDrop()
+                NSLog("[SSH2FA] reloadAll streak \(reloadFailStreak) — triggering reconnect")
+                await client.recoverFromDeadHeartbeat()
             }
         }
     }

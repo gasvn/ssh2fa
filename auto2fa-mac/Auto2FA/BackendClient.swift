@@ -98,6 +98,10 @@ actor BackendClient {
     /// collapse repeated identical states into edges only.
     private var lastConnectionState: Bool?
 
+    /// True while `reconnectWithBackoff` is running. Lets `recoverFromDeadHeartbeat`
+    /// (fired by the poll heartbeat) avoid cancelling an in-flight reconnect.
+    private var isReconnecting = false
+
     private func yieldConnectionState(_ up: Bool) {
         // EDGE-ONLY: emit a connection event only when the state actually
         // changes. `handleClosed()` fires for BOTH the NWConnection `.failed`
@@ -226,18 +230,21 @@ actor BackendClient {
         pendingRequests.removeAll()
     }
 
-    /// Force-tear-down the current connection and emit the "down" edge, so the
+    /// The poll heartbeat has been failing — emit the "down" edge so the
     /// connection watcher's `reconnectWithBackoff` loop runs.
     ///
-    /// Needed because a request TIMEOUT only fails that one request — it never
-    /// tears the socket down. On a silently half-open unix socket (the classic
-    /// post-sleep case) `NWConnection` never reports `.failed`/close, so
-    /// `handleClosed` (the sole source of the "down" edge) never fires and the
-    /// poll times out forever with no reconnect. The poll heartbeat calls this
-    /// once its failure streak proves the socket is dead. No-op when already
-    /// disconnected, so it can't cancel an in-flight reconnect.
-    func forceDrop() {
-        guard connection != nil else { return }
+    /// Needed because neither a request TIMEOUT (it only fails that one request)
+    /// nor a bootstrap-time `connect()` failure ever drives a reconnect on their
+    /// own. Two dead-heartbeat shapes both land here:
+    ///   * silently half-open socket (classic post-sleep): `connection` is
+    ///     non-nil but dead, and `NWConnection` never reports `.failed`;
+    ///   * app launched into a daemon-restart window: `connect()` failed, so
+    ///     `connection` is nil and no "down" edge was ever emitted.
+    /// `handleClosed(nil)` handles both — it nils any stale connection and
+    /// yields `false`, which the watcher turns into a reconnect. Skipped while a
+    /// reconnect is already running so we never cancel an in-flight attempt.
+    func recoverFromDeadHeartbeat() {
+        if isReconnecting { return }
         handleClosed(connection)
     }
 
@@ -388,6 +395,8 @@ actor BackendClient {
     /// "retrying…" banner forever.
     @discardableResult
     func reconnectWithBackoff() async -> Bool {
+        isReconnecting = true
+        defer { isReconnecting = false }
         // Try IMMEDIATELY first (a launchd respawn is usually <200ms — waiting a
         // full second before the first attempt added a needless connectivity gap
         // on every restart), then back off: 1, 2, 4, 8, 16, 30, 30 …
