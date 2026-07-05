@@ -210,14 +210,13 @@ final class AppState: ObservableObject {
                 notchPresenter.show(
                     systemImage: "bolt.fill",
                     title: "SSH2FA ready",
-                    description: "Connected to daemon",
+                    description: "Connected and ready",
                     tint: .green
                 )
             }
         } catch {
             NSLog("[SSH2FA] bootstrap: connect failed: \(error.localizedDescription)")
-            connectionError = "Daemon unreachable: \(error.localizedDescription). " +
-                              "Is ssh2fa-daemon running?"
+            connectionError = "Connecting to the background helper…"
             // DON'T return — start the watcher/poll machinery anyway. The
             // old early-return was a dead end: launching the app during a
             // daemon-down window (deploys SIGKILL it; launchd respawns ~10s
@@ -261,14 +260,14 @@ final class AppState: ObservableObject {
                             self.notchPresenter.show(
                                 systemImage: "bolt.fill",
                                 title: "SSH2FA ready",
-                                description: "Connected to daemon",
+                                description: "Connected and ready",
                                 tint: .green
                             )
                         } else {
                             self.notchPresenter.show(
                                 systemImage: "bolt.fill",
-                                title: "Daemon reconnected",
-                                description: "state restored",
+                                title: "Reconnected",
+                                description: "Back online",
                                 tint: .green
                             )
                         }
@@ -277,10 +276,10 @@ final class AppState: ObservableObject {
                     self.startEventTask()  // re-subscribe events on the new socket
                 } else {
                     await MainActor.run {
-                        self.connectionError = "Daemon disconnected — retrying…"
+                        self.connectionError = "Reconnecting to the background helper…"
                         self.notchPresenter.show(
                             systemImage: "wifi.slash",
-                            title: "Daemon lost",
+                            title: "Connection lost",
                             description: "auto-reconnecting…",
                             tint: .orange
                         )
@@ -310,7 +309,7 @@ final class AppState: ObservableObject {
                                 case .failed(let reason):
                                     NSLog("[SSH2FA] daemon respawn failed: \(reason), retrying")
                                     await MainActor.run {
-                                        self.connectionError = "Daemon respawn failed (will retry): \(reason)"
+                                        self.connectionError = "Trouble starting the background helper — retrying…"
                                     }
                                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
                                     continue
@@ -328,7 +327,7 @@ final class AppState: ObservableObject {
                         if !ok && !Task.isCancelled {
                             await MainActor.run {
                                 self.connectionError =
-                                    "Couldn't reconnect to the daemon. Restart SSH2FA, or check /tmp/ssh2fa_daemon.log."
+                                    "Couldn't reconnect to the background helper. Try quitting and reopening SSH2FA."
                             }
                         }
                     }
@@ -387,7 +386,7 @@ final class AppState: ObservableObject {
             reloadFailStreak += 1
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if ConnectionRecovery.shouldShowSlowBanner(failStreak: reloadFailStreak) {
-                connectionError = "Daemon is slow to respond — retrying…"
+                connectionError = "Reconnecting to the background helper…"
             }
             // A dead heartbeat means the socket is gone even if NWConnection
             // never reported it (silently half-open post-sleep). Force-drop it

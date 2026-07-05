@@ -102,7 +102,7 @@ enum FriendlyText {
             return "Login rejected — password or OTP is wrong. Re-add the host to fix."
         }
         if lc.contains("host key verification failed") {
-            return "Server identity changed — see daemon log; may be a MITM or a server rebuild."
+            return "Server identity changed — may be a server rebuild, or (rarely) a MITM."
         }
         if lc.contains("rate-limit") || lc.contains("rate limit") || lc.contains("cool-down") {
             return "Server is rate-limiting too many failed logins — sitting out for a few minutes."

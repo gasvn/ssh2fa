@@ -288,7 +288,7 @@ private struct TroubleshootPane: View {
 
             Divider()
             HStack {
-                Button("Restart daemon") { model.restartDaemon() }
+                Button("Restart background helper") { model.restartDaemon() }
                 Button("Reveal log file…") {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: "/tmp/ssh2fa_daemon.log")])
