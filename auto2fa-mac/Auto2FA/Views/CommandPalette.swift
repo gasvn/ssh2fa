@@ -88,6 +88,34 @@ struct CommandPalette: View {
             })
         }
 
+        // Per-host mounts: pinned folders are the point of ⌘K — type two
+        // letters of a project name and mount it.
+        for host in appState.hosts {
+            if host.isMounted {
+                out.append(.init(
+                    icon: "folder",
+                    title: "Open mounted folder — \(host.host)",
+                    subtitle: "reveal ~/Mounts/\(host.host) in Finder",
+                    keywords: [host.host, "mount", "finder", "folder", "open"]
+                ) { appState.revealMount(host) })
+                out.append(.init(
+                    icon: "eject.fill",
+                    title: "Unmount — \(host.host)",
+                    subtitle: "unmount the remote filesystem",
+                    keywords: [host.host, "unmount", "eject", "mount"]
+                ) { Task { await appState.toggleMount(host) } })
+            } else if host.isMasterReady {
+                for pin in appState.bookmarks(for: host.host) {
+                    out.append(.init(
+                        icon: "pin.fill",
+                        title: "Mount \(pin.displayName) — \(host.host)",
+                        subtitle: pin.remotePath,
+                        keywords: [host.host, "mount", "pin", pin.displayName, pin.remotePath]
+                    ) { Task { await appState.toggleMount(host, remotePath: pin.remotePath) } })
+                }
+            }
+        }
+
         // Per-host credentials — offered for EVERY host, not just connected
         // ones: a wrong stored password is exactly why a host won't connect.
         for host in appState.hosts {

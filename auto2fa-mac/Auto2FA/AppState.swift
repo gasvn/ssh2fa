@@ -1003,6 +1003,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Browse a host's remote folders (for the pin picker). Rethrows so the
+    /// picker can show the failure inline.
+    func listRemoteDirs(host: String, path: String) async throws -> [BackendClient.RemoteDir] {
+        try await client.listRemoteDirs(host, path: path)
+    }
+
     /// Flip a pin's auto-mount flag. Only one folder per host can auto-mount
     /// (there is a single mount point), so turning one ON turns the others OFF
     /// rather than leaving a silent "first one wins" that looks like a bug.

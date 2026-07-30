@@ -14,6 +14,13 @@ struct MountFoldersSheet: View {
     @State private var labelDraft = ""
     @State private var error: String?
     @FocusState private var pathFocused: Bool
+    // Remote browser: pinning a folder should be a matter of clicking to it,
+    // not recalling an absolute path.
+    @State private var browsing = false
+    @State private var browsePath = "/"
+    @State private var browseEntries: [BackendClient.RemoteDir] = []
+    @State private var browseLoading = false
+    @State private var browseError: String?
 
     private var bookmarks: [MountBookmark] { appState.bookmarks(for: hostName) }
 
@@ -30,7 +37,7 @@ struct MountFoldersSheet: View {
             Divider()
             footer
         }
-        .frame(width: 480, height: 460)
+        .frame(width: 520, height: 620)
         .onAppear { appState.reloadMountBookmarks(); pathFocused = true }
     }
 
@@ -66,11 +73,106 @@ struct MountFoldersSheet: View {
                 Button("Pin", action: add)
                     .buttonStyle(.glass)
                     .disabled(pathDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button {
+                    browsing.toggle()
+                    if browsing && browseEntries.isEmpty { Task { await loadBrowse(browsePath) } }
+                } label: {
+                    Label("Browse…", systemImage: "folder.badge.questionmark")
+                }
+                .buttonStyle(.glass)
+                .disabled(!hostIsReady)
+                .help(hostIsReady
+                      ? "Browse the host's folders instead of typing a path"
+                      : "Connect the host first to browse its folders")
             }
+            if browsing { browser }
             if let error {
                 Text(error).font(.rowMeta).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private var hostIsReady: Bool {
+        appState.hosts.first { $0.host == hostName }?.isMasterReady ?? false
+    }
+
+    /// Remote folder browser. Runs over the host's existing connection, so it
+    /// costs no extra login.
+    @ViewBuilder
+    private var browser: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                Button {
+                    Task { await loadBrowse(parentOf(browsePath)) }
+                } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless)
+                .disabled(browsePath == "/" || browseLoading)
+                .help("Up one level")
+                .accessibilityLabel("Go up one folder")
+
+                Text(browsePath)
+                    .font(.rowMeta.monospaced())
+                    .lineLimit(1).truncationMode(.head)
+                Spacer()
+                if browseLoading { ProgressView().controlSize(.small) }
+                Button("Pin this folder") {
+                    pathDraft = browsePath
+                    add()
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(browseLoading)
+            }
+            if let browseError {
+                Text(browseError).font(.rowMeta).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(browseEntries) { d in
+                        Button {
+                            Task { await loadBrowse(d.path) }
+                        } label: {
+                            HStack(spacing: Spacing.xs) {
+                                Image(systemName: "folder").foregroundStyle(.tint)
+                                Text(d.name).font(.rowMeta)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, Spacing.xs)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if browseEntries.isEmpty && !browseLoading && browseError == nil {
+                        Text("No sub-folders here — “Pin this folder” to pin it as-is.")
+                            .font(.rowMeta).foregroundStyle(.secondary)
+                            .padding(Spacing.xs)
+                    }
+                }
+            }
+            .frame(height: 120)
+            .groupedContent(cornerRadius: Radius.control)
+        }
+    }
+
+    private func parentOf(_ path: String) -> String {
+        let trimmed = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
+        guard let idx = trimmed.lastIndex(of: "/"), idx != trimmed.startIndex else { return "/" }
+        return String(trimmed[trimmed.startIndex..<idx])
+    }
+
+    private func loadBrowse(_ path: String) async {
+        browseLoading = true
+        browseError = nil
+        defer { browseLoading = false }
+        do {
+            browseEntries = try await appState.listRemoteDirs(host: hostName, path: path)
+            browsePath = path
+        } catch {
+            browseError = (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 

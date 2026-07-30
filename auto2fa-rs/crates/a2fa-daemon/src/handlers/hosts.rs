@@ -1120,6 +1120,68 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// host_list_dir — browse remote folders for the mount picker
+// ---------------------------------------------------------------------------
+
+/// List the directories inside a remote path, over the host's existing master.
+///
+/// Exists so pinning a mount folder is a matter of BROWSING to it rather than
+/// typing an absolute path from memory. Runs no login of its own: it reuses the
+/// warm ControlMaster, so it costs no 2FA and fails fast if the master is down.
+pub fn host_list_dir(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = host_param(params)?;
+
+    // Require a ready master — without one this would try to open a NEW ssh
+    // connection (and a 2FA prompt) just to fill a folder picker.
+    {
+        let guard = crate::lock_state(state);
+        let host = guard
+            .hosts
+            .iter()
+            .find(|h| h.host == host_name)
+            .ok_or_else(|| Error::NotFound(host_name.clone()))?;
+        if !host.is_master_ready {
+            return Err(Error::Internal(format!(
+                "{host_name} isn't connected — connect it first to browse its folders"
+            )));
+        }
+    }
+
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("/")
+        .to_owned();
+    validate_remote_path(&path)?;
+
+    let cp = a2fa_core::ssh::control::active_symlink_path(&host_name);
+    let entries = a2fa_core::tunnels::discovery::list_remote_dirs(&host_name, &cp, &path)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+
+    let dirs: Vec<Value> = entries
+        .iter()
+        .filter(|e| e.is_dir)
+        .map(|e| {
+            // Join without doubling the slash at root.
+            let full = if path == "/" {
+                format!("/{}", e.name)
+            } else {
+                format!("{}/{}", path, e.name)
+            };
+            json!({ "name": e.name, "path": full })
+        })
+        .collect();
+
+    Ok(json!({
+        "host": host_name,
+        "path": path,
+        "entries": dirs,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // host_remove — the missing other half of host_add
 // ---------------------------------------------------------------------------
 

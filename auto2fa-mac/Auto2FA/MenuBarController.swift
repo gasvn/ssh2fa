@@ -220,6 +220,38 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
                 term.representedObject = host.host
                 sub.addItem(term)
             }
+            // Mounts. The menu bar is the fastest surface in the app and had
+            // no mount support at all, so a pinned folder still meant opening
+            // the main window first.
+            if host.isMounted {
+                let open = NSMenuItem(title: "Open Mounted Folder",
+                                      action: #selector(openMountedFolder(_:)), keyEquivalent: "")
+                open.target = self
+                open.representedObject = host.host
+                sub.addItem(open)
+                let unmount = NSMenuItem(title: "Unmount",
+                                         action: #selector(unmountHost(_:)), keyEquivalent: "")
+                unmount.target = self
+                unmount.representedObject = host.host
+                sub.addItem(unmount)
+            } else if host.isMasterReady {
+                let pins = appState?.bookmarks(for: host.host) ?? []
+                for pin in pins {
+                    let m = NSMenuItem(title: "Mount \(pin.displayName)",
+                                       action: #selector(mountPinned(_:)), keyEquivalent: "")
+                    m.target = self
+                    // host + path, so the handler needs no extra lookup.
+                    m.representedObject = [host.host, pin.remotePath]
+                    sub.addItem(m)
+                }
+                let root = NSMenuItem(title: pins.isEmpty ? "Mount" : "Mount / (whole filesystem)",
+                                      action: #selector(mountPinned(_:)), keyEquivalent: "")
+                root.target = self
+                root.representedObject = [host.host, "/"]
+                sub.addItem(root)
+            }
+            sub.addItem(.separator())
+
             let toggle = NSMenuItem(title: host.active ? "Disconnect" : "Connect",
                                     action: #selector(toggleHost(_:)), keyEquivalent: "")
             toggle.target = self
@@ -366,6 +398,28 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         guard let v = sender.representedObject as? String else { return }
         appState?.skipUpdate(v)
         refresh()   // drop the menu-bar marker right away
+    }
+
+    /// Mount a specific pinned folder (or "/") from the menu bar.
+    @objc private func mountPinned(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2,
+              let appState,
+              let host = appState.hosts.first(where: { $0.host == pair[0] }) else { return }
+        Task { await appState.toggleMount(host, remotePath: pair[1]) }
+    }
+
+    @objc private func unmountHost(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let appState,
+              let host = appState.hosts.first(where: { $0.host == name }) else { return }
+        Task { await appState.toggleMount(host) }
+    }
+
+    @objc private func openMountedFolder(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let appState,
+              let host = appState.hosts.first(where: { $0.host == name }) else { return }
+        appState.revealMount(host)
     }
 
     @objc private func copyTunnelURL(_ sender: NSMenuItem) {

@@ -298,6 +298,9 @@ actor BackendClient {
             // Short timeout: the chip should fall back to its muted state fast
             // rather than hang if a Keychain "Always Allow" prompt is pending.
             return 6
+        case "host_list_dir":
+            // A remote `find` over the warm master: bounded daemon-side at 12s.
+            return 18
         case "host_remove":
             // Stops the master + a bounded Keychain delete before returning.
             return 35
@@ -496,6 +499,22 @@ actor BackendClient {
 
     func toggleHost(_ host: String) async throws {
         _ = try await sendRaw(method: "host_toggle", params: ["host": host])
+    }
+
+    /// One browsable remote directory.
+    struct RemoteDir: Decodable, Identifiable, Hashable {
+        var id: String { path }
+        let name: String
+        let path: String
+    }
+
+    /// List the folders inside `path` on `host`, over its existing master
+    /// (no new login). Used by the mount folder picker.
+    func listRemoteDirs(_ host: String, path: String) async throws -> [RemoteDir] {
+        let data = try await sendRaw(method: "host_list_dir",
+                                     params: ["host": host, "path": path])
+        struct R: Decodable { let entries: [RemoteDir] }
+        return try JSONDecoder().decode(R.self, from: data).entries
     }
 
     /// Result of a mount toggle: where it landed and whether it is now mounted,

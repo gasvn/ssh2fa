@@ -447,6 +447,50 @@ mod tests {
     /// BatchMode) must fail fast — well within the deadline — rather than hang.
     /// This exercises the spawn + try_wait + return path without needing a
     /// genuinely-hanging ssh.
+    // ---- remote directory listing (mount folder picker) ----------------
+
+    #[test]
+    fn parse_dir_listing_keeps_dirs_and_files_but_marks_them() {
+        let out = "d\tproject\nf\tnotes.txt\nd\tdata\n";
+        let e = parse_dir_listing(out);
+        assert_eq!(e.len(), 3);
+        // Directories first, then case-insensitive by name.
+        assert_eq!(e[0].name, "data");
+        assert!(e[0].is_dir);
+        assert_eq!(e[1].name, "project");
+        assert!(e[1].is_dir);
+        assert_eq!(e[2].name, "notes.txt");
+        assert!(!e[2].is_dir);
+    }
+
+    /// "." / ".." would let the picker walk in circles.
+    #[test]
+    fn parse_dir_listing_drops_dot_entries_and_junk() {
+        let e = parse_dir_listing("d\t.\nd\t..\nno-tab-here\n\nd\treal\n");
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].name, "real");
+    }
+
+    #[test]
+    fn parse_dir_listing_sorts_case_insensitively() {
+        let e = parse_dir_listing("d\tZebra\nd\tapple\nd\tBanana\n");
+        let names: Vec<_> = e.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["apple", "Banana", "Zebra"]);
+    }
+
+    #[test]
+    fn parse_dir_listing_handles_names_with_spaces() {
+        let e = parse_dir_listing("d\tmy project\n");
+        assert_eq!(e[0].name, "my project");
+        assert!(e[0].is_dir);
+    }
+
+    #[test]
+    fn parse_dir_listing_empty_is_empty() {
+        assert!(parse_dir_listing("").is_empty());
+        assert!(parse_dir_listing("\n\n").is_empty());
+    }
+
     #[test]
     fn ssh_squeue_output_fails_fast_on_bogus_control_path() {
         use std::process::Command;
@@ -497,4 +541,95 @@ mod tests {
         assert_eq!(j.time_left, "20:45:45");
         assert_eq!(j.node, "gpunode42");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Remote directory listing (for the mount folder picker)
+// ---------------------------------------------------------------------------
+
+/// Deadline for a remote `ls`. Short: it runs over an ESTABLISHED master, so a
+/// healthy listing is a local-pipe round trip. Anything slower means a wedged
+/// socket, and the picker must fail fast rather than hang the UI.
+const LISTDIR_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// One entry in a remote directory listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEntry {
+    pub name: String,
+    /// Only directories are mountable, so the picker shows nothing else.
+    pub is_dir: bool,
+}
+
+/// Parse the output of the listing command (see `list_remote_dirs`).
+///
+/// Each line is `<type>\t<name>` where type is `d` for a directory. Pure, so
+/// the parsing is unit-tested without any ssh.
+pub fn parse_dir_listing(stdout: &str) -> Vec<RemoteEntry> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim_end_matches('\r');
+        let Some((kind, name)) = line.split_once('\t') else { continue };
+        let name = name.trim();
+        // "." and ".." would let the picker walk in circles.
+        if name.is_empty() || name == "." || name == ".." { continue }
+        out.push(RemoteEntry {
+            name: name.to_string(),
+            is_dir: kind == "d",
+        });
+    }
+    // Directories first, then case-insensitive by name — a stable, scannable
+    // order regardless of what the remote `find` happened to emit.
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out
+}
+
+/// List the DIRECTORIES directly inside `path` on `host`, over its existing
+/// ControlMaster (no new login, no 2FA).
+///
+/// Used by the mount folder picker so a path can be browsed to instead of typed
+/// from memory. Bounded and BatchMode, like `discover_nodes_via_control`.
+pub fn list_remote_dirs(
+    host: &str,
+    control_path: &std::path::Path,
+    path: &str,
+) -> Result<Vec<RemoteEntry>> {
+    use std::process::Command;
+    let cp = control_path.to_string_lossy();
+
+    // `find -maxdepth 1` avoids a recursive walk of a huge tree, and printf
+    // gives a machine-parsable "<type>\t<name>" that does not depend on the
+    // locale-formatted `ls -l` columns. The path is single-quoted for the
+    // REMOTE shell (ssh concatenates argv and the remote shell re-parses it),
+    // with any embedded single quote escaped so a quote in a directory name
+    // cannot break out. `head` caps a pathological directory.
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    let remote_cmd = format!(
+        "find {quoted} -maxdepth 1 -mindepth 1 \\( -type d -printf 'd\\t%f\\n' -o -printf 'f\\t%f\\n' \\) 2>/dev/null | head -n 500"
+    );
+
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o", &format!("ControlPath={cp}"),
+        "-o", "ControlMaster=no",
+        "-o", "ConnectTimeout=10",
+        "-o", "BatchMode=yes",
+        host,
+        &remote_cmd,
+    ]);
+    let output = ssh_squeue_output(cmd, LISTDIR_TIMEOUT)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // BSD `find` has no -printf. If it produced nothing but complained, say so
+    // rather than presenting an empty directory as fact.
+    if stdout.trim().is_empty() && !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Discovery(format!(
+            "could not list {path}: {}",
+            err.lines().next().unwrap_or("unknown error").trim()
+        )));
+    }
+    Ok(parse_dir_listing(&stdout))
 }
