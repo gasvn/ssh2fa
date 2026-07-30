@@ -298,6 +298,10 @@ actor BackendClient {
             // Short timeout: the chip should fall back to its muted state fast
             // rather than hang if a Keychain "Always Allow" prompt is pending.
             return 6
+        case "credentials_consolidate":
+            // Reads every legacy item and may sit behind one prompt per item;
+            // bounded daemon-side at 180s.
+            return 200
         case "host_list_dir":
             // A remote `find` over the warm master: bounded daemon-side at 12s.
             return 18
@@ -499,6 +503,21 @@ actor BackendClient {
 
     func toggleHost(_ host: String) async throws {
         _ = try await sendRaw(method: "host_toggle", params: ["host": host])
+    }
+
+    /// Result of collapsing per-host Keychain items into the single vault item.
+    struct ConsolidationReport: Decodable {
+        let migrated: Int
+        let already: Int
+        let missing: Int
+        let total_hosts: Int
+    }
+
+    /// Fold every host's credentials into ONE Keychain item, so future updates
+    /// ask for authorization once instead of once per saved secret.
+    func consolidateCredentials() async throws -> ConsolidationReport {
+        let data = try await sendRaw(method: "credentials_consolidate", params: [:])
+        return try JSONDecoder().decode(ConsolidationReport.self, from: data)
     }
 
     /// One browsable remote directory.

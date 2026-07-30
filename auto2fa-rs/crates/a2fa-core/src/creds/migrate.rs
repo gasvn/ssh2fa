@@ -352,11 +352,11 @@ mod tests {
 
         // Credentials written to the store.
         assert_eq!(
-            store.get("k6.password").unwrap().as_deref(),
+            get_password(&store, "k6").unwrap().as_deref(),
             Some("hunter2")
         );
-        assert!(store.get("k6.otpauth").unwrap().is_some());
-        assert_eq!(store.get("k8.password").unwrap().as_deref(), Some("pw2"));
+        assert!(get_otpauth(&store, "k6").unwrap().is_some());
+        assert_eq!(get_password(&store, "k8").unwrap().as_deref(), Some("pw2"));
     }
 
     #[test]
@@ -392,8 +392,11 @@ mod tests {
             fn set(&self, a: &str, v: &str) -> crate::error::Result<()> {
                 let mut count = self.fail_count.borrow_mut();
                 *count += 1;
-                if *count > 2 {
-                    // Fail on the 3rd set (second host's password).
+                // Fail on the SECOND host's write. Credentials now go into one
+                // vault item per host (they used to be two items, so this was
+                // the 3rd set); counting writes, not accounts, keeps the intent
+                // — fail partway through a multi-host migration.
+                if *count > 1 {
                     return Err(E::Internal("injected failure".into()));
                 }
                 self.map.borrow_mut().insert(a.into(), v.into());
@@ -461,7 +464,7 @@ mod tests {
             Some("newer-pw"),
             "pre-existing Keychain entry must not be overwritten with v1 values"
         );
-        assert_eq!(store.get("k8.password").unwrap().as_deref(), Some("pw2"));
+        assert_eq!(get_password(&store, "k8").unwrap().as_deref(), Some("pw2"));
         // Both hosts still land in the v2 metadata.
         let hosts = v2["hosts"].as_object().unwrap();
         assert!(hosts.contains_key("k6") && hosts.contains_key("k8"));
@@ -476,6 +479,15 @@ mod tests {
         struct FailOnHost {
             map: RefCell<HashMap<String, String>>,
             fail_key: &'static str,
+            /// Fail the Nth write to `fail_key` (1-based) — and ONLY that one.
+            ///
+            /// A one-shot failure, not a permanently broken store: rolling back
+            /// now requires WRITING the host out of the vault (it used to be a
+            /// `delete` of a separate item), so a store that fails every write
+            /// could not roll back at all — and the test would be asserting
+            /// something no implementation can deliver.
+            fail_at: usize,
+            writes: RefCell<usize>,
         }
         impl SecretStore for FailOnHost {
             fn get(&self, a: &str) -> crate::error::Result<Option<String>> {
@@ -483,7 +495,11 @@ mod tests {
             }
             fn set(&self, a: &str, v: &str) -> crate::error::Result<()> {
                 if a == self.fail_key {
-                    return Err(E::Internal("injected failure".into()));
+                    let mut n = self.writes.borrow_mut();
+                    *n += 1;
+                    if *n == self.fail_at {
+                        return Err(E::Internal("injected failure".into()));
+                    }
                 }
                 self.map.borrow_mut().insert(a.into(), v.into());
                 Ok(())
@@ -494,9 +510,17 @@ mod tests {
             }
         }
 
+        // Credentials now live in ONE vault item, so "fail on k9's write" can
+        // no longer be keyed on an account name — every host writes the same
+        // key. Fail on the Nth write to the vault instead: k6 is skipped
+        // (pre-existing), so write #1 is k8 and write #2 is k9.
+        // k6 is skipped (pre-existing), so vault write #1 is k8 and #2 is k9.
+        // Fail exactly #2, leaving the rollback's write (#3) able to succeed.
         let store = FailOnHost {
             map: RefCell::new(HashMap::new()),
-            fail_key: "k9.password",
+            fail_key: crate::creds::vault::VAULT_ACCOUNT,
+            fail_at: 2,
+            writes: RefCell::new(0),
         };
         // k6 pre-exists (user-added) — migration must skip it.
         store.set("k6.password", "user-pw").unwrap();
@@ -515,10 +539,10 @@ mod tests {
         assert!(result.is_err(), "k9 write failure must propagate");
 
         // Rollback removed k8 (our write)…
-        assert!(store.get("k8.password").unwrap().is_none());
+        assert!(get_password(&store, "k8").unwrap().is_none());
         // …but k6 (pre-existing) MUST survive with the user's value.
         assert_eq!(
-            store.get("k6.password").unwrap().as_deref(),
+            get_password(&store, "k6").unwrap().as_deref(),
             Some("user-pw"),
             "rollback must never delete entries it didn't create"
         );
@@ -589,9 +613,9 @@ mod tests {
         assert_eq!(backup_text, original_text, "backup should match original content");
 
         // Store has the creds.
-        assert_eq!(store.get("k6.password").unwrap().as_deref(), Some("hunter2"));
-        assert!(store.get("k6.otpauth").unwrap().is_some());
-        assert_eq!(store.get("k8.password").unwrap().as_deref(), Some("pw2"));
+        assert_eq!(get_password(&store, "k6").unwrap().as_deref(), Some("hunter2"));
+        assert!(get_otpauth(&store, "k6").unwrap().is_some());
+        assert_eq!(get_password(&store, "k8").unwrap().as_deref(), Some("pw2"));
     }
 
     #[test]

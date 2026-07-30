@@ -200,6 +200,7 @@ fn route_with_ctx(
         Method::HostSetCredentials   => hosts::host_set_credentials(state, params),
         Method::HostRemove        => hosts::host_remove(state, params, Some(Arc::clone(&ctx.managers))),
         Method::HostListDir       => hosts::host_list_dir(state, params),
+        Method::CredentialsConsolidate => hosts::credentials_consolidate(state, params),
 
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),

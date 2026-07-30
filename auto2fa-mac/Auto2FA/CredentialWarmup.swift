@@ -44,10 +44,17 @@ enum CredentialWarmup {
     /// Outcome summary. `failed` lists hosts whose prompt was denied or timed
     /// out — they are reported by name, because the fix (reopen and choose
     /// "Always Allow") is per host.
-    static func summary(total: Int, failed: [String]) -> String {
+    /// `consolidated` = how many hosts were folded into the single Keychain
+    /// item on this run. Reported because it changes what happens NEXT time:
+    /// one prompt per update instead of one per saved secret.
+    static func summary(total: Int, failed: [String], consolidated: Int = 0) -> String {
         if total == 0 { return "No saved credentials to authorize." }
         if failed.isEmpty {
-            return "All \(total) host\(total == 1 ? "" : "s") authorized — macOS won't ask again for this version."
+            let base = "All \(total) host\(total == 1 ? "" : "s") authorized"
+            if consolidated > 0 {
+                return "\(base), and merged into a single Keychain item — future updates will ask once instead of once per host."
+            }
+            return "\(base) — macOS won't ask again for this version."
         }
         let names = failed.joined(separator: ", ")
         return "\(total - failed.count) of \(total) authorized. Not authorized: \(names). Open each one's Password & Setup and choose “Always Allow”."

@@ -6,6 +6,7 @@
 
 pub mod keychain;
 pub mod migrate;
+pub mod vault;
 
 use crate::error::Result;
 
@@ -20,11 +21,11 @@ pub trait SecretStore {
 // Account-name helpers — must match credentials.py exactly.
 // ---------------------------------------------------------------------------
 
-fn password_acct(host: &str) -> String {
+pub(crate) fn password_acct(host: &str) -> String {
     format!("{host}.password")
 }
 
-fn otpauth_acct(host: &str) -> String {
+pub(crate) fn otpauth_acct(host: &str) -> String {
     format!("{host}.otpauth")
 }
 
@@ -37,37 +38,39 @@ fn otpauth_acct(host: &str) -> String {
 /// Both writes must succeed atomically: if the second write fails the first is
 /// rolled back (deleted) and the error is returned, leaving no half-credential
 /// behind — matching `set_credentials` in `credentials.py`.
+/// Both secrets are written together, into the single vault item — so there is
+/// no half-credential state to roll back (the old two-item write needed one).
 pub fn store_credentials<S: SecretStore>(
     store: &S,
     host: &str,
     password: &str,
     otpauth: &str,
 ) -> Result<()> {
-    store.set(&password_acct(host), password)?;
-    if let Err(e) = store.set(&otpauth_acct(host), otpauth) {
-        // Roll back the password write.
-        let _ = store.delete(&password_acct(host));
-        return Err(e);
-    }
-    Ok(())
+    vault::set_host_creds(
+        store,
+        host,
+        vault::HostCreds {
+            password: password.to_owned(),
+            otpauth: otpauth.to_owned(),
+        },
+    )
 }
 
 /// Retrieve the SSH password for `host`, or `None` if absent.
 pub fn get_password<S: SecretStore>(store: &S, host: &str) -> Result<Option<String>> {
-    store.get(&password_acct(host))
+    let c = vault::get_host_creds(store, host)?;
+    Ok(if c.password.is_empty() { None } else { Some(c.password) })
 }
 
 /// Retrieve the otpauth URL for `host`, or `None` if absent.
 pub fn get_otpauth<S: SecretStore>(store: &S, host: &str) -> Result<Option<String>> {
-    store.get(&otpauth_acct(host))
+    let c = vault::get_host_creds(store, host)?;
+    Ok(if c.otpauth.trim().is_empty() { None } else { Some(c.otpauth) })
 }
 
-/// Delete both the password and otpauth entries for `host`.
-/// Errors on individual deletes are ignored (absent entries are not errors).
+/// Delete a host's credentials from the vault AND any legacy per-host entries.
 pub fn delete_credentials<S: SecretStore>(store: &S, host: &str) -> Result<()> {
-    let _ = store.delete(&password_acct(host));
-    let _ = store.delete(&otpauth_acct(host));
-    Ok(())
+    vault::delete_host_creds(store, host)
 }
 
 // ---------------------------------------------------------------------------
@@ -103,11 +106,14 @@ mod tests {
         }
     }
 
+    /// Both secrets now live in ONE item, so there is no half-written state to
+    /// roll back — but a failed write must still leave NOTHING readable, rather
+    /// than a password with no 2FA secret (which would fail every login).
     #[test]
-    fn store_rolls_back_if_second_write_fails() {
+    fn failed_store_leaves_no_partial_credentials() {
         let s = FakeStore {
             map: RefCell::new(HashMap::new()),
-            fail_on: Some("k6.otpauth".into()),
+            fail_on: Some(vault::VAULT_ACCOUNT.into()),
         };
         let r = store_credentials(
             &s,
@@ -115,12 +121,9 @@ mod tests {
             "pw",
             "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
         );
-        assert!(r.is_err());
-        // first write (password) must have been rolled back
-        assert!(
-            s.get("k6.password").unwrap().is_none(),
-            "password not rolled back"
-        );
+        assert!(r.is_err(), "a failing store must report the failure");
+        assert!(get_password(&s, "k6").unwrap().is_none());
+        assert!(get_otpauth(&s, "k6").unwrap().is_none());
     }
 
     #[test]
@@ -136,7 +139,10 @@ mod tests {
             "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP",
         )
         .unwrap();
-        assert_eq!(s.get("k6.password").unwrap().as_deref(), Some("pw"));
-        assert!(s.get("k6.otpauth").unwrap().is_some());
+        // Assert through the public API: the on-disk layout is the vault's
+        // business, and it deliberately no longer uses per-host accounts.
+        assert_eq!(get_password(&s, "k6").unwrap().as_deref(), Some("pw"));
+        assert!(get_otpauth(&s, "k6").unwrap().is_some());
+        assert_eq!(s.map.borrow().len(), 1, "one host must occupy one item");
     }
 }

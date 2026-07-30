@@ -1120,6 +1120,56 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// credentials_consolidate — collapse per-host Keychain items into one
+// ---------------------------------------------------------------------------
+
+/// Fold every host's legacy per-host Keychain items into the single vault item.
+///
+/// WHY this is worth a dedicated method: macOS asks permission per Keychain
+/// ITEM whenever the reading binary's identity changes, and the daemon is a
+/// separately-signed helper that changes on every release. Two items per host
+/// meant twelve "Always Allow" prompts per update on a six-host install. After
+/// this runs there is ONE item, so an update costs at most one prompt.
+///
+/// It is deliberately explicit rather than automatic at boot: the migration
+/// itself must read all the old items, which costs the old per-item prompts one
+/// last time. That belongs behind a button the user pressed, with an
+/// explanation, not a mystery burst of dialogs at launch.
+pub fn credentials_consolidate(state: &Arc<Mutex<State>>, _params: &Value) -> Result<Value> {
+    let hosts: Vec<String> = {
+        let guard = crate::lock_state(state);
+        guard.hosts.iter().map(|h| h.host.clone()).collect()
+    };
+
+    // Bounded worker, like every other Keychain touch. Generous deadline: this
+    // reads up to 2N items and may sit behind N authorization prompts.
+    let hosts_for_worker = hosts.clone();
+    let report = run_keychain_bounded(
+        "credential consolidation",
+        "all-hosts",
+        std::time::Duration::from_secs(180),
+        move || a2fa_core::creds::vault::migrate_to_vault(&KeychainStore, &hosts_for_worker),
+    )?;
+
+    // Cached creds are still valid (same secrets, new location), but drop them
+    // anyway so the next read proves the vault works.
+    for h in &hosts {
+        crate::managers::invalidate_creds_cache(h);
+    }
+
+    log::info!(
+        "credential consolidation: {} migrated, {} already in the vault, {} with nothing stored",
+        report.migrated, report.already, report.missing
+    );
+    Ok(json!({
+        "migrated": report.migrated,
+        "already": report.already,
+        "missing": report.missing,
+        "total_hosts": hosts.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // host_list_dir — browse remote folders for the mount picker
 // ---------------------------------------------------------------------------
 

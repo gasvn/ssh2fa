@@ -1256,8 +1256,20 @@ final class AppState: ObservableObject {
                 failed.append(name)
             }
         }
+        // Now that every item has been authorized once, collapse them into a
+        // SINGLE Keychain item. That is what stops the next update from asking
+        // once per saved secret — the prompt count comes from the number of
+        // items, not from the signature.
+        var consolidated = 0
+        if failed.isEmpty {
+            warmupProgress = "Consolidating into a single Keychain item…"
+            if let report = try? await client.consolidateCredentials() {
+                consolidated = report.migrated
+            }
+        }
         warmupProgress = nil
-        warmupSummary = CredentialWarmup.summary(total: names.count, failed: failed)
+        warmupSummary = CredentialWarmup.summary(total: names.count, failed: failed,
+                                                 consolidated: consolidated)
         // Only mark the build done when everything succeeded — otherwise the
         // offer stands so the user gets another chance at the ones they denied.
         if failed.isEmpty {

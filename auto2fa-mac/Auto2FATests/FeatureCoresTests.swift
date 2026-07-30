@@ -107,6 +107,20 @@ final class FeatureCoresTests: XCTestCase {
         XCTAssertTrue(s.contains("Always Allow"), "must name the button that fixes it")
     }
 
+    /// The summary must say what changed for NEXT time — that is the whole
+    /// user-visible payoff of consolidation.
+    func testWarmupSummaryMentionsConsolidation() {
+        let s = CredentialWarmup.summary(total: 6, failed: [], consolidated: 6)
+        XCTAssertTrue(s.contains("single Keychain item"))
+        XCTAssertTrue(s.lowercased().contains("once"))
+    }
+
+    /// Nothing to consolidate (already merged) → don't claim it happened.
+    func testWarmupSummaryWithoutConsolidationDoesNotClaimIt() {
+        let s = CredentialWarmup.summary(total: 6, failed: [], consolidated: 0)
+        XCTAssertFalse(s.contains("single Keychain item"))
+    }
+
     func testWarmupSummarySuccessAndEmptyCases() {
         XCTAssertTrue(CredentialWarmup.summary(total: 3, failed: []).contains("All 3 hosts"))
         XCTAssertTrue(CredentialWarmup.summary(total: 1, failed: []).contains("All 1 host"))

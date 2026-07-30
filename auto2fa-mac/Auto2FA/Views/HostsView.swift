@@ -79,7 +79,7 @@ struct HostsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Authorize saved credentials after this update")
                         .font(.rowTitle)
-                    Text("SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt.")
+                    Text("SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt. They'll then be merged into a single Keychain item, so future updates ask only once.")
                         .font(.rowMeta).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
