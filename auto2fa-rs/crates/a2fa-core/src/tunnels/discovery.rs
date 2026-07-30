@@ -607,8 +607,13 @@ pub fn list_remote_dirs(
     // with any embedded single quote escaped so a quote in a directory name
     // cannot break out. `head` caps a pathological directory.
     let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    // stderr is deliberately NOT suppressed. Piping into `head` makes the exit
+    // status head's (always 0), so a failure is invisible in the status — and
+    // with stderr thrown away, "permission denied" and "no such directory" both
+    // came back as an empty listing, indistinguishable from an empty folder.
+    // Keeping stderr lets the caller tell the user which one actually happened.
     let remote_cmd = format!(
-        "find {quoted} -maxdepth 1 -mindepth 1 \\( -type d -printf 'd\\t%f\\n' -o -printf 'f\\t%f\\n' \\) 2>/dev/null | head -n 500"
+        "find {quoted} -maxdepth 1 -mindepth 1 \\( -type d -printf 'd\\t%f\\n' -o -printf 'f\\t%f\\n' \\) | head -n 500"
     );
 
     let mut cmd = Command::new("ssh");
@@ -622,14 +627,18 @@ pub fn list_remote_dirs(
     ]);
     let output = ssh_squeue_output(cmd, LISTDIR_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // BSD `find` has no -printf. If it produced nothing but complained, say so
-    // rather than presenting an empty directory as fact.
-    if stdout.trim().is_empty() && !output.status.success() {
+    // Nothing listed AND something on stderr → the directory could not be read
+    // (missing, or no permission), which is NOT the same as an empty directory.
+    // Report it so the picker can say which. Requiring stdout to be empty means
+    // a warning about one unreadable subdirectory never discards a good listing.
+    if stdout.trim().is_empty() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Discovery(format!(
-            "could not list {path}: {}",
-            err.lines().next().unwrap_or("unknown error").trim()
-        )));
+        if let Some(line) = err.lines().find(|l| !l.trim().is_empty()) {
+            // Remote errors read like "find: '/home': Permission denied" —
+            // strip the tool prefix so the UI shows the part that matters.
+            let msg = line.trim().strip_prefix("find: ").unwrap_or(line.trim());
+            return Err(Error::Discovery(msg.to_string()));
+        }
     }
     Ok(parse_dir_listing(&stdout))
 }
