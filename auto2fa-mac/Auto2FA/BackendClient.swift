@@ -302,6 +302,9 @@ actor BackendClient {
             // Reads every legacy item and may sit behind one prompt per item;
             // bounded daemon-side at 180s.
             return 200
+        case "host_mount_repair":
+            // umount -f + reaping the macFUSE backend, per mount.
+            return 60
         case "host_list_dir":
             // A remote `find` over the warm master: bounded daemon-side at 12s.
             return 18
@@ -534,6 +537,53 @@ actor BackendClient {
                                      params: ["host": host, "path": path])
         struct R: Decodable { let entries: [RemoteDir] }
         return try JSONDecoder().decode(R.self, from: data).entries
+    }
+
+    /// One active sshfs mount, as read from the kernel mount table.
+    struct ActiveMount: Decodable, Identifiable, Hashable {
+        var id: String { mount_point }
+        let host: String
+        let mount_point: String
+        let source: String
+        /// Mounted in the old one-per-host layout; can't sit alongside others.
+        let legacy: Bool
+
+        /// The remote path this mount came from, recovered from the `source`
+        /// column (`k6:/scratch` → `/scratch`). Unmounting addresses a folder
+        /// by remote path, and the mount point only carries the slug — which is
+        /// lossy (`/a/b` and `/a-b` share a slug), so prefer the source.
+        var remotePathGuess: String {
+            if let idx = source.firstIndex(of: ":") {
+                let p = String(source[source.index(after: idx)...])
+                return p.isEmpty ? "/" : p
+            }
+            return "/"
+        }
+    }
+
+    /// What is actually mounted right now. Read from the mount table, so it is
+    /// safe (and fast) even when a mount is wedged.
+    func activeMounts(host: String? = nil) async throws -> [ActiveMount] {
+        var params: [String: Any] = [:]
+        if let host { params["host"] = host }
+        let data = try await sendRaw(method: "host_mounts", params: params)
+        struct R: Decodable { let mounts: [ActiveMount] }
+        return try JSONDecoder().decode(R.self, from: data).mounts
+    }
+
+    struct MountRepairResult: Decodable {
+        let repaired: Int
+        let still_mounted: Int?
+    }
+
+    /// Force-unmount and clean up a wedged mount for `host` (or one specific
+    /// mount point).
+    @discardableResult
+    func repairMounts(host: String, mountPoint: String? = nil) async throws -> MountRepairResult {
+        var params: [String: Any] = ["host": host]
+        if let mountPoint { params["mount_point"] = mountPoint }
+        let data = try await sendRaw(method: "host_mount_repair", params: params)
+        return try JSONDecoder().decode(MountRepairResult.self, from: data)
     }
 
     /// Result of a mount toggle: where it landed and whether it is now mounted,

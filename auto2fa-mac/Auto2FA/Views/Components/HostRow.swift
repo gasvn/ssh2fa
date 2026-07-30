@@ -283,20 +283,51 @@ struct HostRow: View {
         // only block during the brief in-flight toggle RPC.
         .disabled(appState.inFlightHosts.contains(host.host))
 
-        if host.isMounted {
-            Button {
-                Task { await appState.toggleMount(host) }
+        // Several folders per host can be mounted at once, so these are lists
+        // rather than a single toggle.
+        let mounted = appState.mounts(for: host.host)
+        if !mounted.isEmpty {
+            Menu {
+                ForEach(mounted) { m in
+                    Button {
+                        appState.revealMount(host, mountPoint: m.mount_point)
+                    } label: {
+                        Label((m.mount_point as NSString).lastPathComponent,
+                              systemImage: "folder")
+                    }
+                }
+            } label: {
+                Label("Open in Finder", systemImage: "folder")
+            }
+
+            Menu {
+                ForEach(mounted) { m in
+                    Button {
+                        Task { await appState.unmount(host: host, remotePath: m.remotePathGuess) }
+                    } label: {
+                        Label((m.mount_point as NSString).lastPathComponent,
+                              systemImage: "eject")
+                    }
+                }
+                Divider()
+                // No safe way to DETECT a wedged mount (detecting means touching
+                // it, which is what hangs), so repair is an explicit action for
+                // when Finder is beachballing.
+                Button(role: .destructive) {
+                    Task {
+                        if let err = await appState.repairMounts(host: host.host) {
+                            appState.showActionError(err)
+                        }
+                    }
+                } label: {
+                    Label("Force-unmount everything (if stuck)", systemImage: "bandage")
+                }
             } label: {
                 Label("Unmount", systemImage: "eject.fill")
             }
             .disabled(isBusy)
-
-            Button {
-                appState.revealMount(host)
-            } label: {
-                Label("Open in Finder", systemImage: "folder")
-            }
-        } else {
+        }
+        if true {
             // A submenu, so pinned folders are one click away instead of a
             // re-navigation every session.
             Menu {

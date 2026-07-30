@@ -108,6 +108,36 @@ final class MountBookmarksTests: XCTestCase {
         XCTAssertEqual(decoded[0].displayName, "data")
     }
 
+    // MARK: - slug parity with the daemon
+
+    /// The app derives the mount directory name to tell which pin is mounted.
+    /// It MUST agree with `a2fa_core::mounts::slug_for` — a mismatch would show
+    /// every folder as unmounted while it is in fact mounted.
+    func testSlugMatchesTheDaemonRules() {
+        XCTAssertEqual(MountBookmarks.slug(for: "/"), "root")
+        XCTAssertEqual(MountBookmarks.slug(for: ""), "root")
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch"), "scratch")
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project"), "scratch-alice-project")
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project/"), "scratch-alice-project")
+        XCTAssertEqual(MountBookmarks.slug(for: "///"), "root")
+        XCTAssertEqual(MountBookmarks.slug(for: "/***"), "root")
+    }
+
+    /// A slug is ONE filesystem component — it must never reintroduce a
+    /// separator, or a mount would land outside its host directory.
+    func testSlugIsAlwaysASingleComponent() {
+        for p in ["/a b/c:d", "/../../etc/passwd", "/x/y/z"] {
+            let s = MountBookmarks.slug(for: p)
+            XCTAssertFalse(s.contains("/"), "\(p) produced \(s)")
+            XCTAssertFalse(s.hasPrefix("-"))
+            XCTAssertFalse(s.hasSuffix("-"))
+        }
+    }
+
+    func testSlugIsLengthCapped() {
+        XCTAssertLessThanOrEqual(MountBookmarks.slug(for: "/" + String(repeating: "x", count: 500)).count, 60)
+    }
+
     // MARK: - store round-trip
 
     func testStoreRoundTripsThroughDisk() throws {

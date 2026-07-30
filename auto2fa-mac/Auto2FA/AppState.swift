@@ -394,6 +394,7 @@ final class AppState: ObservableObject {
             // it on every render, so without this the pins are invisible until
             // the manage sheet happens to be opened.
             reloadMountBookmarks()
+            await refreshMounts()
         } catch {
             // A single background-poll timeout is almost always a transient blip
             // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
@@ -951,10 +952,66 @@ final class AppState: ObservableObject {
         await reloadAll()
     }
 
+    /// Everything currently mounted, refreshed alongside the host list.
+    @Published private(set) var activeMounts: [BackendClient.ActiveMount] = []
+
+    func mounts(for host: String) -> [BackendClient.ActiveMount] {
+        activeMounts.filter { $0.host == host }
+    }
+
+    /// Is this specific folder mounted right now?
+    func isMounted(host: String, remotePath: String) -> Bool {
+        let slug = MountBookmarks.slug(for: remotePath)
+        return mounts(for: host).contains { ($0.mount_point as NSString).lastPathComponent == slug }
+    }
+
+    func refreshMounts() async {
+        activeMounts = (try? await client.activeMounts()) ?? activeMounts
+    }
+
+    /// Unmount ONE folder (by its mount point), leaving the host's other
+    /// mounts alone.
+    @discardableResult
+    func unmount(host: SSHHost, remotePath: String) async -> String? {
+        inFlightHosts.insert(host.host)
+        defer { inFlightHosts.remove(host.host) }
+        do {
+            _ = try await client.toggleMount(host.host, remotePath: remotePath)
+            await refreshMounts()
+            await reloadAll()
+            return nil
+        } catch {
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
+    /// Force-unmount a wedged mount (Finder hanging on it) and clean up.
+    @discardableResult
+    func repairMounts(host: String, mountPoint: String? = nil) async -> String? {
+        inFlightHosts.insert(host)
+        defer { inFlightHosts.remove(host) }
+        do {
+            let r = try await client.repairMounts(host: host, mountPoint: mountPoint)
+            await refreshMounts()
+            await reloadAll()
+            if (r.still_mounted ?? 0) > 0 {
+                return "Repaired \(r.repaired), but \(r.still_mounted ?? 0) still won't release — a reboot may be needed."
+            }
+            return nil
+        } catch {
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
     /// Open an already-mounted host's folder in Finder (no mounting involved).
-    func revealMount(_ host: SSHHost) {
-        let path = (NSHomeDirectory() as NSString)
-            .appendingPathComponent("Mounts/\(host.host)")
+    /// Open a mounted folder in Finder. With several mounts per host, open the
+    /// specific one when given, else the host's mount directory.
+    func revealMount(_ host: SSHHost, mountPoint: String? = nil) {
+        let path = mountPoint
+            ?? mounts(for: host.host).first?.mount_point
+            ?? (NSHomeDirectory() as NSString).appendingPathComponent("Mounts/\(host.host)")
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 

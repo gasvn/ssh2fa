@@ -3,6 +3,7 @@ pub mod creds;
 pub mod engine;
 pub mod error;
 pub mod model;
+pub mod mounts;
 pub mod proto;
 pub mod ssh;
 pub mod sys;

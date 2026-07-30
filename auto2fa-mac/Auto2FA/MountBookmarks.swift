@@ -101,6 +101,27 @@ enum MountBookmarks {
         sorted(list.filter { $0.host == host })
     }
 
+    /// Directory name the daemon mounts this path under (`~/Mounts/<host>/<slug>`).
+    ///
+    /// MUST match `a2fa_core::mounts::slug_for` — the app uses it to tell which
+    /// pinned folder a given mount point corresponds to. Kept deliberately
+    /// simple and mirrored on both sides rather than shipped over the wire on
+    /// every listing.
+    static func slug(for remotePath: String) -> String {
+        let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if trimmed.isEmpty { return "root" }
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        var s = String(trimmed.map { allowed.contains($0) ? $0 : "-" })
+        while s.contains("--") { s = s.replacingOccurrences(of: "--", with: "-") }
+        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if s.isEmpty { return "root" }
+        if s.count > 60 {
+            s = String(s.suffix(60)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        }
+        return s
+    }
+
     /// The folder to mount automatically when `host` connects, if any.
     ///
     /// There is one mount point per host, so at most one pin can win; taking

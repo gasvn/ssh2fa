@@ -201,6 +201,8 @@ fn route_with_ctx(
         Method::HostRemove        => hosts::host_remove(state, params, Some(Arc::clone(&ctx.managers))),
         Method::HostListDir       => hosts::host_list_dir(state, params),
         Method::CredentialsConsolidate => hosts::credentials_consolidate(state, params),
+        Method::HostMounts        => hosts::host_mounts(state, params),
+        Method::HostMountRepair   => hosts::host_mount_repair(state, params),
 
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),

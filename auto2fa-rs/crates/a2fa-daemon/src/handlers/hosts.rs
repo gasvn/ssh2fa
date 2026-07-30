@@ -378,16 +378,18 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     }
     let _mount_guard = MountInFlightGuard { host: host_name.clone() };
 
-    // Snapshot current mount state.
-    let is_mounted = {
+    // Verify the host exists. Its cached `is_mounted` flag is deliberately NOT
+    // used to decide what to do — the kernel mount table below is the ground
+    // truth, and the flag goes stale whenever a volume is ejected in Finder or
+    // dies with the network.
+    {
         let guard = crate::lock_state(state);
         guard
             .hosts
             .iter()
             .find(|h| h.host == host_name)
-            .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?
-            .is_mounted
-    };
+            .ok_or_else(|| Error::NotFound(format!("host {host_name}")))?;
+    }
 
     // Validate the host name is mount-safe (no '/' or '..').
     // host_add validates names on the way in; this guards legacy entries.
@@ -422,12 +424,30 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         }
     };
 
-    let mount_point = {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        std::path::PathBuf::from(home).join("Mounts").join(&host_name)
-    };
+    // ~/Mounts/<host>/<slug> — several folders per host can be mounted at once.
+    let mount_point = mount_point_for(&host_name, &remote_path);
 
-    if is_mounted || mount_point.exists() && is_mount_point(&mount_point) {
+    // Decide from the kernel mount table, never by stat'ing the path: a wedged
+    // macFUSE mount makes stat block forever, and that is exactly the state a
+    // user is in when they reach for unmount.
+    let active = a2fa_core::mounts::list_active_mounts(&mounts_root());
+    let this_is_mounted = active.iter().any(|m| m.mount_point == mount_point);
+    // The pre-existing layout mounted the host at ~/Mounts/<host> itself, which
+    // blocks creating subdirectories under it. Unmount that legacy mount before
+    // mounting into the new layout.
+    let legacy_point = mounts_root().join(&host_name);
+    if !this_is_mounted {
+        if let Some(legacy) = active.iter().find(|m| m.host == host_name && m.slug.is_empty()) {
+            log::info!(
+                "[{host_name}] unmounting legacy single-mount at {} to switch to the per-folder layout",
+                legacy.mount_point.display()
+            );
+            let lp = legacy_point.to_string_lossy().into_owned();
+            let _ = run_cmd_bounded("umount", &["-f", &lp], std::time::Duration::from_secs(10));
+        }
+    }
+
+    if this_is_mounted {
         // Unmount.
         {
             let mut guard = crate::lock_state(state);
@@ -443,10 +463,19 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         // wedged the latch: if macFUSE had ALREADY auto-unmounted (network
         // drop), `umount -f` fails ("not currently mounted") → unmounted=false
         // → is_mounted stuck true and every retry hit the same failing branch.
-        let unmounted = !is_mount_point(&mount_point);
+        // Re-read the mount table (no stat — see above).
+        let still = a2fa_core::mounts::list_active_mounts(&mounts_root());
+        let unmounted = !still.iter().any(|m| m.mount_point == mount_point);
+        // Tidy the now-empty per-host directory so ~/Mounts doesn't accumulate
+        // husks; harmless if other mounts for this host keep it non-empty.
+        if unmounted {
+            let _ = std::fs::remove_dir(&mount_point);
+            let _ = std::fs::remove_dir(mounts_root().join(&host_name));
+        }
+        let host_still_mounted = still.iter().any(|m| m.host == host_name);
         let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
-            h.is_mounted = !unmounted;
+            h.is_mounted = host_still_mounted;
             h.last_msg = if unmounted { "Unmounted" } else { "Unmount failed" }.into();
         }
     } else {
@@ -476,7 +505,12 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             std::time::Duration::from_secs(45),
         );
         let mounted = result
-            .map(|o| o.status.success() && is_mount_point(&mount_point))
+            .map(|o| {
+                o.status.success()
+                    && a2fa_core::mounts::list_active_mounts(&mounts_root())
+                        .iter()
+                        .any(|m| m.mount_point == mount_point)
+            })
             .unwrap_or(false);
         if !mounted {
             // A failed/killed sshfs leaves its DAEMONIZED macFUSE backend
@@ -500,15 +534,9 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     // Report the mount point + what is mounted there. The app opens this in
     // Finder on a successful mount, so it must come back from the RPC rather
     // than being re-derived (and re-guessed) client-side.
-    let is_mounted_now = {
-        let guard = crate::lock_state(state);
-        guard
-            .hosts
-            .iter()
-            .find(|h| h.host == host_name)
-            .map(|h| h.is_mounted)
-            .unwrap_or(false)
-    };
+    let is_mounted_now = a2fa_core::mounts::list_active_mounts(&mounts_root())
+        .iter()
+        .any(|m| m.host == host_name);
     Ok(json!({
         "host": host_name,
         "mounted": is_mounted_now,
@@ -552,6 +580,140 @@ fn is_mount_point(path: &std::path::Path) -> bool {
         Err(_) => return false,
     };
     meta.dev() != parent_meta.dev()
+}
+
+// ---------------------------------------------------------------------------
+// host_mounts / host_mount_repair — several folders at once, and un-wedging
+// ---------------------------------------------------------------------------
+
+/// Root under which every sshfs mount lives: `~/Mounts`.
+fn mounts_root() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home).join("Mounts")
+}
+
+/// Where a given (host, remote path) is mounted: `~/Mounts/<host>/<slug>`.
+///
+/// The old layout mounted a host at `~/Mounts/<host>` itself, which allowed
+/// exactly ONE mount per host — you could pin five folders and still only reach
+/// one at a time. Nesting under the host directory lifts that limit while
+/// keeping everything for a host in one place in Finder.
+fn mount_point_for(host: &str, remote_path: &str) -> std::path::PathBuf {
+    mounts_root()
+        .join(host)
+        .join(a2fa_core::mounts::slug_for(remote_path))
+}
+
+/// List what is actually mounted, read from the kernel mount table.
+///
+/// Never stats a mount point: a wedged macFUSE mount would block that forever,
+/// and this is exactly what the UI calls while the user is trying to fix one.
+pub fn host_mounts(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let root = mounts_root();
+    let all = a2fa_core::mounts::list_active_mounts(&root);
+
+    // Optional host filter; without it, report everything (the app renders the
+    // whole set in one pass rather than one RPC per host).
+    let filter = params.get("host").and_then(|v| v.as_str());
+    if let Some(h) = filter {
+        if !a2fa_core::model::is_safe_host_name(h) {
+            return Err(Error::BadParams("invalid host name".into()));
+        }
+    }
+
+    let mounts: Vec<Value> = all
+        .iter()
+        .filter(|m| filter.is_none_or(|h| m.host == h))
+        .map(|m| {
+            json!({
+                "host": m.host,
+                "mount_point": m.mount_point.to_string_lossy(),
+                "source": m.source,
+                // A legacy single-mount has no slug; flag it so the UI can
+                // explain why it cannot sit alongside others.
+                "legacy": m.slug.is_empty(),
+            })
+        })
+        .collect();
+
+    // Keep State's coarse is_mounted flag honest with reality — an externally
+    // unmounted volume (Finder eject, network drop) otherwise left the row
+    // claiming a mount that no longer exists.
+    {
+        let mounted_hosts: HashSet<&str> = all.iter().map(|m| m.host.as_str()).collect();
+        let mut guard = crate::lock_state(state);
+        for h in guard.hosts.iter_mut() {
+            h.is_mounted = mounted_hosts.contains(h.host.as_str());
+        }
+    }
+
+    Ok(json!({ "mounts": mounts }))
+}
+
+/// Force-unmount a wedged mount and clean up after it.
+///
+/// After a network drop macFUSE can leave a mount that is still in the mount
+/// table but whose every I/O hangs — Finder beachballs on it and a normal
+/// `umount` will not shift it. There is no safe way to DETECT that state
+/// (detecting it means touching the mount, which is what hangs), so this is an
+/// explicit user action: they can see Finder hanging, and this is the button
+/// that fixes it.
+///
+/// Reuses `reap_failed_sshfs`, which force-unmounts, kills the orphaned macFUSE
+/// backend for that exact mount point, and removes the empty directory.
+pub fn host_mount_repair(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = host_param(params)?;
+
+    // Repair every mount for the host, or just one if a path is given.
+    let only_point = params.get("mount_point").and_then(|v| v.as_str());
+    let root = mounts_root();
+    let targets: Vec<std::path::PathBuf> = a2fa_core::mounts::list_active_mounts(&root)
+        .into_iter()
+        .filter(|m| m.host == host_name)
+        .filter(|m| only_point.is_none_or(|p| m.mount_point.to_string_lossy() == p))
+        .map(|m| m.mount_point)
+        .collect();
+
+    if targets.is_empty() {
+        return Ok(json!({ "host": host_name, "repaired": 0,
+                          "reason": "nothing is mounted for this host" }));
+    }
+
+    // The per-host mount latch keeps this from racing a mount/unmount.
+    {
+        let mut inflight = mount_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(host_name.clone()) {
+            return Err(Error::Internal(format!(
+                "mount/unmount already in progress for {host_name}"
+            )));
+        }
+    }
+    let _guard = MountInFlightGuard { host: host_name.clone() };
+
+    for mp in &targets {
+        log::info!("[{host_name}] repairing mount at {}", mp.display());
+        reap_failed_sshfs(mp);
+    }
+
+    // Re-read the table: anything still listed did not come loose.
+    let still = a2fa_core::mounts::list_active_mounts(&root)
+        .into_iter()
+        .filter(|m| targets.contains(&m.mount_point))
+        .count();
+
+    {
+        let mut guard = crate::lock_state(state);
+        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+            h.is_mounted = still > 0;
+            h.last_msg = if still == 0 { "Mounts repaired" } else { "Repair incomplete" }.into();
+        }
+    }
+
+    Ok(json!({
+        "host": host_name,
+        "repaired": targets.len() - still,
+        "still_mounted": still,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2168,6 +2330,63 @@ mod tests {
 
     // host_mount_toggle — can't run sshfs in tests; verify error on
     // non-existent host or sshfs-not-installed path.
+    // ---- multi-mount layout ---------------------------------------------
+
+    /// Each (host, folder) gets its OWN mount point, which is what allows more
+    /// than one folder per host to be mounted at the same time.
+    #[test]
+    fn mount_points_are_distinct_per_folder() {
+        let a = mount_point_for("k6", "/scratch");
+        let b = mount_point_for("k6", "/work");
+        assert_ne!(a, b, "two folders must not share a mount point");
+        assert!(a.ends_with("k6/scratch"), "got {a:?}");
+        assert!(b.ends_with("k6/work"), "got {b:?}");
+    }
+
+    #[test]
+    fn mount_point_for_root_is_named_not_empty() {
+        let p = mount_point_for("k6", "/");
+        assert!(p.ends_with("k6/root"), "got {p:?}");
+    }
+
+    /// Different hosts must never collide even on the same remote path.
+    #[test]
+    fn mount_points_are_distinct_per_host() {
+        assert_ne!(mount_point_for("k6", "/data"), mount_point_for("b8", "/data"));
+    }
+
+    /// A remote path with path separators or spaces must not escape its
+    /// directory — the slug becomes ONE filesystem component.
+    #[test]
+    fn mount_point_cannot_escape_the_host_directory() {
+        let p = mount_point_for("k6", "/../../etc/passwd");
+        let rel = p.strip_prefix(mounts_root().join("k6")).unwrap();
+        assert_eq!(rel.components().count(), 1, "slug must be a single component: {p:?}");
+    }
+
+    #[test]
+    fn host_mounts_rejects_an_unsafe_host_filter() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_mounts(&state, &json!({"host": "../../etc"})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    /// Nothing mounted → a clear "nothing to do", not an error or a silent OK.
+    #[test]
+    fn mount_repair_with_nothing_mounted_reports_so() {
+        let state = make_state_with_host("a2fa-test-nomounts", false);
+        let v = host_mount_repair(&state, &json!({"host": "a2fa-test-nomounts"})).unwrap();
+        assert_eq!(v["repaired"], 0);
+        assert!(v["reason"].as_str().unwrap().contains("nothing is mounted"));
+    }
+
+    #[test]
+    fn mount_repair_rejects_unsafe_host_name() {
+        let state = make_state_with_host("../../etc", false);
+        let err = host_mount_repair(&state, &json!({"host": "../../etc"})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
     #[test]
     fn host_mount_toggle_not_found_returns_error() {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
