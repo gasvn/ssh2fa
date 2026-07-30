@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn many_hosts_still_occupy_a_single_item() {
         let s = FakeStore::default();
-        for h in ["k6", "k8", "b8", "kempner", "rkempner", "k7"] {
+        for h in ["h1", "h2", "h3", "h4", "h5", "h6"] {
             set_host_creds(&s, h, HostCreds { password: "p".into(), otpauth: "o".into() })
                 .unwrap();
         }
