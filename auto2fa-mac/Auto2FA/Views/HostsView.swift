@@ -37,6 +37,7 @@ struct HostsView: View {
                 if onboardingActive {
                     GetStartedChecklist(compact: true) { onboardingDismissed = true }
                 }
+                credentialWarmupBanner
                 if visibleHosts.isEmpty {
                     noMatches
                 } else {
@@ -45,6 +46,52 @@ struct HostsView: View {
             }
         }
         .padding(Spacing.m)
+    }
+
+    /// After an update the helper is a new binary, so macOS re-asks permission
+    /// for each saved credential — twice per host. Offering one deliberate pass
+    /// beats discovering that one stalled sheet at a time.
+    @ViewBuilder
+    private var credentialWarmupBanner: some View {
+        if let progress = appState.warmupProgress {
+            HStack(spacing: Spacing.s) {
+                ProgressView().controlSize(.small)
+                Text(progress).font(.rowMeta)
+                Spacer()
+                Text("Choose “Always Allow” on each prompt")
+                    .font(.rowMeta).foregroundStyle(.secondary)
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
+        } else if let summary = appState.warmupSummary {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text(summary).font(.rowMeta).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Dismiss") { appState.warmupSummary = nil }
+                    .buttonStyle(.glass)
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
+        } else if appState.shouldOfferCredentialWarmup {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "key.horizontal.fill").foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Authorize saved credentials after this update")
+                        .font(.rowTitle)
+                    Text("SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt.")
+                        .font(.rowMeta).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: Spacing.s)
+                Button("Authorize now") { Task { await appState.runCredentialWarmup() } }
+                    .buttonStyle(.glass)
+                Button("Later") { appState.skipCredentialWarmup() }
+                    .buttonStyle(.glass)
+            }
+            .padding(Spacing.m)
+            .glassCard(cornerRadius: Radius.control)
+        }
     }
 
     private var visibleHosts: [SSHHost] {

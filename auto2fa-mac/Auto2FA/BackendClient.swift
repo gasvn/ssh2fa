@@ -298,6 +298,9 @@ actor BackendClient {
             // Short timeout: the chip should fall back to its muted state fast
             // rather than hang if a Keychain "Always Allow" prompt is pending.
             return 6
+        case "host_remove":
+            // Stops the master + a bounded Keychain delete before returning.
+            return 35
         case "host_credentials", "host_reveal_credentials", "host_set_credentials":
             // Keychain read/write, bounded daemon-side by CREDENTIAL_OP_TIMEOUT
             // (30s — the FIRST read of an account after a daemon restart is slow
@@ -495,12 +498,22 @@ actor BackendClient {
         _ = try await sendRaw(method: "host_toggle", params: ["host": host])
     }
 
-    func toggleMount(_ host: String) async throws {
-        _ = try await sendRaw(method: "host_mount_toggle", params: ["host": host])
+    /// Result of a mount toggle: where it landed and whether it is now mounted,
+    /// so the caller can open the folder without re-deriving the path.
+    struct MountResult: Decodable {
+        let mounted: Bool
+        let mount_point: String
+        let remote_path: String
     }
 
-    func rotateHost(_ host: String) async throws {
-        _ = try await sendRaw(method: "host_rotate", params: ["host": host])
+    /// Toggle the sshfs mount. `remotePath` selects WHICH remote directory to
+    /// mount (default "/"); it is ignored when unmounting.
+    @discardableResult
+    func toggleMount(_ host: String, remotePath: String? = nil) async throws -> MountResult? {
+        var params: [String: Any] = ["host": host]
+        if let remotePath { params["remote_path"] = remotePath }
+        let data = try await sendRaw(method: "host_mount_toggle", params: params)
+        return try? JSONDecoder().decode(MountResult.self, from: data)
     }
 
     func addTunnel(name: String, localPort: Int, remotePort: Int? = nil,
@@ -617,6 +630,29 @@ actor BackendClient {
         struct R: Decodable { let ok: Bool; let reason: String }
         let r = try JSONDecoder().decode(R.self, from: data)
         return (r.ok, r.reason)
+    }
+
+    /// Deregister a host: stops its master, deletes both Keychain entries, and
+    /// drops it from the daemon's config. IRREVERSIBLE — confirm before calling.
+    ///
+    /// `credentialsDeleted` is false when the host was removed but its Keychain
+    /// entries could not be deleted (they remain visible in Keychain Access);
+    /// the removal still completed.
+    @discardableResult
+    func removeHost(_ host: String) async throws -> (credentialsDeleted: Bool, Void) {
+        let data = try await sendRaw(method: "host_remove", params: ["host": host])
+        struct R: Decodable { let credentials_deleted: Bool? }
+        let r = try JSONDecoder().decode(R.self, from: data)
+        return (r.credentials_deleted ?? true, ())
+    }
+
+    /// Change a tunnel's local and/or remote port. A nil field is left alone.
+    /// A live tunnel is stopped and comes back on the new port.
+    func setTunnelPorts(_ name: String, localPort: Int?, remotePort: Int?) async throws {
+        var params: [String: Any] = ["name": name]
+        if let localPort { params["local_port"] = localPort }
+        if let remotePort { params["remote_port"] = remotePort }
+        _ = try await sendRaw(method: "tunnel_set_ports", params: params)
     }
 
     // MARK: - Per-host stored credentials

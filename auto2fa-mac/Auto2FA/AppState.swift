@@ -18,6 +18,11 @@ enum ActiveSheet: Identifiable, Equatable {
     /// Per-host "Password & setup": view/change the stored password + 2FA
     /// secret, and see (or edit) the host's connection settings.
     case hostSettings(host: String)
+    /// Destructive-confirm before deregistering a host (shown as a dialog, like
+    /// `confirmDelete` for tunnels — NOT a real sheet).
+    case confirmRemoveHost(host: String)
+    /// Manage the pinned remote folders used by the sshfs mount for one host.
+    case mountFolders(host: String)
 
     var id: String {
         switch self {
@@ -28,6 +33,8 @@ enum ActiveSheet: Identifiable, Equatable {
         case .addHost(let a): return "addHost:\(a ?? "")"
         case .importHosts: return "importHosts"
         case .hostSettings(let h): return "hostSettings:\(h)"
+        case .confirmRemoveHost(let h): return "confirmRemoveHost:\(h)"
+        case .mountFolders(let h): return "mountFolders:\(h)"
         }
     }
 }
@@ -380,6 +387,10 @@ final class AppState: ObservableObject {
             if connectionError != nil { connectionError = nil }
             refreshConfigCache()
             syncManagedSSHConfig()
+            // Keep the pinned-folder cache warm: HostRow's Mount submenu reads
+            // it on every render, so without this the pins are invisible until
+            // the manage sheet happens to be opened.
+            reloadMountBookmarks()
         } catch {
             // A single background-poll timeout is almost always a transient blip
             // (busy daemon, brief hiccup, one lost request) — NOT a real outage,
@@ -912,20 +923,97 @@ final class AppState: ObservableObject {
         return candidate
     }
 
-    func rotateHost(_ host: SSHHost) async {
+    /// Toggle the sshfs mount for a host.
+    ///
+    /// `remotePath` picks WHICH remote folder to mount (nil = the host's default
+    /// pinned folder, else "/"). On a successful mount the folder is opened in
+    /// Finder unless the user turned that off — landing in the directory you
+    /// actually work in is the entire point of pinning it.
+    func toggleMount(_ host: SSHHost, remotePath: String? = nil) async {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
-        do { try await client.rotateHost(host.host) }
-        catch { showActionError(error) }
+        let path = remotePath ?? defaultMountPath(for: host.host)
+        do {
+            let result = try await client.toggleMount(host.host, remotePath: path)
+            if let result, result.mounted, openInFinderAfterMount {
+                NSWorkspace.shared.open(URL(fileURLWithPath: result.mount_point))
+            }
+        } catch {
+            showActionError(error)
+        }
         await reloadAll()
     }
 
-    func toggleMount(_ host: SSHHost) async {
-        inFlightHosts.insert(host.host)
-        defer { inFlightHosts.remove(host.host) }
-        do { try await client.toggleMount(host.host) }
-        catch { showActionError(error) }
-        await reloadAll()
+    /// Open an already-mounted host's folder in Finder (no mounting involved).
+    func revealMount(_ host: SSHHost) {
+        let path = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Mounts/\(host.host)")
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    // MARK: - Pinned mount folders
+
+    /// Sidecar location: ~/.ssh2fa/mount_bookmarks.json.
+    var mountBookmarksURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".ssh2fa")
+            .appendingPathComponent("mount_bookmarks.json")
+    }
+
+    /// All pinned folders, cached in memory so SwiftUI menus don't hit the disk
+    /// on every render pass (the same mistake the host settings sheet made).
+    @Published private(set) var mountBookmarks: [MountBookmark] = []
+
+    func reloadMountBookmarks() {
+        mountBookmarks = MountBookmarkStore.load(from: mountBookmarksURL)
+    }
+
+    func bookmarks(for host: String) -> [MountBookmark] {
+        MountBookmarks.forHost(host, in: mountBookmarks)
+    }
+
+    /// Which folder a plain "Mount" uses: the host's first pinned folder if it
+    /// has one, else the filesystem root (the pre-existing behaviour).
+    func defaultMountPath(for host: String) -> String {
+        bookmarks(for: host).first?.remotePath ?? "/"
+    }
+
+    /// Pin a folder. Returns nil on success, else why it was refused.
+    @discardableResult
+    func pinMountFolder(host: String, remotePath: String, label: String) -> String? {
+        if let err = MountBookmarks.validate(remotePath) { return err }
+        let updated = MountBookmarks.upsert(
+            MountBookmark(host: host,
+                          remotePath: MountBookmarks.normalize(remotePath),
+                          label: label),
+            into: mountBookmarks)
+        do {
+            try MountBookmarkStore.save(updated, to: mountBookmarksURL)
+            mountBookmarks = updated
+            return nil
+        } catch {
+            return "Couldn't save pinned folder: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func unpinMountFolder(host: String, remotePath: String) -> String? {
+        let updated = MountBookmarks.remove(host: host, remotePath: remotePath,
+                                            from: mountBookmarks)
+        do {
+            try MountBookmarkStore.save(updated, to: mountBookmarksURL)
+            mountBookmarks = updated
+            return nil
+        } catch {
+            return "Couldn't remove pinned folder: \(error.localizedDescription)"
+        }
+    }
+
+    /// Whether a successful mount opens the folder in Finder. Default ON — the
+    /// user asked for exactly this; a mount you then have to go find yourself is
+    /// half a feature.
+    var openInFinderAfterMount: Bool {
+        UserDefaults.standard.object(forKey: SettingsKey.openFinderAfterMount) as? Bool ?? true
     }
 
     /// Live TOTP code for a host (6-digit, never the secret). Thin passthrough
@@ -950,6 +1038,8 @@ final class AppState: ObservableObject {
         refreshConfigCache()
         activeSheet = .hostSettings(host: host)
     }
+    func presentConfirmRemoveHost(_ host: String) { activeSheet = .confirmRemoveHost(host: host) }
+    func presentMountFolders(_ host: String) { reloadMountBookmarks(); activeSheet = .mountFolders(host: host) }
     func dismissSheet() { activeSheet = nil }
 
     /// Re-parse ~/.ssh/config into the in-memory cache. Cheap (small file) and
@@ -1059,6 +1149,101 @@ final class AppState: ObservableObject {
         } catch {
             return (false, (error as? BackendClient.ClientError)?.errorDescription
                            ?? error.localizedDescription)
+        }
+    }
+
+    // MARK: - Post-update credential authorization
+
+    /// Set while the warm-up pass runs; drives the banner + progress label.
+    @Published var warmupProgress: String?
+    /// Set when a warm-up finishes, so the UI can report the outcome.
+    @Published var warmupSummary: String?
+
+    /// Should we offer the post-update "authorize saved credentials" pass?
+    var shouldOfferCredentialWarmup: Bool {
+        CredentialWarmup.shouldOffer(
+            hostCount: hosts.count,
+            currentBuild: UpdateChecker.currentBuild,
+            lastWarmedBuild: UserDefaults.standard.string(forKey: SettingsKey.lastWarmedBuild))
+    }
+
+    /// Read every host's stored credentials once, sequentially, so macOS raises
+    /// its "Always Allow" prompts as one understood batch instead of ambushing
+    /// the user later mid-task.
+    ///
+    /// SEQUENTIAL on purpose: macOS serializes Keychain access process-wide, and
+    /// concurrent reads would stack prompts on top of each other. Uses
+    /// `host_credentials` (metadata only) — it touches the same Keychain items
+    /// as a login without ever pulling a secret into the app.
+    func runCredentialWarmup() async {
+        let names = hosts.map { $0.host }
+        guard !names.isEmpty else { return }
+        var failed: [String] = []
+        for (i, name) in names.enumerated() {
+            warmupProgress = CredentialWarmup.progressLabel(host: name, index: i, total: names.count)
+            do {
+                _ = try await client.hostCredentials(name)
+            } catch {
+                failed.append(name)
+            }
+        }
+        warmupProgress = nil
+        warmupSummary = CredentialWarmup.summary(total: names.count, failed: failed)
+        // Only mark the build done when everything succeeded — otherwise the
+        // offer stands so the user gets another chance at the ones they denied.
+        if failed.isEmpty {
+            UserDefaults.standard.set(UpdateChecker.currentBuild,
+                                      forKey: SettingsKey.lastWarmedBuild)
+        }
+    }
+
+    /// Dismiss the offer for this build without running it.
+    func skipCredentialWarmup() {
+        UserDefaults.standard.set(UpdateChecker.currentBuild, forKey: SettingsKey.lastWarmedBuild)
+        objectWillChange.send()
+    }
+
+    /// Deregister a host: daemon-side removal (master stopped, Keychain entries
+    /// deleted, config entry dropped) plus the app-side sidecar entry and a
+    /// regenerated managed ssh config. Returns nil on success, else a message.
+    ///
+    /// IRREVERSIBLE — callers must confirm first.
+    @discardableResult
+    func removeHost(_ host: String) async -> String? {
+        inFlightHosts.insert(host)
+        defer { inFlightHosts.remove(host) }
+        do {
+            let (credentialsDeleted, _) = try await client.removeHost(host)
+            // Drop the app-owned connection record too, or the alias would be
+            // re-rendered into ssh2fa.conf on the next sync as a sidecar-only
+            // host and quietly reappear in the user's ssh config.
+            try? ManagedHostStore.remove(alias: host, in: managedHostsURL)
+            syncManagedSSHConfig()
+            await reloadAll()
+            if !credentialsDeleted {
+                return "“\(host)” was removed, but its saved password and 2FA secret could not be deleted from the Keychain — remove them in Keychain Access (search for “auto2fa”)."
+            }
+            return nil
+        } catch {
+            return FriendlyText.credentialError(
+                (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription)
+        }
+    }
+
+    /// Change a tunnel's ports. A nil field keeps its current value. Returns nil
+    /// on success or a user-displayable error.
+    @discardableResult
+    func setTunnelPorts(_ name: String, localPort: Int?, remotePort: Int?) async -> String? {
+        inFlightTunnels.insert(name)
+        defer { inFlightTunnels.remove(name) }
+        do {
+            try await client.setTunnelPorts(name, localPort: localPort, remotePort: remotePort)
+            await reloadAll()
+            return nil
+        } catch {
+            return (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 

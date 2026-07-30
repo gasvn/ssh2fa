@@ -647,6 +647,125 @@ pub fn tunnel_set_autostart(state: &Arc<Mutex<State>>, params: &Value) -> Result
 }
 
 // ---------------------------------------------------------------------------
+// tunnel_set_ports
+// ---------------------------------------------------------------------------
+
+/// Change a tunnel's local and/or remote port after creation.
+///
+/// Ports used to be fixed at creation: hitting a local-port clash meant deleting
+/// the tunnel and building it again, which silently discarded its tags,
+/// post-connect hook, URL path and jump pinning. Everything else about a tunnel
+/// is editable; the ports were the one exception.
+///
+/// Params: `name`, plus at least one of `local_port` / `remote_port`.
+/// A live tunnel is STOPPED here — the running `ssh -L` is bound to the old
+/// port, so leaving it up would mean the UI advertises a port the child isn't
+/// serving. `wants_alive` is preserved, so the maintenance loop brings it back
+/// on the new port without the caller orchestrating a restart.
+pub fn tunnel_set_ports(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    runtime: Option<Arc<TunnelRuntime>>,
+) -> Result<Value> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| Error::BadParams("name required".into()))?
+        .to_owned();
+
+    // Parse before touching anything: a rejected value must change nothing.
+    let new_local = parse_port_param(params, "local_port")?;
+    let new_remote = parse_port_param(params, "remote_port")?;
+    if new_local.is_none() && new_remote.is_none() {
+        return Err(Error::BadParams(
+            "nothing to change — pass 'local_port' and/or 'remote_port'".into(),
+        ));
+    }
+
+    // Reject a local port already claimed by ANOTHER tunnel. Two tunnels on one
+    // local port is a guaranteed ExitOnForwardFailure death for whichever starts
+    // second, and the failure surfaces far from this edit.
+    if let Some(port) = new_local {
+        let guard = crate::lock_state(state);
+        if let Some(other) = guard
+            .tunnels
+            .iter()
+            .find(|t| t.name != name && t.local_port == port)
+        {
+            return Err(Error::BadParams(format!(
+                "local port {port} is already used by tunnel '{}'",
+                other.name
+            )));
+        }
+    }
+
+    // Was it running? Stop it before the ports change so the child that is bound
+    // to the OLD local port is never left masquerading as the new one.
+    let was_alive = {
+        let guard = crate::lock_state(state);
+        guard
+            .tunnels
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| {
+                matches!(
+                    t.status,
+                    TunnelStatus::Alive | TunnelStatus::Starting | TunnelStatus::Stale
+                )
+            })
+            .ok_or_else(|| Error::NotFound(name.clone()))?
+    };
+    if was_alive {
+        if let Some(rt) = &runtime {
+            rt.kill_child(&name); // off the State lock, like tunnel_remove
+        }
+    }
+
+    let snap = {
+        let mut guard = crate::lock_state(state);
+        let t = guard
+            .tunnels
+            .iter_mut()
+            .find(|t| t.name == name)
+            .ok_or_else(|| Error::NotFound(name.clone()))?;
+        if let Some(p) = new_local {
+            t.local_port = p;
+        }
+        if let Some(p) = new_remote {
+            t.remote_port = p;
+        }
+        if was_alive {
+            // Keep wants_alive as-is: the maintenance loop restarts it on the
+            // new port. Only the observable status resets.
+            t.status = TunnelStatus::Idle;
+            t.last_msg = "Ports changed — restarting".into();
+        }
+        tunnel_snapshot(t)
+    };
+
+    persist_tunnels(state);
+    Ok(snap)
+}
+
+/// Read an optional u16 port param. Present-but-invalid is an error (never a
+/// silent clamp): `0` is not a bindable port and >65535 is not a port at all.
+fn parse_port_param(params: &Value, key: &str) -> Result<Option<u16>> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| Error::BadParams(format!("{key} must be a number")))?;
+            if !(1..=65535).contains(&n) {
+                return Err(Error::BadParams(format!(
+                    "{key} {n} out of range (1-65535)"
+                )));
+            }
+            Ok(Some(n as u16))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // tunnel_set_jump_candidates
 // ---------------------------------------------------------------------------
 
@@ -1151,6 +1270,119 @@ mod tests {
             fail_count: 0,
         };
         Arc::new(Mutex::new(State::with_tunnels(vec![t])))
+    }
+
+    // ---- tunnel_set_ports ----------------------------------------------
+
+    #[test]
+    fn set_ports_changes_both_ports_and_persists_shape() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        let snap = tunnel_set_ports(
+            &state,
+            &json!({"name": "nb", "local_port": 9001, "remote_port": 9002}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(snap["local_port"], 9001);
+        assert_eq!(snap["remote_port"], 9002);
+        let guard = crate::lock_state(&state);
+        let t = guard.tunnels.iter().find(|t| t.name == "nb").unwrap();
+        assert_eq!(t.local_port, 9001);
+        assert_eq!(t.remote_port, 9002);
+    }
+
+    /// A partial edit must leave the other port alone.
+    #[test]
+    fn set_ports_local_only_leaves_remote_untouched() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 9100}), None).unwrap();
+        let guard = crate::lock_state(&state);
+        let t = guard.tunnels.iter().find(|t| t.name == "nb").unwrap();
+        assert_eq!(t.local_port, 9100);
+        assert_eq!(t.remote_port, 8888, "remote port must be untouched");
+    }
+
+    /// The whole point of the feature: editing ports must NOT cost the user the
+    /// tunnel's other settings (which delete-and-recreate did).
+    #[test]
+    fn set_ports_preserves_tags_hook_and_jump_settings() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        {
+            let mut guard = crate::lock_state(&state);
+            let t = guard.tunnels.iter_mut().find(|t| t.name == "nb").unwrap();
+            t.tags = vec!["gpu".into(), "jupyter".into()];
+            t.post_connect_cmd = Some("open -a Safari".into());
+            t.url_path = Some("/?token=abc".into());
+            t.auto_start = true;
+        }
+        tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 9200}), None).unwrap();
+        let guard = crate::lock_state(&state);
+        let t = guard.tunnels.iter().find(|t| t.name == "nb").unwrap();
+        assert_eq!(t.tags, vec!["gpu".to_string(), "jupyter".to_string()]);
+        assert_eq!(t.post_connect_cmd.as_deref(), Some("open -a Safari"));
+        assert_eq!(t.url_path.as_deref(), Some("/?token=abc"));
+        assert!(t.auto_start);
+    }
+
+    /// A live tunnel is stopped (its child is bound to the OLD port) but stays
+    /// wanted, so the maintenance loop brings it back on the new port.
+    #[test]
+    fn set_ports_on_live_tunnel_resets_status_but_keeps_wants_alive() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Alive);
+        tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 9300}), None).unwrap();
+        let guard = crate::lock_state(&state);
+        let t = guard.tunnels.iter().find(|t| t.name == "nb").unwrap();
+        assert_eq!(t.status, TunnelStatus::Idle, "live tunnel must be stopped");
+        assert!(t.wants_alive, "it must come back on the new port");
+    }
+
+    #[test]
+    fn set_ports_requires_at_least_one_port() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        let err = tunnel_set_ports(&state, &json!({"name": "nb"}), None).unwrap_err();
+        assert!(matches!(err, Error::BadParams(ref m) if m.contains("nothing to change")));
+    }
+
+    /// Out-of-range / non-numeric values must be rejected outright — never
+    /// clamped into something that silently isn't what the user typed.
+    #[test]
+    fn set_ports_rejects_invalid_values_without_mutating() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        for bad in [json!(0), json!(65536), json!("8080")] {
+            let err =
+                tunnel_set_ports(&state, &json!({"name": "nb", "local_port": bad}), None)
+                    .unwrap_err();
+            assert!(matches!(err, Error::BadParams(_)), "must reject {bad}");
+        }
+        let guard = crate::lock_state(&state);
+        assert_eq!(guard.tunnels[0].local_port, 8888, "nothing may change on error");
+    }
+
+    /// Two tunnels on one local port is a guaranteed ExitOnForwardFailure death
+    /// for whichever starts second — reject at the edit, not at start time.
+    #[test]
+    fn set_ports_rejects_a_port_owned_by_another_tunnel() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        {
+            let mut guard = crate::lock_state(&state);
+            let mut other = guard.tunnels[0].clone();
+            other.name = "other".into();
+            other.local_port = 9999;
+            guard.tunnels.push(other);
+        }
+        let err = tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 9999}), None)
+            .unwrap_err();
+        assert!(matches!(err, Error::BadParams(ref m) if m.contains("already used")));
+        // Keeping its OWN port is not a conflict with itself.
+        tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 8888}), None).unwrap();
+    }
+
+    #[test]
+    fn set_ports_unknown_tunnel_is_not_found() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        let err = tunnel_set_ports(&state, &json!({"name": "ghost", "local_port": 9000}), None)
+            .unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
     }
 
     // ---- list_tunnels --------------------------------------------------

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use a2fa_core::config::{load_meta, passwords_path, update_meta, HostMeta};
 use a2fa_core::creds::keychain::KeychainStore;
-use a2fa_core::creds::{get_otpauth, get_password, store_credentials};
+use a2fa_core::creds::{delete_credentials, get_otpauth, get_password, store_credentials};
 use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
@@ -352,6 +352,19 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         .ok_or_else(|| Error::BadParams("host required".into()))?
         .to_owned();
 
+    // WHICH remote directory to mount. Defaults to "/" (the original
+    // behaviour). Mounting the directory you actually work in — rather than the
+    // filesystem root every time — is the difference between a mount you use
+    // and one you re-navigate on every login.
+    let remote_path = params
+        .get("remote_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("/")
+        .to_owned();
+    validate_remote_path(&remote_path)?;
+
     // Claim the per-host latch FIRST (RAII release on every path). A second
     // toggle for the same host while one is in flight returns "busy" instead of
     // stacking another sshfs→ssh subtree.
@@ -446,7 +459,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             }
         }
         let mp_str2 = mount_point.to_string_lossy().into_owned();
-        let src = format!("{host_name}:/");
+        let src = format!("{host_name}:{remote_path}");
         // ConnectTimeout=10 makes the embedded ssh fail fast on a dead/slow
         // login node (the single highest-value change — without it sshfs hangs
         // on TCP connect / auth and a stat of the half-made mount can freeze
@@ -476,11 +489,52 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.is_mounted = mounted;
-            h.last_msg = if mounted { "Mounted" } else { "Mount failed" }.into();
+            h.last_msg = if mounted {
+                format!("Mounted {remote_path}")
+            } else {
+                "Mount failed".into()
+            };
         }
     }
 
-    Ok(Value::Null)
+    // Report the mount point + what is mounted there. The app opens this in
+    // Finder on a successful mount, so it must come back from the RPC rather
+    // than being re-derived (and re-guessed) client-side.
+    let is_mounted_now = {
+        let guard = crate::lock_state(state);
+        guard
+            .hosts
+            .iter()
+            .find(|h| h.host == host_name)
+            .map(|h| h.is_mounted)
+            .unwrap_or(false)
+    };
+    Ok(json!({
+        "host": host_name,
+        "mounted": is_mounted_now,
+        "mount_point": mount_point.to_string_lossy(),
+        "remote_path": remote_path,
+    }))
+}
+
+/// Validate a user-supplied remote directory for `sshfs host:<path>`.
+///
+/// This is one argv element (no shell), so quoting/injection is not the risk —
+/// a malformed value is. Require an absolute path, and reject control
+/// characters, which would corrupt the argument and produce a baffling sshfs
+/// error rather than a clear one here.
+fn validate_remote_path(path: &str) -> Result<()> {
+    if !path.starts_with('/') {
+        return Err(Error::BadParams(format!(
+            "remote path must be absolute (start with '/'), got {path:?}"
+        )));
+    }
+    if path.chars().any(|c| c.is_control()) {
+        return Err(Error::BadParams(
+            "remote path must not contain control characters".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Returns true if `path` is an actual mount point.
@@ -1062,6 +1116,92 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         "code": code,
         "period": period,
         "seconds_remaining": remaining,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// host_remove — the missing other half of host_add
+// ---------------------------------------------------------------------------
+
+/// Deregister a host completely: stop its master, delete both Keychain entries,
+/// drop it from passwords.json, and remove it from State.
+///
+/// Until this existed a host could be added but never removed — a decommissioned
+/// cluster kept its entry, kept being retried, and kept its password + TOTP
+/// secret in the Keychain forever. The only escape was `brew uninstall --zap`.
+/// (`delete_credentials` already existed in core but was reachable only from the
+/// migration path.)
+///
+/// Deleting credentials is irreversible, so this is deliberately explicit: the
+/// caller passes the host name and the app confirms first.
+///
+/// Ordering matters. The master is stopped FIRST (an orphaned ControlMaster with
+/// no owning entry can never be adopted or cleaned up again), then the Keychain
+/// entries go, then the on-disk metadata, then State. A failure to delete the
+/// Keychain entries is logged but does NOT abort the removal: leaving the host
+/// registered because its secrets could not be deleted is the worse outcome —
+/// the user asked for it gone, and stale Keychain items are visible/removable in
+/// Keychain Access.
+pub fn host_remove(
+    state: &Arc<Mutex<State>>,
+    params: &Value,
+    managers: Option<Arc<HostManagers>>,
+) -> Result<Value> {
+    let host_name = host_param(params)?;
+    require_host(state, &host_name)?;
+
+    // 1. Mark inactive so the heartbeat stops trying to restart it while we
+    //    tear down, then stop the master off the State lock.
+    {
+        let mut guard = crate::lock_state(state);
+        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+            h.active = false;
+            h.last_msg = "Removing…".into();
+        }
+    }
+    if let Some(mgrs) = managers {
+        spawn_managed_stop(host_name.clone(), Arc::clone(state), mgrs);
+    }
+
+    // 2. Delete both Keychain entries on the bounded worker (never inline).
+    let host_owned = host_name.clone();
+    let cred_result = run_keychain_bounded(
+        "credential delete",
+        &host_name,
+        CREDENTIAL_OP_TIMEOUT,
+        move || delete_credentials(&KeychainStore, &host_owned),
+    );
+    let credentials_deleted = match cred_result {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!(
+                "[{host_name}] could not delete Keychain credentials during removal: {e} \
+                 (removing the host anyway; the entries remain in Keychain Access)"
+            );
+            false
+        }
+    };
+    // Whatever happened above, never serve cached secrets for a removed host.
+    crate::managers::invalidate_creds_cache(&host_name);
+
+    // 3. Drop the passwords.json entry (serialized read-modify-write).
+    if let Err(e) = update_meta(&passwords_path(), |meta| {
+        meta.remove(&host_name);
+    }) {
+        log::warn!("[{host_name}] could not update passwords.json during removal: {e}");
+    }
+
+    // 4. Drop it from State so it disappears from list_hosts immediately.
+    {
+        let mut guard = crate::lock_state(state);
+        guard.hosts.retain(|h| h.host != host_name);
+    }
+
+    log::info!("[{host_name}] host removed (credentials_deleted={credentials_deleted})");
+    Ok(json!({
+        "ok": true,
+        "host": host_name,
+        "credentials_deleted": credentials_deleted,
     }))
 }
 
@@ -1731,6 +1871,66 @@ mod tests {
     // run headlessly — no system credential store involved.
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // host_remove
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn host_remove_not_found_returns_not_found() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_remove(&state, &json!({"host": "ghost"}), None).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn host_remove_rejects_unsafe_host_name() {
+        let state = make_state_with_host("../../etc", false);
+        let err = host_remove(&state, &json!({"host": "../../etc"}), None).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    #[test]
+    fn host_remove_missing_host_param_returns_bad_params() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_remove(&state, &json!({}), None).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    /// The host must be GONE from State — list_hosts is what the UI renders, so
+    /// a host left behind reads as "remove didn't work". The Keychain delete is
+    /// attempted on a worker and may fail in a test environment; removal must
+    /// still complete (that's the documented precedence).
+    #[test]
+    fn host_remove_drops_the_host_from_state() {
+        let state = make_state_with_host("a2fa-test-removeme", true);
+        // Second host stays put — removal must be surgical.
+        crate::lock_state(&state).hosts.push(Host {
+            host: "a2fa-test-keepme".into(),
+            status: "Idle".into(),
+            active: false,
+            is_master_ready: false,
+            pool_index: 0,
+            pool_alive: 0,
+            is_mounted: false,
+            last_msg: String::new(),
+        });
+
+        let v = host_remove(&state, &json!({"host": "a2fa-test-removeme"}), None).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["host"], "a2fa-test-removeme");
+        assert!(v["credentials_deleted"].is_boolean());
+
+        let guard = crate::lock_state(&state);
+        assert!(
+            !guard.hosts.iter().any(|h| h.host == "a2fa-test-removeme"),
+            "removed host must be gone from State"
+        );
+        assert!(
+            guard.hosts.iter().any(|h| h.host == "a2fa-test-keepme"),
+            "removal must not touch other hosts"
+        );
+    }
+
     #[test]
     fn host_credentials_not_found_returns_not_found() {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
@@ -1861,6 +2061,43 @@ mod tests {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
         let err = host_mount_toggle(&state, &json!({"host": "ghost"})).unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    // ---- mount remote-path validation ---------------------------------
+
+    #[test]
+    fn remote_path_must_be_absolute() {
+        assert!(validate_remote_path("/").is_ok());
+        assert!(validate_remote_path("/scratch/alice/project").is_ok());
+        assert!(validate_remote_path("scratch/project").is_err(), "relative");
+        assert!(validate_remote_path("~/project").is_err(), "tilde is not expanded");
+        assert!(validate_remote_path("").is_err(), "empty");
+    }
+
+    /// A newline in the path would corrupt the sshfs argument and surface as a
+    /// baffling mount error instead of a clear one here.
+    #[test]
+    fn remote_path_rejects_control_characters() {
+        assert!(validate_remote_path("/a\nb").is_err());
+        assert!(validate_remote_path("/a\tb").is_err());
+    }
+
+    /// An unsafe remote path must be refused BEFORE the in-flight latch or any
+    /// sshfs spawn — otherwise a bad value could wedge the host's mount latch.
+    #[test]
+    fn host_mount_toggle_rejects_bad_remote_path() {
+        let state = make_state_with_host("k6", true);
+        let err = host_mount_toggle(
+            &state,
+            &json!({"host": "k6", "remote_path": "relative/path"}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)), "got {err:?}");
+        // The latch must be free — a rejected path must not leave the host busy.
+        assert!(
+            !mount_in_flight().lock().unwrap().contains("k6"),
+            "a rejected path must not hold the mount latch"
+        );
     }
 
     #[test]

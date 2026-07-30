@@ -14,6 +14,12 @@ enum SettingsKey {
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
     static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
     static let welcomeShown = "auto2fa.welcomeShown"
+    /// Open the mounted folder in Finder right after a successful mount.
+    static let openFinderAfterMount = "auto2fa.mount.openFinder"
+    /// App BUILD whose helper the user last authorized against the Keychain.
+    /// See `CredentialWarmup` — each update ships a new helper binary, which
+    /// macOS treats as a new reader of every saved item.
+    static let lastWarmedBuild = "auto2fa.credentials.lastWarmedBuild"
     static let compactRows = "auto2fa.compactRows"
     /// "" = ask the first time; "system" = default .command handler; else a
     /// terminal app bundle id. Used by TerminalLauncher (host "Open Terminal").
@@ -695,6 +701,14 @@ final class UpdateChecker: ObservableObject {
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+    }
+
+    /// The BUILD number (CFBundleVersion). Distinct from `currentVersion`: two
+    /// builds of the same marketing version ship two different helper binaries,
+    /// and macOS keys Keychain authorization on the binary — see
+    /// `CredentialWarmup`.
+    static var currentBuild: String {
+        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
     }
 
     /// Manual "Check for Updates" path (About pane): drives the @Published

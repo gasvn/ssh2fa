@@ -12,6 +12,7 @@ pub enum Method {
     HostCredentials,
     HostRevealCredentials,
     HostSetCredentials,
+    HostRemove,
     TunnelAdd,
     TunnelRemove,
     TunnelToggle,
@@ -23,6 +24,7 @@ pub enum Method {
     TunnelSetPostConnect,
     TunnelSetTags,
     TunnelSetUrlPath,
+    TunnelSetPorts,
     TunnelRename,
     TunnelsBatch,
     DiscoverNodes,
@@ -49,6 +51,7 @@ impl Method {
             Method::HostCredentials => "host_credentials",
             Method::HostRevealCredentials => "host_reveal_credentials",
             Method::HostSetCredentials => "host_set_credentials",
+            Method::HostRemove => "host_remove",
             Method::TunnelAdd => "tunnel_add",
             Method::TunnelRemove => "tunnel_remove",
             Method::TunnelToggle => "tunnel_toggle",
@@ -60,6 +63,7 @@ impl Method {
             Method::TunnelSetPostConnect => "tunnel_set_post_connect",
             Method::TunnelSetTags => "tunnel_set_tags",
             Method::TunnelSetUrlPath => "tunnel_set_url_path",
+            Method::TunnelSetPorts => "tunnel_set_ports",
             Method::TunnelRename => "tunnel_rename",
             Method::TunnelsBatch => "tunnels_batch",
             Method::DiscoverNodes => "discover_nodes",
@@ -87,6 +91,7 @@ impl Method {
             "host_credentials" => Some(Method::HostCredentials),
             "host_reveal_credentials" => Some(Method::HostRevealCredentials),
             "host_set_credentials" => Some(Method::HostSetCredentials),
+            "host_remove" => Some(Method::HostRemove),
             "tunnel_add" => Some(Method::TunnelAdd),
             "tunnel_remove" => Some(Method::TunnelRemove),
             "tunnel_toggle" => Some(Method::TunnelToggle),
@@ -98,6 +103,7 @@ impl Method {
             "tunnel_set_post_connect" => Some(Method::TunnelSetPostConnect),
             "tunnel_set_tags" => Some(Method::TunnelSetTags),
             "tunnel_set_url_path" => Some(Method::TunnelSetUrlPath),
+            "tunnel_set_ports" => Some(Method::TunnelSetPorts),
             "tunnel_rename" => Some(Method::TunnelRename),
             "tunnels_batch" => Some(Method::TunnelsBatch),
             "discover_nodes" => Some(Method::DiscoverNodes),
@@ -129,5 +135,10 @@ mod tests {
             Method::from_str("host_reveal_credentials"),
             Some(Method::HostRevealCredentials)
         );
+        // Host removal + tunnel port editing.
+        assert_eq!(Method::HostRemove.as_str(), "host_remove");
+        assert_eq!(Method::from_str("host_remove"), Some(Method::HostRemove));
+        assert_eq!(Method::TunnelSetPorts.as_str(), "tunnel_set_ports");
+        assert_eq!(Method::from_str("tunnel_set_ports"), Some(Method::TunnelSetPorts));
     }
 }

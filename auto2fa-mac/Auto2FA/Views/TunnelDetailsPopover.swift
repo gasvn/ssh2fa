@@ -33,6 +33,13 @@ struct TunnelDetailsPopover: View {
     // the run-on-connect button (they're different sections).
     @State private var urlSaveStatus: String?
     @State private var cmdSaveStatus: String?
+    // Ports were fixed at creation until now: a local-port clash meant deleting
+    // and rebuilding the tunnel, which silently threw away its tags,
+    // post-connect hook and URL suffix.
+    @State private var localPortDraft: String = ""
+    @State private var remotePortDraft: String = ""
+    @State private var portSaveStatus: String?
+    @State private var portError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -108,6 +115,54 @@ struct TunnelDetailsPopover: View {
             }
             .frame(minHeight: 160, maxHeight: 220)
             .groupedContent(cornerRadius: Radius.control)
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.xs)
+
+            Divider()
+
+            sectionHeader("Ports")
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                HStack(spacing: Spacing.s) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Local").font(.caption).foregroundStyle(.secondary)
+                        TextField("8888", text: $localPortDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body.monospaced())
+                            .frame(width: 80)
+                            .accessibilityLabel("Local port")
+                    }
+                    Image(systemName: "arrow.right")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Remote").font(.caption).foregroundStyle(.secondary)
+                        TextField("8888", text: $remotePortDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body.monospaced())
+                            .frame(width: 80)
+                            .accessibilityLabel("Remote port")
+                    }
+                    Spacer()
+                    Button("Save") { savePorts() }
+                        .disabled(!portsDirty || TunnelPortEdit.validate(local: localPortDraft,
+                                                                        remote: remotePortDraft) != nil)
+                }
+                if let portError {
+                    Text(portError).font(.caption).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let portSaveStatus {
+                    Label(portSaveStatus, systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                } else if let v = TunnelPortEdit.validate(local: localPortDraft, remote: remotePortDraft),
+                          portsDirty {
+                    Text(v).font(.caption).foregroundStyle(.red)
+                } else {
+                    Text(tunnel.displayState == .alive || tunnel.displayState == .starting
+                         ? "Changing a port reconnects this tunnel on the new port."
+                         : "Applies the next time this tunnel starts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             .padding(.horizontal, Spacing.l)
             .padding(.vertical, Spacing.xs)
 
@@ -197,10 +252,40 @@ struct TunnelDetailsPopover: View {
         .task {
             postConnectDraft = tunnel.postConnectCmd ?? ""
             urlPathDraft = tunnel.urlPath ?? ""
+            localPortDraft = String(tunnel.localPort)
+            remotePortDraft = String(tunnel.remotePort)
             await refresh()
             startPolling()
         }
         .onDisappear { pollTask?.cancel() }
+    }
+
+    private var portsDirty: Bool {
+        localPortDraft != String(tunnel.localPort) || remotePortDraft != String(tunnel.remotePort)
+    }
+
+    private func savePorts() {
+        portError = nil
+        if let v = TunnelPortEdit.validate(local: localPortDraft, remote: remotePortDraft) {
+            portError = v
+            return
+        }
+        let change = TunnelPortEdit.changes(local: localPortDraft,
+                                            remote: remotePortDraft,
+                                            currentLocal: tunnel.localPort,
+                                            currentRemote: tunnel.remotePort)
+        guard change.local != nil || change.remote != nil else { return }
+        Task {
+            if let err = await appState.setTunnelPorts(tunnel.name,
+                                                       localPort: change.local,
+                                                       remotePort: change.remote) {
+                portError = err
+            } else {
+                portSaveStatus = "Saved"
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                portSaveStatus = nil
+            }
+        }
     }
 
     private func previewURL() -> String {

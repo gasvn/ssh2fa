@@ -62,7 +62,7 @@ struct HostRow: View {
             if appState.unreachableRegisteredHosts.contains(host.host) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .help("\"\(host.host)\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back, or remove this registration.")
+                    .help("\"\(host.host)\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back to your config, or remove it from SSH2FA (⋯ → Remove Host…).")
                     .accessibilityLabel("Warning: \(host.host) is not in ~/.ssh/config and won't connect")
             }
 
@@ -277,18 +277,56 @@ struct HostRow: View {
         // only block during the brief in-flight toggle RPC.
         .disabled(appState.inFlightHosts.contains(host.host))
 
-        Button {
-            Task { await appState.toggleMount(host) }
-        } label: {
-            Label(host.isMounted ? "Unmount" : "Mount filesystem",
-                  systemImage: host.isMounted ? "eject.fill" : "externaldrive.badge.plus")
-        }
-        .disabled(isBusy || (!host.isMasterReady && !host.isMounted))
+        if host.isMounted {
+            Button {
+                Task { await appState.toggleMount(host) }
+            } label: {
+                Label("Unmount", systemImage: "eject.fill")
+            }
+            .disabled(isBusy)
 
+            Button {
+                appState.revealMount(host)
+            } label: {
+                Label("Open in Finder", systemImage: "folder")
+            }
+        } else {
+            // A submenu, so pinned folders are one click away instead of a
+            // re-navigation every session.
+            Menu {
+                ForEach(appState.bookmarks(for: host.host)) { bm in
+                    Button {
+                        Task { await appState.toggleMount(host, remotePath: bm.remotePath) }
+                    } label: {
+                        Label(bm.displayName, systemImage: "pin.fill")
+                    }
+                }
+                if !appState.bookmarks(for: host.host).isEmpty { Divider() }
+                Button {
+                    Task { await appState.toggleMount(host, remotePath: "/") }
+                } label: {
+                    Label("Whole filesystem (/)", systemImage: "externaldrive")
+                }
+                Divider()
+                Button {
+                    appState.presentMountFolders(host.host)
+                } label: {
+                    Label("Pinned Folders…", systemImage: "pin")
+                }
+            } label: {
+                Label("Mount", systemImage: "externaldrive.badge.plus")
+            }
+            .disabled(isBusy || !host.isMasterReady)
+        }
+
+        // Was "Rotate connection", which called host_rotate — a documented
+        // NO-OP in the single-master model (it logs and returns). It looked
+        // like a repair action and did nothing. Reconnect (stop→start) is the
+        // action people were reaching for.
         Button {
-            Task { await appState.rotateHost(host) }
+            Task { await appState.retryHost(host) }
         } label: {
-            Label("Rotate connection", systemImage: "arrow.triangle.2.circlepath")
+            Label("Reconnect", systemImage: "arrow.clockwise")
         }
         .disabled(isBusy || !host.active)
 
@@ -308,6 +346,13 @@ struct HostRow: View {
         } label: {
             Label("Password & Setup…", systemImage: "key.horizontal")
         }
+
+        Button(role: .destructive) {
+            appState.presentConfirmRemoveHost(host.host)
+        } label: {
+            Label("Remove Host…", systemImage: "trash")
+        }
+        .disabled(appState.inFlightHosts.contains(host.host))
     }
 
     // MARK: - Terminal (verbatim from old HostsView)

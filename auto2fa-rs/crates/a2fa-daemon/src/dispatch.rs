@@ -198,6 +198,7 @@ fn route_with_ctx(
         Method::HostCredentials   => hosts::host_credentials(state, params),
         Method::HostRevealCredentials => hosts::host_reveal_credentials(state, params),
         Method::HostSetCredentials   => hosts::host_set_credentials(state, params),
+        Method::HostRemove        => hosts::host_remove(state, params, Some(Arc::clone(&ctx.managers))),
 
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),
@@ -216,6 +217,7 @@ fn route_with_ctx(
         Method::TunnelSetPostConnect    => tunnels::tunnel_set_post_connect(state, params),
         Method::TunnelSetTags     => tunnels::tunnel_set_tags(state, params),
         Method::TunnelSetUrlPath  => tunnels::tunnel_set_url_path(state, params),
+        Method::TunnelSetPorts    => tunnels::tunnel_set_ports(state, params, Some(Arc::clone(&ctx.runtime))),
         Method::TunnelRename      => tunnels::tunnel_rename(state, params, Some(Arc::clone(&ctx.runtime))),
         Method::TunnelsBatch      => tunnels::tunnels_batch(state, params, Some(Arc::clone(&ctx.runtime)), Some(Arc::clone(&ctx.post_connect_running))),
 

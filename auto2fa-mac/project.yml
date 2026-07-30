@@ -1,6 +1,9 @@
 name: Auto2FA
 options:
   bundleIdPrefix: com.ssh2fa
+  # Declared so xcodebuild compiles Localizable.xcstrings into zh-Hans.lproj.
+  # Without a known region the catalog's translations are silently dropped.
+  knownRegions: [en, zh-Hans, Base]
   deploymentTarget:
     macOS: "26.0"
   developmentLanguage: en
@@ -11,8 +14,8 @@ settings:
     # NOTE: the bundle version actually shown/used comes from
     # Auto2FA/Resources/Info.plist (GENERATE_INFOPLIST_FILE: NO). Keep these in
     # sync with that file when cutting a release.
-    MARKETING_VERSION: "1.1.0"
-    CURRENT_PROJECT_VERSION: "110"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "120"
     SWIFT_VERSION: "5.10"
     PRODUCT_NAME: "SSH2FA"
     PRODUCT_BUNDLE_IDENTIFIER: "com.ssh2fa.app"
@@ -53,8 +56,8 @@ targets:
       # for the displayed/checked version — keep RELEASE.md in step.
       path: Auto2FA/Resources/Info.plist
       properties:
-        CFBundleShortVersionString: "1.1.0"
-        CFBundleVersion: "110"
+        CFBundleShortVersionString: "1.2.0"
+        CFBundleVersion: "120"
 
   Auto2FATests:
     type: bundle.unit-test
@@ -79,6 +82,10 @@ targets:
       - path: Auto2FA/FriendlyText.swift
       - path: Auto2FA/ManagedHostStore.swift
       - path: Auto2FA/HostSettingsCore.swift
+      - path: Auto2FA/SecretClipboard.swift
+      - path: Auto2FA/TunnelPortEdit.swift
+      - path: Auto2FA/CredentialWarmup.swift
+      - path: Auto2FA/MountBookmarks.swift
       - path: Auto2FA/UpdateCheckCore.swift
       - path: Auto2FA/NetworkMonitor.swift
       - path: Auto2FA/ConnectionRecovery.swift

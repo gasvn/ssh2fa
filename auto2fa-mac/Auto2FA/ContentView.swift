@@ -29,6 +29,19 @@ struct ContentView: View {
                 Button("Delete", role: .destructive) { performConfirmedDelete() }
                 Button("Cancel", role: .cancel) { appState.dismissSheet() }
             }
+            // Host removal is irreversible (it deletes the saved password + 2FA
+            // secret), so it gets its own confirm with the consequences spelled
+            // out rather than a generic "are you sure?".
+            .confirmationDialog(
+                confirmRemoveHostTitle(),
+                isPresented: confirmRemoveHostBinding(),
+                titleVisibility: .visible
+            ) {
+                Button("Remove Host", role: .destructive) { performConfirmedHostRemoval() }
+                Button("Cancel", role: .cancel) { appState.dismissSheet() }
+            } message: {
+                Text("Its saved password and 2FA secret are deleted from your Keychain, and its connection is closed. Your ~/.ssh/config is not changed. This can't be undone.")
+            }
             .sheet(isPresented: $showingWelcome) {
                 WelcomeSheet().environmentObject(appState)
             }
@@ -141,6 +154,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help("Dismiss")
+            .accessibilityLabel("Dismiss this message")
         }
         .padding(.horizontal, Spacing.m)
         .padding(.vertical, Spacing.s)
@@ -204,8 +218,10 @@ struct ContentView: View {
             ImportHostsSheet().environmentObject(appState)
         case .hostSettings(let host):
             HostSettingsSheet(hostName: host).environmentObject(appState)
-        case .confirmDelete:
-            EmptyView()  // unreachable — sheetBinding filters this case to nil
+        case .mountFolders(let host):
+            MountFoldersSheet(hostName: host).environmentObject(appState)
+        case .confirmDelete, .confirmRemoveHost:
+            EmptyView()  // unreachable — sheetBinding filters these to nil
         }
     }
 
@@ -229,6 +245,31 @@ struct ContentView: View {
         }
     }
 
+    private func performConfirmedHostRemoval() {
+        if case let .confirmRemoveHost(host) = appState.activeSheet {
+            appState.dismissSheet()
+            Task { 
+                if let err = await appState.removeHost(host) {
+                    appState.showActionError(err)
+                }
+            }
+        }
+    }
+
+    private func confirmRemoveHostTitle() -> String {
+        if case let .confirmRemoveHost(host) = appState.activeSheet {
+            return "Remove “\(host)” from SSH2FA?"
+        }
+        return ""
+    }
+
+    private func confirmRemoveHostBinding() -> Binding<Bool> {
+        Binding(
+            get: { if case .confirmRemoveHost = appState.activeSheet { return true }; return false },
+            set: { newValue in if !newValue { appState.dismissSheet() } }
+        )
+    }
+
     private func confirmDeleteTitle() -> String {
         if case let .confirmDelete(name) = appState.activeSheet {
             return "Delete tunnel ‘\(name)’?"
@@ -250,9 +291,9 @@ struct ContentView: View {
         Binding(
             get: {
                 switch appState.activeSheet {
-                case .confirmDelete, nil: return nil
+                case .confirmDelete, .confirmRemoveHost, nil: return nil
                 case .newTunnel, .nodePicker, .customNode, .addHost, .importHosts,
-                     .hostSettings:
+                     .hostSettings, .mountFolders:
                     return appState.activeSheet
                 }
             },

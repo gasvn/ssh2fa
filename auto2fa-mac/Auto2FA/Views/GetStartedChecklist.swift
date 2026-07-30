@@ -91,6 +91,7 @@ struct GetStartedChecklist: View {
             }
             .buttonStyle(.borderless)
             .help("Dismiss")
+            .accessibilityLabel("Dismiss the getting-started checklist")
         }
         .padding(Spacing.m)
         .groupedContent(cornerRadius: Radius.control)

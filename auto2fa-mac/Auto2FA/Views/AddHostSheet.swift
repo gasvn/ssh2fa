@@ -163,6 +163,9 @@ struct AddHostSheet: View {
                         }
                         .buttonStyle(.borderless)
                         .help(showingPassword ? "Hide" : "Show")
+                        .accessibilityLabel(showingPassword
+                                            ? "Hide the password you typed"
+                                            : "Show the password you typed")
                       })
                 field("2FA secret (otpauth:// URL or secret key)",
                       VStack(alignment: .leading, spacing: Spacing.xs) {

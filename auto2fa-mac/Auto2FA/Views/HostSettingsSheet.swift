@@ -235,6 +235,7 @@ struct HostSettingsSheet: View {
                             Button("Reveal") { Task { await reveal() } }
                                 .buttonStyle(.glass)
                                 .help("Asks for Touch ID (or your Mac password) first")
+                                .accessibilityLabel("Reveal the stored password")
                         } else {
                             Button {
                                 copyToClipboard(revealedPassword ?? "")
@@ -244,6 +245,7 @@ struct HostSettingsSheet: View {
                             .buttonStyle(.glass)
                             Button("Hide") { revealedPassword = nil; revealedOTPURL = nil }
                                 .buttonStyle(.glass)
+                                .accessibilityLabel("Hide the revealed password")
                         }
                     }
                 }
@@ -267,6 +269,11 @@ struct HostSettingsSheet: View {
                             }
                             .buttonStyle(.borderless)
                             .help(showNewPassword ? "Hide" : "Show what you typed")
+                            // Icon-only: `.help` is a tooltip/hint, not a
+                            // VoiceOver label — without this it reads as "button".
+                            .accessibilityLabel(showNewPassword
+                                                ? "Hide the password you typed"
+                                                : "Show the password you typed")
                         }
                         .textFieldStyle(.roundedBorder)
                         Text("Use this after changing your password on the server. SSH2FA can't detect that change on its own — logins keep failing until the stored password matches.")
@@ -551,11 +558,12 @@ struct HostSettingsSheet: View {
             : (reason.isEmpty ? "Login failed." : "Login failed: \(FriendlyText.credentialError(reason))")
     }
 
+    /// Copy a SECRET — local-only (no Universal Clipboard hand-off to your other
+    /// devices) and auto-cleared, via `SecretClipboard`.
     private func copyToClipboard(_ s: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
+        SecretClipboard.copy(s)
         statusIsError = false
-        statusMessage = "Copied to the clipboard."
+        statusMessage = "Copied — stays on this Mac, clears in \(Int(SecretClipboard.lifetime))s."
     }
 
     // MARK: - Small building blocks
