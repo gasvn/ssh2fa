@@ -1945,12 +1945,19 @@ mod tests {
     /// spawned `spawn_managed_start` worker threads (which we don't join here).
     /// The control paths are bogus, so `adopt_if_alive` returns false and each
     /// host takes the spawn path; the call returns immediately regardless.
+    ///
+    /// The aliases MUST be ones no real ssh config can define. `boot_autostart`
+    /// runs `adopt_if_alive`, i.e. a real `ssh -O check <alias>` — with a
+    /// plausible alias like "k6" this adopted the DEVELOPER'S OWN live master
+    /// and reported "Connected" instead of "Connecting", so the test failed on
+    /// exactly the machines that use the app. The `a2fa-test-` prefix keeps the
+    /// probe a guaranteed miss.
     #[test]
     fn boot_autostart_returns_promptly_with_active_hosts() {
         let state = state_with_hosts(vec![
-            host("k6", true),
-            host("cluster01", true),
-            host("idlehost", false),
+            host("a2fa-test-active1", true),
+            host("a2fa-test-active2", true),
+            host("a2fa-test-idle", false),
         ]);
         let managers = HostManagers::new();
         let registry = OtpRegistry::new();
@@ -1965,9 +1972,17 @@ mod tests {
 
         // Active hosts were moved to "Connecting"; inactive host untouched.
         let guard = state.lock().unwrap();
-        let k6 = guard.hosts.iter().find(|h| h.host == "k6").unwrap();
-        assert_eq!(k6.status, "Connecting");
-        let idle = guard.hosts.iter().find(|h| h.host == "idlehost").unwrap();
+        let active = guard
+            .hosts
+            .iter()
+            .find(|h| h.host == "a2fa-test-active1")
+            .unwrap();
+        assert_eq!(active.status, "Connecting");
+        let idle = guard
+            .hosts
+            .iter()
+            .find(|h| h.host == "a2fa-test-idle")
+            .unwrap();
         assert_eq!(idle.status, "Idle");
     }
 

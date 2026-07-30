@@ -41,22 +41,38 @@ mod tests {
 
     #[test]
     fn busy_port_is_unavailable() {
+        // Busy direction is deterministic: WE hold the listener.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
-        assert!(!port_available(port)); // held by l
+        assert!(!port_available(port), "a port we hold must not be available");
         drop(l);
-        assert!(port_available(port)); // free now
+
+        // Free direction is inherently racy: the OS can hand a just-released
+        // ephemeral port to ANOTHER process before we re-check, and then
+        // `port_available` correctly returning false is not a bug. (This flaked
+        // in a real run.) Give it several independent ports — a genuine
+        // regression fails every attempt, a stolen port fails at most a few.
+        let saw_free = (0..5).any(|_| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            port_available(p)
+        });
+        assert!(saw_free, "a released port must be reported available");
     }
 
     #[test]
     fn probe_times_out_on_closed_port() {
-        // Find a free port and do NOT bind it; the probe must timeout quickly.
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
-        drop(l); // port is now free, nothing listens
-
-        let ok = probe_port_ready(port, Duration::from_millis(600));
-        assert!(!ok);
+        // Same race as above, inverted: if another process grabs the released
+        // port, the probe legitimately connects. Retry across fresh ports — a
+        // broken probe (one that never times out) fails all five.
+        let timed_out = (0..5).any(|_| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            drop(l); // nothing listens here now
+            !probe_port_ready(port, Duration::from_millis(600))
+        });
+        assert!(timed_out, "probe must time out when nothing is listening");
     }
 
     #[test]

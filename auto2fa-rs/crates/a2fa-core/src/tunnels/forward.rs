@@ -286,6 +286,15 @@ pub fn stop_forward(mut child: Child) {
 mod tests {
     use super::*;
 
+    /// Build argv through the PURE core with no managed-config prefix.
+    ///
+    /// Deliberately NOT `build_forward_argv`: that looks up the real
+    /// `~/.ssh/ssh2fa-daemon.conf` via `managed_config_args()`, so on any
+    /// machine where the app is installed it prepends `["-F", <wrapper>]` and
+    /// every position-based assertion below shifts by two (`argv[0]` becomes
+    /// "-F", not "-N"). These tests are about argv SHAPE, so they must not
+    /// depend on the developer's home directory. The prefix behaviour has its
+    /// own hermetic coverage in `*_starts_with_managed_config_when_present`.
     fn make_argv(
         jump: &str,
         user: &str,
@@ -293,7 +302,12 @@ mod tests {
         local: u16,
         remote: u16,
     ) -> Vec<String> {
-        build_forward_argv(jump, user, node, local, remote)
+        build_forward_argv_with(&[], jump, user, node, local, remote)
+    }
+
+    /// Same for the direct-forward argv — pure core, no wrapper lookup.
+    fn make_direct_argv(host: &str, local: u16, remote: u16) -> Vec<String> {
+        build_direct_argv_with(&[], host, local, remote)
     }
 
     #[test]
@@ -407,13 +421,13 @@ mod tests {
 
     #[test]
     fn direct_argv_has_no_jump_flag() {
-        let argv = build_direct_argv("loginhost", 8888, 8888);
+        let argv = make_direct_argv("loginhost", 8888, 8888);
         assert!(!argv.contains(&"-J".to_string()), "direct argv must NOT contain -J: {argv:?}");
     }
 
     #[test]
     fn direct_argv_is_n_dash_l_and_bare_host() {
-        let argv = build_direct_argv("loginhost", 7777, 9999);
+        let argv = make_direct_argv("loginhost", 7777, 9999);
         assert_eq!(argv[0], "-N");
         assert!(argv.contains(&"7777:localhost:9999".to_string()), "missing forward spec: {argv:?}");
         // The LAST arg is the bare host (no '@', no user).
@@ -423,7 +437,7 @@ mod tests {
 
     #[test]
     fn direct_argv_carries_ssh_opts() {
-        let argv = build_direct_argv("h", 1024, 1025);
+        let argv = make_direct_argv("h", 1024, 1025);
         assert!(argv.iter().any(|a| a.contains("ExitOnForwardFailure")), "missing ExitOnForwardFailure");
         assert!(argv.iter().any(|a| a.contains("StrictHostKeyChecking=no")), "missing StrictHostKeyChecking=no");
     }
