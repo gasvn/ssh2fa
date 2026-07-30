@@ -459,8 +459,11 @@ mod tests {
         let v2 = migrate_v1_to_v2(&store, &legacy).unwrap();
 
         // k6 keeps the NEWER password; k8 (absent before) is written.
+        // Through the public API: the user's newer value must survive. (It now
+        // lives in the vault — a legacy read consolidates as a side effect —
+        // so asserting on the raw account would only be testing the layout.)
         assert_eq!(
-            store.get("k6.password").unwrap().as_deref(),
+            get_password(&store, "k6").unwrap().as_deref(),
             Some("newer-pw"),
             "pre-existing Keychain entry must not be overwritten with v1 values"
         );

@@ -123,10 +123,33 @@ pub fn get_host_creds<S: SecretStore>(store: &S, host: &str) -> Result<HostCreds
     if let Some(c) = vault.hosts.get(host) {
         return Ok(c.clone());
     }
-    Ok(HostCreds {
+    let legacy = HostCreds {
         password: store.get(&password_acct(host))?.unwrap_or_default(),
         otpauth: store.get(&otpauth_acct(host))?.unwrap_or_default(),
-    })
+    };
+
+    // OPPORTUNISTIC MIGRATION. Reaching this line means the legacy items were
+    // just read successfully — i.e. their per-item authorization has ALREADY
+    // been paid for this build. Folding them into the vault right now is
+    // therefore free: it adds no prompt, and it means the next update asks once
+    // for the vault instead of twice per host.
+    //
+    // This used to be deferred to an explicit "consolidate" button, on the
+    // reasoning that the migration costs one last round of the old prompts. That
+    // was wrong: the user pays that round on EVERY update regardless, so
+    // deferring it just meant paying repeatedly and never collecting the
+    // benefit. Observed live — five releases in, the vault still did not exist
+    // and all twelve items were still being re-authorized every time.
+    //
+    // Best-effort: a failure here must never fail the read. The caller wants to
+    // log in; consolidation is housekeeping.
+    if !legacy.password.is_empty() || !legacy.otpauth.trim().is_empty() {
+        match set_host_creds(store, host, legacy.clone()) {
+            Ok(()) => log::info!("[{host}] credentials folded into the single Keychain item"),
+            Err(e) => log::warn!("[{host}] could not consolidate credentials (will retry): {e}"),
+        }
+    }
+    Ok(legacy)
 }
 
 /// Write one host's credentials into the vault, then remove that host's legacy
@@ -317,6 +340,61 @@ mod tests {
         let got = get_host_creds(&s, "k6").unwrap();
         assert_eq!(got.password, "oldpw");
         assert_eq!(got.otpauth, "oldotp");
+    }
+
+    /// THE fix for "it keeps asking every update": a legacy read migrates the
+    /// host into the vault immediately, because the authorization for those
+    /// items has just been paid. Waiting for an explicit button meant the
+    /// migration never happened and the prompts repeated forever.
+    #[test]
+    fn a_legacy_read_consolidates_immediately() {
+        let s = FakeStore::default();
+        legacy(&s, "k6", "pw", "otp");
+        assert_eq!(s.map.borrow().len(), 2, "starts as two items");
+
+        let got = get_host_creds(&s, "k6").unwrap();
+        assert_eq!(got.password, "pw", "the read still returns the credentials");
+
+        assert_eq!(s.map.borrow().len(), 1, "and they now live in ONE item");
+        assert!(s.map.borrow().contains_key(VAULT_ACCOUNT));
+        // A second read is served from the vault, unchanged.
+        assert_eq!(get_host_creds(&s, "k6").unwrap().password, "pw");
+    }
+
+    /// Migration must never break the read it rode along on.
+    #[test]
+    fn a_failed_consolidation_still_returns_the_credentials() {
+        struct WriteFails {
+            map: RefCell<HashMap<String, String>>,
+        }
+        impl SecretStore for WriteFails {
+            fn get(&self, a: &str) -> Result<Option<String>> {
+                Ok(self.map.borrow().get(a).cloned())
+            }
+            fn set(&self, _a: &str, _v: &str) -> Result<()> {
+                Err(Error::Internal("keychain is read-only right now".into()))
+            }
+            fn delete(&self, a: &str) -> Result<()> {
+                self.map.borrow_mut().remove(a);
+                Ok(())
+            }
+        }
+        let s = WriteFails { map: RefCell::new(HashMap::new()) };
+        s.map.borrow_mut().insert(password_acct("k6"), "pw".into());
+        s.map.borrow_mut().insert(otpauth_acct("k6"), "otp".into());
+
+        let got = get_host_creds(&s, "k6").unwrap();
+        assert_eq!(got.password, "pw", "a failed migration must not fail the login");
+        assert_eq!(got.otpauth, "otp");
+    }
+
+    /// Nothing stored → nothing written (no empty vault entries).
+    #[test]
+    fn a_read_for_an_unknown_host_writes_nothing() {
+        let s = FakeStore::default();
+        let got = get_host_creds(&s, "ghost").unwrap();
+        assert!(got.password.is_empty());
+        assert!(s.map.borrow().is_empty(), "must not create an empty vault entry");
     }
 
     /// The vault WINS over a stale legacy copy (e.g. a crash between write and
