@@ -50,3 +50,6 @@ auto2fa-rs/target/
 
 # Internal planning docs — never publish (Pages serves docs/)
 docs/superpowers/
+
+# local scratch derived-data
+auto2fa-mac/.bc/

@@ -67,6 +67,47 @@ final class MountBookmarksTests: XCTestCase {
         XCTAssertEqual(bm("k6", "/").displayName, "/", "root has no last component")
     }
 
+    // MARK: - autoMount
+
+    func testAutoMountPathPicksTheFlaggedPin() {
+        var list = MountBookmarks.upsert(bm("k6", "/data", "Data"), into: [])
+        list = MountBookmarks.upsert(
+            MountBookmark(host: "k6", remotePath: "/work", label: "Work", autoMount: true),
+            into: list)
+        XCTAssertEqual(MountBookmarks.autoMountPath(for: "k6", in: list), "/work")
+        XCTAssertNil(MountBookmarks.autoMountPath(for: "b8", in: list),
+                     "another host must not inherit it")
+    }
+
+    func testNoAutoMountWhenNothingIsFlagged() {
+        let list = MountBookmarks.upsert(bm("k6", "/data"), into: [])
+        XCTAssertNil(MountBookmarks.autoMountPath(for: "k6", in: list))
+    }
+
+    func testUpsertPreservesTheAutoMountFlag() {
+        let list = MountBookmarks.upsert(
+            MountBookmark(host: "k6", remotePath: "/work", label: "", autoMount: true), into: [])
+        XCTAssertTrue(list[0].autoMount, "re-pinning must not silently clear auto-mount")
+    }
+
+    /// REGRESSION: `autoMount` was added after the file format shipped. The
+    /// synthesized Decodable THROWS on a missing key, which would make the whole
+    /// bookmarks file fail to decode — silently wiping every pin the user had.
+    func testBookmarksSavedBeforeAutoMountExistedStillDecode() throws {
+        let legacy = #"[{"host":"k6","remotePath":"/data","label":"Data"}]"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode([MountBookmark].self, from: legacy)
+        XCTAssertEqual(decoded.count, 1, "a pre-autoMount file must still load")
+        XCTAssertEqual(decoded[0].remotePath, "/data")
+        XCTAssertFalse(decoded[0].autoMount, "missing flag defaults to off")
+    }
+
+    /// A missing `label` must not break decoding either.
+    func testBookmarkWithoutLabelDecodes() throws {
+        let data = #"[{"host":"k6","remotePath":"/data"}]"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode([MountBookmark].self, from: data)
+        XCTAssertEqual(decoded[0].displayName, "data")
+    }
+
     // MARK: - store round-trip
 
     func testStoreRoundTripsThroughDisk() throws {

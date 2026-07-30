@@ -326,6 +326,10 @@ final class DaemonProcess {
             return false
         }
         if plistChanged {
+            // SIGKILL first — see `killDaemonPreservingMasters`. `bootout` stops
+            // the job with SIGTERM, which runs the daemon's graceful shutdown
+            // and closes every ControlMaster.
+            DaemonProcess.killDaemonPreservingMasters()
             DaemonProcess.runLaunchctl(["bootout", target])  // async; ignore "not loaded"
             let loaded = bootstrapWithRetry()
             if !loaded {
@@ -346,9 +350,50 @@ final class DaemonProcess {
             return loaded
         }
         if daemonWasUpdated {
-            DaemonProcess.runLaunchctl(["kickstart", "-k", target])
+            // `kickstart -k` kills the running instance with SIGTERM, which the
+            // daemon handles as a GRACEFUL shutdown: teardown_all closes every
+            // ControlMaster. So every app update dropped all warm connections
+            // and forced a fresh 2FA on every host — the single most painful
+            // thing about updating.
+            //
+            // SIGKILL instead. The detached mux processes are not children of
+            // the daemon, so they survive, and the new daemon ADOPTS them on
+            // boot ("adopted live master slot 0 — skipping login"). KeepAlive
+            // {SuccessfulExit:false} respawns after an abnormal exit, and the
+            // kickstart below is a belt-and-braces nudge in case it doesn't.
+            DaemonProcess.killDaemonPreservingMasters()
+            DaemonProcess.runLaunchctl(["kickstart", target])
         }
         return true
+    }
+
+    /// SIGKILL the running daemon so its ControlMasters SURVIVE for adoption by
+    /// the replacement.
+    ///
+    /// The daemon's SIGTERM handler deliberately tears masters down (a clean
+    /// shutdown should not leave sockets behind), so any *graceful* stop —
+    /// `bootout`, `kickstart -k`, `kill` — costs the user a full re-2FA on every
+    /// host. SIGKILL skips that handler; the masters are detached processes and
+    /// keep running, and the next daemon adopts them via `ssh -O check`.
+    ///
+    /// Best-effort and bounded: it targets ONLY the daemon binary inside the
+    /// installed app bundle, and does nothing if that is not running.
+    nonisolated static func killDaemonPreservingMasters() {
+        // The LaunchAgent points directly at the daemon inside this bundle, so
+        // that path is exactly the running process's argv[0].
+        guard let path = DaemonProcess.bundledDaemonURL()?.path else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        // -f matches the full argv; the daemon is launched by absolute path, so
+        // this is exact. `-x` is not usable with -f, hence the full path match.
+        p.arguments = ["-9", "-f", path]
+        do {
+            try p.run()
+            p.waitUntilExit()
+            NSLog("[SSH2FA] SIGKILLed daemon at %@ (masters preserved for adoption)", path)
+        } catch {
+            NSLog("[SSH2FA] could not SIGKILL daemon: %@", error.localizedDescription)
+        }
     }
 
     /// Fully tear down the install: unload + remove the LaunchAgent (the daemon

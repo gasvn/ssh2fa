@@ -86,7 +86,7 @@ struct MountFoldersSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("The first one is what plain “Mount” uses.")
+                Text("The first one is what plain “Mount” uses. “Auto” mounts it as soon as the host connects.")
                     .font(.rowMeta).foregroundStyle(.secondary)
                 List {
                     ForEach(bookmarks) { bm in
@@ -100,6 +100,19 @@ struct MountFoldersSheet: View {
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             Spacer()
+                            Toggle("Auto", isOn: Binding(
+                                get: { bm.autoMount },
+                                set: { on in
+                                    error = appState.setAutoMount(host: hostName,
+                                                                  remotePath: bm.remotePath,
+                                                                  autoMount: on)
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .help("Mount this folder automatically as soon as the host connects")
+                            .accessibilityLabel("Auto-mount \(bm.displayName) on connect")
+
                             Button {
                                 if let host = appState.hosts.first(where: { $0.host == hostName }) {
                                     Task { await appState.toggleMount(host, remotePath: bm.remotePath) }

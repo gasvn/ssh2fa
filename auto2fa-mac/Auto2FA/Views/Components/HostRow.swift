@@ -114,7 +114,13 @@ struct HostRow: View {
                 Image(systemName: "externaldrive.connected.to.line.below.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.green)
-                    .help("Remote filesystem mounted")
+                    // The daemon reports "Mounted <path>" in last_msg, so say
+                    // WHICH folder is mounted rather than just that one is.
+                    .help(host.lastMsg.hasPrefix("Mounted ")
+                          ? "\(host.lastMsg) — click ⋯ → Open in Finder"
+                          : "Remote filesystem mounted — click ⋯ → Open in Finder")
+                    .accessibilityLabel(host.lastMsg.hasPrefix("Mounted ")
+                                        ? host.lastMsg : "Remote filesystem mounted")
             }
 
             // Live 2FA (TOTP) code chip — compact, kept verbatim. Stays

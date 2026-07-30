@@ -11,6 +11,31 @@ struct MountBookmark: Codable, Equatable, Identifiable, Hashable {
     /// What the user calls it. Empty → the UI falls back to the path's last
     /// component.
     var label: String
+    /// Mount this folder automatically as soon as the host connects.
+    ///
+    /// This is the point of the feature: pinning removes the navigating, and
+    /// auto-mount removes the remembering. Only ONE folder per host can be
+    /// auto-mounted (there is a single mount point per host), so the first
+    /// auto-mount pin wins.
+    var autoMount: Bool = false
+
+    // Explicit Decodable: the synthesized one THROWS on a missing key, so
+    // adding `autoMount` would make every previously-saved bookmarks file fail
+    // to load — silently wiping the user's pins. decodeIfPresent defaults it.
+    init(host: String, remotePath: String, label: String, autoMount: Bool = false) {
+        self.host = host
+        self.remotePath = remotePath
+        self.label = label
+        self.autoMount = autoMount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = try c.decode(String.self, forKey: .host)
+        remotePath = try c.decode(String.self, forKey: .remotePath)
+        label = (try? c.decode(String.self, forKey: .label)) ?? ""
+        autoMount = (try? c.decodeIfPresent(Bool.self, forKey: .autoMount)) as? Bool ?? false
+    }
 
     /// Display name: the label if given, else the trailing folder name, else
     /// the path itself (for "/").
@@ -61,7 +86,8 @@ enum MountBookmarks {
     static func upsert(_ bookmark: MountBookmark, into list: [MountBookmark]) -> [MountBookmark] {
         let path = normalize(bookmark.remotePath)
         var out = list.filter { !($0.host == bookmark.host && normalize($0.remotePath) == path) }
-        out.append(MountBookmark(host: bookmark.host, remotePath: path, label: bookmark.label))
+        out.append(MountBookmark(host: bookmark.host, remotePath: path,
+                                 label: bookmark.label, autoMount: bookmark.autoMount))
         return sorted(out)
     }
 
@@ -73,6 +99,15 @@ enum MountBookmarks {
     /// Bookmarks for one host, in display order.
     static func forHost(_ host: String, in list: [MountBookmark]) -> [MountBookmark] {
         sorted(list.filter { $0.host == host })
+    }
+
+    /// The folder to mount automatically when `host` connects, if any.
+    ///
+    /// There is one mount point per host, so at most one pin can win; taking
+    /// the first in display order makes the choice predictable rather than
+    /// dependent on insertion order.
+    static func autoMountPath(for host: String, in list: [MountBookmark]) -> String? {
+        forHost(host, in: list).first { $0.autoMount }?.remotePath
     }
 
     private static func sorted(_ list: [MountBookmark]) -> [MountBookmark] {

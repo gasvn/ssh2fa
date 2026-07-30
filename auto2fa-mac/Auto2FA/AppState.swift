@@ -48,7 +48,10 @@ struct AvailableUpdate: Equatable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var hosts: [SSHHost] = [] {
-        didSet { celebrateFirstConnectIfNeeded() }
+        didSet {
+            celebrateFirstConnectIfNeeded()
+            autoMountConnectedHosts(previous: oldValue)
+        }
     }
     @Published var tunnels: [Tunnel] = []
     @Published var connectionError: String?
@@ -929,13 +932,17 @@ final class AppState: ObservableObject {
     /// pinned folder, else "/"). On a successful mount the folder is opened in
     /// Finder unless the user turned that off — landing in the directory you
     /// actually work in is the entire point of pinning it.
-    func toggleMount(_ host: SSHHost, remotePath: String? = nil) async {
+    /// `openInFinder` defaults to the user's preference; auto-mount passes false
+    /// so a background mount never steals focus with a Finder window.
+    func toggleMount(_ host: SSHHost, remotePath: String? = nil,
+                     openInFinder: Bool? = nil) async {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
         let path = remotePath ?? defaultMountPath(for: host.host)
+        let shouldOpen = openInFinder ?? openInFinderAfterMount
         do {
             let result = try await client.toggleMount(host.host, remotePath: path)
-            if let result, result.mounted, openInFinderAfterMount {
+            if let result, result.mounted, shouldOpen {
                 NSWorkspace.shared.open(URL(fileURLWithPath: result.mount_point))
             }
         } catch {
@@ -996,6 +1003,33 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Flip a pin's auto-mount flag. Only one folder per host can auto-mount
+    /// (there is a single mount point), so turning one ON turns the others OFF
+    /// rather than leaving a silent "first one wins" that looks like a bug.
+    @discardableResult
+    func setAutoMount(host: String, remotePath: String, autoMount: Bool) -> String? {
+        var updated = mountBookmarks
+        for i in updated.indices where updated[i].host == host {
+            let isThisOne = MountBookmarks.normalize(updated[i].remotePath)
+                == MountBookmarks.normalize(remotePath)
+            if isThisOne {
+                updated[i].autoMount = autoMount
+            } else if autoMount {
+                updated[i].autoMount = false
+            }
+        }
+        do {
+            try MountBookmarkStore.save(updated, to: mountBookmarksURL)
+            mountBookmarks = updated
+            // Re-arm so enabling it on an already-connected host mounts now
+            // instead of waiting for the next reconnect.
+            autoMountAttempted.remove(host)
+            return nil
+        } catch {
+            return "Couldn't save pinned folder: \(error.localizedDescription)"
+        }
+    }
+
     @discardableResult
     func unpinMountFolder(host: String, remotePath: String) -> String? {
         let updated = MountBookmarks.remove(host: host, remotePath: remotePath,
@@ -1006,6 +1040,35 @@ final class AppState: ObservableObject {
             return nil
         } catch {
             return "Couldn't remove pinned folder: \(error.localizedDescription)"
+        }
+    }
+
+    /// Hosts whose auto-mount we've already attempted for the CURRENT connection.
+    /// Cleared when a host drops, so the next connect re-arms it. Without this a
+    /// failing mount would be retried on every 5s poll forever.
+    private var autoMountAttempted: Set<String> = []
+
+    /// Mount a host's auto-mount pin the moment it becomes ready.
+    ///
+    /// This is what removes the "every session starts by mounting again" step.
+    /// Fires on the DISCONNECTED→READY edge only, once per connection, and never
+    /// when something is already mounted for that host.
+    private func autoMountConnectedHosts(previous: [SSHHost]) {
+        let wasReady = Dictionary(uniqueKeysWithValues: previous.map { ($0.host, $0.isMasterReady) })
+        for host in hosts {
+            // Re-arm as soon as the host is not ready, so a reconnect mounts again.
+            guard host.isMasterReady else {
+                autoMountAttempted.remove(host.host)
+                continue
+            }
+            guard wasReady[host.host] != true else { continue }   // only the edge
+            guard !host.isMounted else { continue }               // already mounted
+            guard !autoMountAttempted.contains(host.host) else { continue }
+            guard let path = MountBookmarks.autoMountPath(for: host.host, in: mountBookmarks) else {
+                continue
+            }
+            autoMountAttempted.insert(host.host)
+            Task { await self.toggleMount(host, remotePath: path, openInFinder: false) }
         }
     }
 
