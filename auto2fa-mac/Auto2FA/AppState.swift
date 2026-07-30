@@ -969,14 +969,15 @@ final class AppState: ObservableObject {
         activeMounts = (try? await client.activeMounts()) ?? activeMounts
     }
 
-    /// Unmount ONE folder (by its mount point), leaving the host's other
-    /// mounts alone.
+    /// Unmount ONE mount, addressed by its mount point (not by a remote path
+    /// parsed out of the mount table — that is unreliable across sshfs
+    /// backends).
     @discardableResult
-    func unmount(host: SSHHost, remotePath: String) async -> String? {
+    func unmount(host: SSHHost, mountPoint: String) async -> String? {
         inFlightHosts.insert(host.host)
         defer { inFlightHosts.remove(host.host) }
         do {
-            _ = try await client.toggleMount(host.host, remotePath: remotePath)
+            _ = try await client.toggleMount(host.host, mountPoint: mountPoint)
             await refreshMounts()
             await reloadAll()
             return nil

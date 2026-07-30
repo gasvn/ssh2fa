@@ -548,17 +548,13 @@ actor BackendClient {
         /// Mounted in the old one-per-host layout; can't sit alongside others.
         let legacy: Bool
 
-        /// The remote path this mount came from, recovered from the `source`
-        /// column (`k6:/scratch` → `/scratch`). Unmounting addresses a folder
-        /// by remote path, and the mount point only carries the slug — which is
-        /// lossy (`/a/b` and `/a-b` share a slug), so prefer the source.
-        var remotePathGuess: String {
-            if let idx = source.firstIndex(of: ":") {
-                let p = String(source[source.index(after: idx)...])
-                return p.isEmpty ? "/" : p
-            }
-            return "/"
-        }
+        /// Display name for this mount: the directory it is mounted at.
+        ///
+        /// Note the `source` column is NOT a reliable remote path — with the
+        /// fuse-t backend it reads `fuse-t:/<volname>`, not `<host>:<path>`
+        /// (confirmed against a live mount). Mounts are therefore addressed by
+        /// mount point, never by a path parsed out of `source`.
+        var displayName: String { (mount_point as NSString).lastPathComponent }
     }
 
     /// What is actually mounted right now. Read from the mount table, so it is
@@ -597,9 +593,13 @@ actor BackendClient {
     /// Toggle the sshfs mount. `remotePath` selects WHICH remote directory to
     /// mount (default "/"); it is ignored when unmounting.
     @discardableResult
-    func toggleMount(_ host: String, remotePath: String? = nil) async throws -> MountResult? {
+    func toggleMount(_ host: String, remotePath: String? = nil,
+                     mountPoint: String? = nil) async throws -> MountResult? {
         var params: [String: Any] = ["host": host]
         if let remotePath { params["remote_path"] = remotePath }
+        // Addresses an existing mount directly — required when unmounting one
+        // of several (see ActiveMount.displayName).
+        if let mountPoint { params["mount_point"] = mountPoint }
         let data = try await sendRaw(method: "host_mount_toggle", params: params)
         return try? JSONDecoder().decode(MountResult.self, from: data)
     }

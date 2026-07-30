@@ -292,8 +292,7 @@ struct HostRow: View {
                     Button {
                         appState.revealMount(host, mountPoint: m.mount_point)
                     } label: {
-                        Label((m.mount_point as NSString).lastPathComponent,
-                              systemImage: "folder")
+                        Label(m.displayName, systemImage: "folder")
                     }
                 }
             } label: {
@@ -303,10 +302,9 @@ struct HostRow: View {
             Menu {
                 ForEach(mounted) { m in
                     Button {
-                        Task { await appState.unmount(host: host, remotePath: m.remotePathGuess) }
+                        Task { await appState.unmount(host: host, mountPoint: m.mount_point) }
                     } label: {
-                        Label((m.mount_point as NSString).lastPathComponent,
-                              systemImage: "eject")
+                        Label(m.displayName, systemImage: "eject")
                     }
                 }
                 Divider()

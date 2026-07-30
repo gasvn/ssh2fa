@@ -425,7 +425,27 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     };
 
     // ~/Mounts/<host>/<slug> — several folders per host can be mounted at once.
-    let mount_point = mount_point_for(&host_name, &remote_path);
+    //
+    // An explicit `mount_point` addresses an EXISTING mount directly. Callers
+    // unmounting one of several mounts must use it: the mount table's `source`
+    // column cannot be mapped back to a remote path in general (with the fuse-t
+    // backend it reads `fuse-t:/<volname>`, not `<host>:<path>`), and the slug
+    // in the path is lossy — `/a/b` and `/a-b` produce the same one.
+    let explicit_point = params
+        .get("mount_point")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+    if let Some(p) = &explicit_point {
+        // Only ever act on paths inside our own mounts root.
+        if !p.starts_with(mounts_root()) {
+            return Err(Error::BadParams(
+                "mount_point must be inside the SSH2FA mounts folder".into(),
+            ));
+        }
+    }
+    let mount_point = explicit_point
+        .clone()
+        .unwrap_or_else(|| mount_point_for(&host_name, &remote_path));
 
     // Decide from the kernel mount table, never by stat'ing the path: a wedged
     // macFUSE mount makes stat block forever, and that is exactly the state a
@@ -2362,6 +2382,24 @@ mod tests {
         let p = mount_point_for("k6", "/../../etc/passwd");
         let rel = p.strip_prefix(mounts_root().join("k6")).unwrap();
         assert_eq!(rel.components().count(), 1, "slug must be a single component: {p:?}");
+    }
+
+    /// An explicit mount_point outside our mounts root must be refused —
+    /// otherwise a client could ask the daemon to unmount an arbitrary volume.
+    #[test]
+    fn mount_toggle_refuses_a_mount_point_outside_the_mounts_root() {
+        let state = make_state_with_host("k6", true);
+        let err = host_mount_toggle(
+            &state,
+            &json!({"host": "k6", "mount_point": "/Volumes/SomeoneElse"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("mounts folder")),
+            "got {err:?}"
+        );
+        // …and the mount latch must not be left claimed by the rejection.
+        assert!(!mount_in_flight().lock().unwrap().contains("k6"));
     }
 
     #[test]
