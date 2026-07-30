@@ -60,4 +60,52 @@ final class FriendlyTextTests: XCTestCase {
         let t = try makeTunnel(status: "idle", directHost: nil, lastNode: "gpunode01")
         XCTAssertEqual(FriendlyText.tunnelStatusBlurb(t), "Idle")
     }
+
+    // MARK: - credentialError (per-host Password & setup failures)
+
+    /// The exact raw string the daemon returns when macOS denies the Keychain
+    /// prompt. Observed live after a helper update: `keyring get(k8.password):
+    /// Platform secure storage failure: User canceled the operation.`
+    func testKeychainDenialTellsUserToChooseAlwaysAllow() {
+        let msg = FriendlyText.credentialError(
+            "internal: keyring get(k8.password): Platform secure storage failure: User canceled the operation.")
+        XCTAssertTrue(msg.contains("Always Allow"), "must name the button that fixes it: \(msg)")
+        XCTAssertFalse(msg.contains("keyring"), "must not leak the raw API name: \(msg)")
+    }
+
+    func testKeychainTimeoutPointsAtThePendingPrompt() {
+        let msg = FriendlyText.credentialError(
+            "internal: credential read timed out for b8 (is the login Keychain locked?) — try again")
+        XCTAssertTrue(msg.contains("Always Allow"))
+        XCTAssertFalse(msg.contains("credential read timed out"))
+    }
+
+    func testBusyLatchIsAPlainRetryMessage() {
+        let msg = FriendlyText.credentialError(
+            "internal: credential read already in flight for k6 — try again")
+        XCTAssertTrue(msg.lowercased().contains("try again"))
+        XCTAssertFalse(msg.contains("in flight"), "internal term, not user-facing: \(msg)")
+    }
+
+    /// An app newer than the running helper must say what to DO, not report
+    /// "unknown method".
+    func testVersionSkewSaysToReopenTheApp() {
+        let msg = FriendlyText.credentialError("unknown method host_credentials")
+        XCTAssertTrue(msg.contains("reopen") || msg.contains("Quit"))
+        XCTAssertFalse(msg.contains("unknown method"))
+    }
+
+    func testLockedKeychainSaysToUnlockIt() {
+        let msg = FriendlyText.credentialError("the keychain is locked")
+        XCTAssertTrue(msg.lowercased().contains("unlock"))
+    }
+
+    /// Unrecognized text still falls through to friendlyError (and ultimately
+    /// passes through unchanged) rather than being replaced with a guess.
+    func testUnknownCredentialErrorFallsThroughToFriendlyError() {
+        XCTAssertEqual(FriendlyText.credentialError("some novel failure"), "some novel failure")
+        // And it inherits friendlyError's translations.
+        XCTAssertEqual(FriendlyText.credentialError("Permission denied, please try again"),
+                       FriendlyText.friendlyError("Permission denied, please try again"))
+    }
 }

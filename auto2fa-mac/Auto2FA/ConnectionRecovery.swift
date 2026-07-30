@@ -28,12 +28,22 @@ enum ConnectionRecovery {
     /// Whether to force-drop the (silently-dead) socket so the connection
     /// watcher's reconnect loop runs.
     ///
-    /// Fires EXACTLY at the crossing, not on every later poll: a repeated drop
-    /// would keep cancelling the in-flight reconnect (whose `NWConnection` is
-    /// assigned before its handshake completes), so it could never finish.
-    /// One drop per down-episode is enough — the streak resets to 0 on the next
-    /// success, so a subsequent death re-arms it.
+    /// Fires at the crossing and then every `forceReconnectThreshold` failures
+    /// (3, 6, 9, …) — NOT on every poll: a drop on every poll would keep
+    /// cancelling the in-flight reconnect (whose `NWConnection` is assigned
+    /// before its handshake completes), so it could never finish.
+    ///
+    /// It must RE-ARM rather than fire exactly once. `reconnectWithBackoff`
+    /// gives up after ~4 minutes; with a single `== threshold` trigger, an
+    /// outage longer than that budget left the app permanently disconnected —
+    /// the streak kept climbing (4, 5, 6 …) so this never fired again, and the
+    /// poll loop spun forever against a daemon that had long since come back.
+    /// Observed 2026-07-29: ~1.5 h stuck on "Reconnecting to the background
+    /// helper…" after a daemon update, fixed only by relaunching the app.
+    /// Re-arming makes recovery unbounded; `BackendClient.isReconnecting`
+    /// suppresses the redundant calls while an attempt is already running.
     static func shouldForceReconnect(failStreak: Int) -> Bool {
-        failStreak == forceReconnectThreshold
+        failStreak >= forceReconnectThreshold
+            && failStreak % forceReconnectThreshold == 0
     }
 }

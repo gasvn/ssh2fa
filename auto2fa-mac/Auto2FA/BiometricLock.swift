@@ -30,6 +30,27 @@ final class BiometricLock: ObservableObject {
         return (ok, err?.localizedDescription)
     }
 
+    /// One-shot device-owner auth for a single sensitive action — revealing a
+    /// stored password / 2FA secret.
+    ///
+    /// Deliberately independent of the window lock: it ignores `enabled` and the
+    /// grace window, so a reveal always re-prompts instead of riding a recent
+    /// unlock, and it works even when "Require Touch ID" is off.
+    ///
+    /// Returns true when the user authenticated — or when the device can't
+    /// evaluate ANY policy (no biometrics and no login password). That fail-open
+    /// matches `LockGate`: we never lock a user out of their own credentials,
+    /// which they can also read in Keychain Access.
+    static func confirm(reason: String) async -> Bool {
+        guard availability().ok else { return true }
+        let ctx = LAContext()
+        return await withCheckedContinuation { cont in
+            ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
+                cont.resume(returning: success)
+            }
+        }
+    }
+
     /// Prompt for auth. A FRESH LAContext per call (reuse caches a prior result).
     func authenticate() async -> Bool {
         let ctx = LAContext()

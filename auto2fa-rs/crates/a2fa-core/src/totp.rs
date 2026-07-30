@@ -316,6 +316,104 @@ pub fn token_period(secret: &str) -> Result<u64> {
     Ok(parse_otp_input(secret)?.period)
 }
 
+/// Non-secret description of a stored otpauth input, for display in the app's
+/// per-host credential view ("which account is this 2FA secret for?").
+///
+/// SECURITY: every field here is safe to show and to log — the secret itself is
+/// deliberately NOT included, so a UI/IPC path that only needs to *describe* a
+/// stored credential can never leak it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtpDescription {
+    /// `issuer=` query parameter, else the `Issuer:` prefix of the label path.
+    pub issuer: Option<String>,
+    /// The account part of the label path (`otpauth://totp/Issuer:alice` → `alice`).
+    pub account: Option<String>,
+    pub algorithm: String,
+    pub digits: usize,
+    pub period: u64,
+}
+
+/// Describe an otpauth URL / bare secret WITHOUT revealing the secret.
+///
+/// Issuer/account are only present for a full `otpauth://` URL — a bare base32
+/// secret carries no such metadata, so both come back `None` with the default
+/// SHA1/6/30 parameters. Invalid input errors exactly like [`extract_secret`].
+pub fn describe_otp(s: &str) -> Result<OtpDescription> {
+    let params = parse_otp_input(s)?;
+    let algorithm = match params.algorithm {
+        Algorithm::SHA1 => "SHA1",
+        Algorithm::SHA256 => "SHA256",
+        Algorithm::SHA512 => "SHA512",
+    }
+    .to_string();
+
+    let trimmed = s.trim();
+    let (mut issuer, account) = if trimmed.starts_with("otpauth://") {
+        parse_label(trimmed)
+    } else {
+        (None, None)
+    };
+    // An explicit `issuer=` parameter wins over the label prefix (RFC-recommended).
+    if trimmed.starts_with("otpauth://") {
+        if let Some(v) = query_value(trimmed, "issuer") {
+            issuer = Some(v);
+        }
+    }
+
+    Ok(OtpDescription {
+        issuer,
+        account,
+        algorithm,
+        digits: params.digits,
+        period: params.period,
+    })
+}
+
+/// Split the label path of an otpauth URL into `(issuer, account)`.
+///
+/// `otpauth://totp/Example:alice@corp?…` → `(Some("Example"), Some("alice@corp"))`
+/// `otpauth://totp/alice?…`             → `(None, Some("alice"))`
+fn parse_label(url: &str) -> (Option<String>, Option<String>) {
+    // Strip the scheme + type ("otpauth://totp/"), then everything from '?'.
+    let after_scheme = &url["otpauth://".len()..];
+    let path = match after_scheme.split_once('/') {
+        Some((_ty, rest)) => rest.split('?').next().unwrap_or(""),
+        None => "",
+    };
+    let label = percent_decode(path).trim().to_string();
+    if label.is_empty() {
+        return (None, None);
+    }
+    match label.split_once(':') {
+        Some((iss, acct)) => {
+            let iss = iss.trim().to_string();
+            let acct = acct.trim().to_string();
+            (
+                (!iss.is_empty()).then_some(iss),
+                (!acct.is_empty()).then_some(acct),
+            )
+        }
+        None => (None, Some(label)),
+    }
+}
+
+/// First value of query parameter `key` in an otpauth URL, percent-decoded.
+fn query_value(url: &str, key: &str) -> Option<String> {
+    let query = url.find('?').map(|i| &url[i + 1..])?;
+    for pair in query.split('&') {
+        // `continue`, not `?` — a valueless parameter ("&foo") must not abort
+        // the whole scan before the key we're looking for.
+        let Some((k, v)) = pair.split_once('=') else { continue };
+        if k.eq_ignore_ascii_case(key) && !v.is_empty() {
+            let decoded = percent_decode(v).trim().to_string();
+            if !decoded.is_empty() {
+                return Some(decoded);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +606,96 @@ mod tests {
         // Malformed escape passes through literally.
         assert_eq!(percent_decode("a%zz"), "a%zz");
         assert_eq!(percent_decode("a%2"), "a%2");
+    }
+
+    // -----------------------------------------------------------------------
+    // describe_otp — non-secret metadata for the per-host credential view
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn describe_otp_reads_issuer_and_account_from_label() {
+        let d = describe_otp("otpauth://totp/Example:alice@corp?secret=JBSWY3DPEHPK3PXP").unwrap();
+        assert_eq!(d.issuer.as_deref(), Some("Example"));
+        assert_eq!(d.account.as_deref(), Some("alice@corp"));
+        assert_eq!(d.algorithm, "SHA1");
+        assert_eq!(d.digits, 6);
+        assert_eq!(d.period, 30);
+    }
+
+    #[test]
+    fn describe_otp_issuer_param_wins_over_label_prefix() {
+        let d = describe_otp(
+            "otpauth://totp/Label:alice?secret=JBSWY3DPEHPK3PXP&issuer=Duo%20Security",
+        )
+        .unwrap();
+        assert_eq!(d.issuer.as_deref(), Some("Duo Security"));
+        assert_eq!(d.account.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn describe_otp_label_without_issuer_prefix() {
+        let d = describe_otp("otpauth://totp/alice?secret=JBSWY3DPEHPK3PXP").unwrap();
+        assert_eq!(d.issuer, None);
+        assert_eq!(d.account.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn describe_otp_bare_secret_has_no_metadata() {
+        let d = describe_otp("JBSWY3DPEHPK3PXP").unwrap();
+        assert_eq!(d.issuer, None);
+        assert_eq!(d.account, None);
+        assert_eq!(d.period, 30);
+    }
+
+    #[test]
+    fn describe_otp_carries_non_default_params() {
+        let d = describe_otp(
+            "otpauth://totp/Ex:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=60",
+        )
+        .unwrap();
+        assert_eq!(d.algorithm, "SHA256");
+        assert_eq!(d.digits, 8);
+        assert_eq!(d.period, 60);
+    }
+
+    /// The canonical-token form (what the Keychain actually stores after
+    /// host_add) must describe cleanly too — no issuer/account, real params.
+    #[test]
+    fn describe_otp_accepts_canonical_token() {
+        let token = extract_secret(
+            "otpauth://totp/Ex:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA512&digits=8&period=45",
+        )
+        .unwrap();
+        let d = describe_otp(&token).unwrap();
+        assert_eq!(d.algorithm, "SHA512");
+        assert_eq!(d.digits, 8);
+        assert_eq!(d.period, 45);
+        assert_eq!(d.account, None);
+    }
+
+    #[test]
+    fn describe_otp_rejects_invalid_input() {
+        assert!(describe_otp("otpauth://totp/x?issuer=y").is_err(), "no secret");
+        assert!(describe_otp("").is_err(), "empty");
+    }
+
+    /// A parameter with no '=' must not abort the issuer scan (regression: `?`
+    /// on split_once returned early and dropped the issuer).
+    #[test]
+    fn describe_otp_tolerates_valueless_query_param() {
+        let d =
+            describe_otp("otpauth://totp/L:alice?flag&secret=JBSWY3DPEHPK3PXP&issuer=Duo").unwrap();
+        assert_eq!(d.issuer.as_deref(), Some("Duo"));
+    }
+
+    /// SECURITY: the description must never carry the secret in any field.
+    #[test]
+    fn describe_otp_never_exposes_the_secret() {
+        let d = describe_otp("otpauth://totp/Ex:alice?secret=JBSWY3DPEHPK3PXP&issuer=Ex").unwrap();
+        let rendered = format!("{d:?}");
+        assert!(
+            !rendered.contains("JBSWY3DPEHPK3PXP"),
+            "description leaked the secret: {rendered}"
+        );
     }
 }

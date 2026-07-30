@@ -148,6 +148,9 @@ struct HostRow: View {
         .padding(.vertical, 2)
         .frame(minHeight: RowMetric.minHeight)
         .contentShape(Rectangle())
+        // Double-click opens the host's stored password / 2FA / ssh settings —
+        // the standard Mac "open this item" gesture, alongside the ⋯ menu.
+        .onTapGesture(count: 2) { appState.presentHostSettings(host.host) }
         .help(rowTooltip)
         .changeHighlight(host.status)
         .hoverLift(hovering)
@@ -295,6 +298,16 @@ struct HostRow: View {
             Label("Open Terminal", systemImage: "terminal")
         }
         .disabled(!host.isMasterReady)
+
+        Divider()
+
+        // The only path to "what is stored for this host, and how do I change
+        // it?" — password, 2FA secret, and the ssh connection settings.
+        Button {
+            appState.presentHostSettings(host.host)
+        } label: {
+            Label("Password & Setup…", systemImage: "key.horizontal")
+        }
     }
 
     // MARK: - Terminal (verbatim from old HostsView)

@@ -14,14 +14,14 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use a2fa_core::config::{passwords_path, update_meta, HostMeta};
+use a2fa_core::config::{load_meta, passwords_path, update_meta, HostMeta};
 use a2fa_core::creds::keychain::KeychainStore;
 use a2fa_core::creds::{get_otpauth, get_password, store_credentials};
 use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
 use a2fa_core::sys::run_cmd_bounded;
-use a2fa_core::totp::{extract_secret, totp_now_detailed};
+use a2fa_core::totp::{describe_otp, extract_secret, totp_now_detailed};
 use serde_json::{json, Value};
 
 use crate::managers::{spawn_managed_start, spawn_managed_stop, HostManagers};
@@ -714,6 +714,9 @@ pub fn host_add(
 /// daemon it should be moved to a blocking thread; for the daemon's Tokio
 /// runtime the caller wraps this in `spawn_blocking`.  As an IPC RPC it
 /// is still acceptable to block briefly (the client has a generous timeout).
+/// When BOTH `password` and `otpauth_url` are omitted, the host's **stored**
+/// credentials are tested instead — that's how the app's per-host credential
+/// view offers "Test login" without first pulling the secrets into the UI.
 pub fn host_test_credentials(
     _state: &Arc<Mutex<State>>,
     params: &Value,
@@ -725,19 +728,65 @@ pub fn host_test_credentials(
         .unwrap_or("")
         .to_owned();
 
-    let password = params
-        .get("password")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
+    if host.is_empty() {
+        return Ok(json!({ "ok": false, "reason": "host required" }));
+    }
+    // The host name flows into ssh argv (final arg) AND the temp log path
+    // `auto2fa-testlogin-<host>-<pid>.log`. Reject unsafe names (leading dash =
+    // ssh option injection; '/' or '..' = path traversal) — the Add-host
+    // wizard sends a user-typed value here BEFORE the host_add guard runs.
+    // Checked before the stored-credential fallback below, which uses the name
+    // as a Keychain account key.
+    if !valid_host_name(&host) {
+        return Ok(json!({
+            "ok": false,
+            "reason": "invalid host name (use letters/digits/._- , not starting with '-' or '.')"
+        }));
+    }
 
-    let otpauth_url = params
-        .get("otpauth_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
+    let supplied_password = params.get("password").and_then(|v| v.as_str());
+    let supplied_otpauth = params.get("otpauth_url").and_then(|v| v.as_str());
 
-    // Validate otpauth URL before attempting any I/O.
+    // Neither secret supplied → test what's stored for this host (bounded
+    // Keychain read on a worker, never on this handler thread).
+    let (password, otpauth_url) = match (supplied_password, supplied_otpauth) {
+        (None, None) => {
+            let host_owned = host.clone();
+            let stored = run_keychain_bounded(
+                "credential read",
+                &host,
+                CREDENTIAL_OP_TIMEOUT,
+                move || {
+                    let ks = KeychainStore;
+                    Ok((
+                        get_password(&ks, &host_owned)?.unwrap_or_default(),
+                        get_otpauth(&ks, &host_owned)?.unwrap_or_default(),
+                    ))
+                },
+            );
+            match stored {
+                Ok((p, o)) if !p.is_empty() || !o.trim().is_empty() => (p, o),
+                Ok(_) => {
+                    return Ok(json!({
+                        "ok": false,
+                        "reason": format!("no credentials stored for {host}")
+                    }));
+                }
+                Err(e) => {
+                    return Ok(json!({ "ok": false, "reason": e.to_string() }));
+                }
+            }
+        }
+        // One or both supplied → use exactly what was sent (an omitted field
+        // stays empty, preserving the pre-existing contract for the Add-host
+        // wizard, which always sends both).
+        _ => (
+            supplied_password.unwrap_or("").to_owned(),
+            supplied_otpauth.unwrap_or("").to_owned(),
+        ),
+    };
+
+    // Validate otpauth URL before attempting any ssh I/O.
     let secret = match extract_secret(&otpauth_url) {
         Ok(s) => s,
         Err(e) => {
@@ -747,20 +796,6 @@ pub fn host_test_credentials(
             }));
         }
     };
-
-    if host.is_empty() {
-        return Ok(json!({ "ok": false, "reason": "host required" }));
-    }
-    // The host name flows into ssh argv (final arg) AND the temp log path
-    // `auto2fa-testlogin-<host>-<pid>.log`. Reject unsafe names (leading dash =
-    // ssh option injection; '/' or '..' = path traversal) — the Add-host
-    // wizard sends a user-typed value here BEFORE the host_add guard runs.
-    if !valid_host_name(&host) {
-        return Ok(json!({
-            "ok": false,
-            "reason": "invalid host name (use letters/digits/._- , not starting with '-' or '.')"
-        }));
-    }
 
     // Run the one-shot login attempt on this thread.
     // (In production the daemon server wraps handlers in a worker pool.)
@@ -861,31 +896,125 @@ fn test_login(
 // host_totp
 // ---------------------------------------------------------------------------
 
-/// Daemon-global set of hosts with a TOTP Keychain read currently in flight.
+/// Daemon-global set of `"<op>:<host>"` keys with a Keychain operation in
+/// flight.
 ///
 /// macOS serializes Keychain access process-wide, so a hung "Always Allow"
 /// prompt blocks the worker thread until it is answered (~30 s from the app's
-/// poll rollover). Without a guard, every `host_totp` IPC call for that host
-/// would spawn another worker that immediately blocks behind the same prompt —
-/// one leaked thread per call. This per-host latch caps it to AT MOST one
-/// in-flight worker per host; concurrent callers get a "busy" error and retry.
-fn totp_in_flight() -> &'static Mutex<HashSet<String>> {
+/// poll rollover). Without a guard, every IPC call for that host would spawn
+/// another worker that immediately blocks behind the same prompt — one leaked
+/// thread per call. The latch caps it to AT MOST one in-flight worker per
+/// (operation, host); concurrent callers get a "busy" error and retry.
+///
+/// The key includes the OPERATION so the app's rotating-code polling
+/// (`host_totp`) can never make an unrelated credential read/write report
+/// "busy" for the same host.
+fn keychain_in_flight() -> &'static Mutex<HashSet<String>> {
     static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// RAII guard releasing a host's `totp_in_flight` entry on every exit path
+/// RAII guard releasing a `keychain_in_flight` entry on every exit path
 /// (worker completion or panic). Mirrors `StartGuard` in managers.rs.
-struct TotpInFlightGuard {
-    host: String,
+struct KeychainInFlightGuard {
+    key: String,
 }
 
-impl Drop for TotpInFlightGuard {
+impl Drop for KeychainInFlightGuard {
     fn drop(&mut self) {
-        totp_in_flight()
+        keychain_in_flight()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.host);
+            .remove(&self.key);
+    }
+}
+
+/// Deadline for a USER-INITIATED credential read/write (the app's per-host
+/// "Password & setup" view).
+///
+/// Deliberately generous. Measured on a real install: the FIRST Keychain read of
+/// a given account after a daemon restart can take well over 10s (macOS
+/// re-evaluates the item's ACL against the new process), while later reads are
+/// instant. A 10s bound turned that into a spurious "timed out — try again" on
+/// the first open of the sheet for each host. The in-flight latch — not the
+/// deadline — is what prevents a thread pile-up behind a hung prompt, so waiting
+/// longer here is safe: at most ONE worker per (operation, host) can ever exist,
+/// and the only thread that waits is the one connection handler that asked.
+const CREDENTIAL_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// THE chokepoint for every Keychain touch made from an IPC handler thread.
+///
+/// Runs `f` on a short-lived worker thread and joins it with a hard deadline,
+/// while holding a per-(op, host) in-flight latch. This is required — not
+/// optional — because:
+/// * Keychain reads/writes MUST NOT run on the connection-handler thread: a
+///   locked login Keychain blocks on a SecurityAgent prompt, which would wedge
+///   the handler (and, since macOS serializes Keychain access process-wide,
+///   stall every other Keychain user behind it).
+/// * The latch prevents piling up one leaked thread per retry behind that same
+///   prompt (the resource-exhaustion class that previously hung the machine).
+///
+/// On timeout the latch stays held until the abandoned worker actually finishes
+/// — deliberately, so retries return "busy" instead of spawning more threads.
+fn run_keychain_bounded<T, F>(
+    op: &str,
+    host: &str,
+    timeout: std::time::Duration,
+    f: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let key = format!("{op}:{host}");
+    {
+        let mut inflight = keychain_in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(key.clone()) {
+            return Err(Error::Internal(format!(
+                "{op} already in flight for {host} — try again"
+            )));
+        }
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker_key = key.clone();
+    // Builder::spawn + captured Result: a thread-creation failure (EAGAIN under
+    // thread exhaustion) must not panic AND must not wedge the latch — the
+    // guard only runs once the closure starts, so release it here on that path.
+    let spawn_res = std::thread::Builder::new()
+        .name(format!("{op}:{host}"))
+        .spawn(move || {
+            // Release the latch BEFORE unblocking the caller: if the guard
+            // outlived the send, a caller that immediately retried (or a second
+            // client) could see a spurious "already in flight" for a call that
+            // had actually finished. The inner scope also releases it on panic.
+            let result = {
+                let _inflight_guard = KeychainInFlightGuard { key: worker_key };
+                f()
+            };
+            let _ = tx.send(result);
+        });
+    if let Err(e) = spawn_res {
+        keychain_in_flight()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key);
+        log::warn!("failed to spawn {op} worker for {host}: {e}");
+        return Err(Error::Internal(format!(
+            "{op} could not start for {host} — try again"
+        )));
+    }
+
+    match rx.recv_timeout(timeout) {
+        Ok(inner) => inner,
+        // Disconnected = the worker died without sending (a panic inside `f`).
+        // Distinguish it from the deadline so the log says what happened.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Error::Internal(format!(
+            "{op} failed unexpectedly for {host} — try again"
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Error::Internal(format!(
+            "{op} timed out for {host} (is the login Keychain locked?) — try again"
+        ))),
     }
 }
 
@@ -913,78 +1042,279 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
     }
 
     // INVARIANT (see crate::managers::load_creds, ~lines 59-67): Keychain reads
-    // MUST NOT happen on a shared/handler thread. macOS serializes Keychain
-    // access process-wide, so an unanswered "Always Allow" prompt would block
-    // the calling thread indefinitely — and this runs on the connection-handler
-    // thread, so a hung prompt would wedge the whole handler. Push the Keychain
-    // read + TOTP computation onto a short-lived worker thread and join it with
-    // a BOUNDED timeout (mirroring run_ssh_g in ssh/control.rs). This caps the
-    // handler's exposure to a hung prompt; on timeout we return an error rather
-    // than blocking forever.
-    // Per-host in-flight latch: at most ONE Keychain-reading worker may exist
-    // per host at a time. If one is already in flight (e.g. blocked on a hung
-    // "Always Allow" prompt), do NOT spawn another — return a retryable busy
-    // error so we never pile up leaked threads behind the same prompt.
-    {
-        let mut inflight = totp_in_flight().lock().unwrap_or_else(|e| e.into_inner());
-        if !inflight.insert(host_name.clone()) {
-            return Err(Error::Internal(format!(
-                "totp read already in flight for {host_name} — try again"
-            )));
-        }
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel();
+    // MUST NOT happen on a shared/handler thread — `run_keychain_bounded` is the
+    // chokepoint that enforces the worker + hard timeout + per-host in-flight
+    // latch. Do NOT log the code or the secret.
     let host_owned = host_name.clone();
-    // Use Builder::spawn and CAPTURE the Result so a thread-creation failure
-    // (EAGAIN under thread exhaustion) cannot panic AND cannot leave the latch
-    // wedged: the TotpInFlightGuard only runs once the closure starts, so if
-    // the spawn itself fails the guard never runs. Release the latch here and
-    // return the same retryable error as the already-in-flight case. Mirrors
-    // the spawn sites in tunnels/post_connect.rs and daemon/managers.rs.
-    let spawn_res = std::thread::Builder::new()
-        .name(format!("host_totp:{host_name}"))
-        .spawn(move || {
-            // RAII: release the per-host in-flight latch on every exit path
-            // (completion or panic) so the host is never wedged as "busy".
-            let _inflight_guard = TotpInFlightGuard {
-                host: host_owned.clone(),
-            };
-            // Read the otpauth URL from the Keychain and compute the code +
-            // timing entirely on this worker thread. Do NOT log code/secret.
-            let result = (|| -> Result<(String, u32, u32)> {
-                let otpauth = get_otpauth(&KeychainStore, &host_owned)?
-                    .filter(|s| !s.trim().is_empty())
-                    .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
-                let (code, period, remaining) = totp_now_detailed(&otpauth)?;
-                Ok((code, period, remaining))
-            })();
-            let _ = tx.send(result);
-        });
-    if let Err(e) = spawn_res {
-        // The worker (and its guard) never ran — release the latch here so the
-        // host is not wedged "busy" forever, and return a retryable error.
-        totp_in_flight()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&host_name);
-        log::warn!("failed to spawn host_totp worker for {host_name}: {e}");
-        return Err(Error::Internal(format!(
-            "totp read could not start for {host_name} — try again"
-        )));
-    }
-
-    let (code, period, remaining) = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(inner) => inner?,
-        Err(_) => {
-            return Err(Error::Internal("totp read timed out".into()));
-        }
-    };
+    let (code, period, remaining) = run_keychain_bounded(
+        "totp read",
+        &host_name,
+        std::time::Duration::from_secs(5),
+        move || {
+            let otpauth = get_otpauth(&KeychainStore, &host_owned)?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
+            totp_now_detailed(&otpauth)
+        },
+    )?;
 
     Ok(json!({
         "code": code,
         "period": period,
         "seconds_remaining": remaining,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// host_credentials — describe what's stored, WITHOUT revealing it
+// ---------------------------------------------------------------------------
+
+/// Confirm the host exists in State, returning a `NotFound` otherwise.
+fn require_host(state: &Arc<Mutex<State>>, host: &str) -> Result<()> {
+    let guard = crate::lock_state(state);
+    if guard.hosts.iter().any(|h| h.host == host) {
+        Ok(())
+    } else {
+        Err(Error::NotFound(format!("host {host}")))
+    }
+}
+
+/// Read the `host` param, validating it as a safe host name.
+///
+/// The name is used as a Keychain account key and (for the test login) as ssh
+/// argv, so the same guard `host_add` applies on the way in is re-applied here
+/// — these methods take a client-supplied string.
+fn host_param(params: &Value) -> Result<String> {
+    let host = params["host"]
+        .as_str()
+        .ok_or_else(|| Error::BadParams("host required".into()))?
+        .to_owned();
+    if !valid_host_name(&host) {
+        return Err(Error::BadParams(
+            "invalid host name (letters, digits, '.', '-', '_' only; no '/' or '..')".into(),
+        ));
+    }
+    Ok(host)
+}
+
+/// Describe the credentials stored for a host **without returning any secret**.
+///
+/// This is what the app's per-host "Password & setup" view loads to show
+/// *whether* a password and a 2FA secret exist, how long the password is, and
+/// which account the 2FA secret belongs to (issuer / account / period). Safe to
+/// call for plain display — see `host_reveal_credentials` for the gated path
+/// that returns the actual secrets.
+pub fn host_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = host_param(params)?;
+    require_host(state, &host_name)?;
+
+    // Keychain read on the bounded worker (never this handler thread).
+    let host_owned = host_name.clone();
+    let (password, otpauth) = run_keychain_bounded(
+        "credential read",
+        &host_name,
+        CREDENTIAL_OP_TIMEOUT,
+        move || {
+            let ks = KeychainStore;
+            let password = get_password(&ks, &host_owned)?.unwrap_or_default();
+            let otpauth = get_otpauth(&ks, &host_owned)?.unwrap_or_default();
+            Ok((password, otpauth))
+        },
+    )?;
+
+    // The persisted auto-connect intent (file read — no Keychain, cheap).
+    let auto_connect = load_meta(&passwords_path())
+        .get(&host_name)
+        .map(|m| m.auto_connect)
+        .unwrap_or(false);
+
+    // Describe the 2FA secret. A stored secret that no longer parses is
+    // reported as an error string rather than silently looking absent — that's
+    // the difference between "add a secret" and "your secret is corrupt".
+    let mut otp = json!({});
+    let mut otp_error = Value::Null;
+    if !otpauth.trim().is_empty() {
+        match describe_otp(&otpauth) {
+            Ok(d) => {
+                otp = json!({
+                    "issuer": d.issuer,
+                    "account": d.account,
+                    "algorithm": d.algorithm,
+                    "digits": d.digits,
+                    "period": d.period,
+                });
+            }
+            Err(e) => otp_error = json!(e.to_string()),
+        }
+    }
+
+    Ok(json!({
+        "host": host_name,
+        "has_password": !password.is_empty(),
+        // Length only — enough for the UI to render a realistic dot mask and to
+        // tell "nothing stored" from "stored", without leaking the value.
+        "password_length": password.chars().count(),
+        "has_otp_secret": !otpauth.trim().is_empty(),
+        "otp": otp,
+        "otp_error": otp_error,
+        "auto_connect": auto_connect,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// host_reveal_credentials — the explicit, audited secret-returning path
+// ---------------------------------------------------------------------------
+
+/// Return the stored password and otpauth URL for a host **in plaintext**.
+///
+/// Deliberately a separate method from [`host_credentials`] so no display path
+/// can return secrets by accident: a client must ask for them by name. The app
+/// gates this behind device-owner authentication (Touch ID / login password)
+/// before calling it, and the call is logged (host only — never the values) so
+/// a reveal is visible in the daemon log.
+///
+/// The socket is already owner-only and `host_add` accepts the same secrets over
+/// it, so this adds no new transport exposure.
+pub fn host_reveal_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = host_param(params)?;
+    require_host(state, &host_name)?;
+
+    let host_owned = host_name.clone();
+    let (password, otpauth) = run_keychain_bounded(
+        "credential read",
+        &host_name,
+        CREDENTIAL_OP_TIMEOUT,
+        move || {
+            let ks = KeychainStore;
+            let password = get_password(&ks, &host_owned)?;
+            let otpauth = get_otpauth(&ks, &host_owned)?;
+            Ok((password, otpauth))
+        },
+    )?;
+
+    // Audit line — the fact of the reveal, never the secrets themselves.
+    log::info!("[{host_name}] stored credentials revealed to a local client");
+
+    Ok(json!({
+        "host": host_name,
+        "password": password,
+        "otpauth_url": otpauth,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// host_set_credentials — change the password / 2FA secret of an existing host
+// ---------------------------------------------------------------------------
+
+/// Update the stored password and/or 2FA secret for an already-registered host.
+///
+/// Params: `host` plus at least one of `password`, `otpauth_url`.
+/// Whichever field is omitted keeps its current stored value.
+///
+/// The Keychain stores password and otpauth as two entries that
+/// [`store_credentials`] writes together (with rollback), so a partial update
+/// still needs the counterpart's current value: the read of the counterpart AND
+/// the write happen inside ONE bounded worker, i.e. one Keychain session behind
+/// one in-flight latch.
+///
+/// A live master is NOT torn down — an established ControlMaster needs no
+/// credentials, so the new ones take effect on the next login. The response
+/// carries `reconnect_required` so the app can offer "reconnect now" (which goes
+/// through the existing stop→start path) rather than this handler inventing a
+/// second reconnect mechanism.
+pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
+    let host_name = host_param(params)?;
+    require_host(state, &host_name)?;
+
+    let new_password = params
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned());
+    let new_otpauth = params
+        .get("otpauth_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_owned());
+
+    if new_password.is_none() && new_otpauth.is_none() {
+        return Err(Error::BadParams(
+            "nothing to change — pass 'password' and/or 'otpauth_url'".into(),
+        ));
+    }
+
+    // Validate the 2FA secret BEFORE touching the Keychain: storing an
+    // unparseable secret would leave the host unable to log in, and the failure
+    // would only surface ~30 s later inside a login worker.
+    if let Some(ref url) = new_otpauth {
+        if url.is_empty() {
+            return Err(Error::BadParams(
+                "otpauth_url is empty — omit the field to keep the current 2FA secret".into(),
+            ));
+        }
+        extract_secret(url).map_err(|e| Error::BadParams(format!("invalid otpauth URL: {e}")))?;
+    }
+    if let Some(ref pw) = new_password {
+        if pw.is_empty() {
+            return Err(Error::BadParams(
+                "password is empty — omit the field to keep the current password".into(),
+            ));
+        }
+    }
+
+    let mut changed: Vec<&'static str> = Vec::new();
+    if new_password.is_some() {
+        changed.push("password");
+    }
+    if new_otpauth.is_some() {
+        changed.push("otp_secret");
+    }
+
+    // Read-counterpart + write in ONE bounded worker.
+    let host_owned = host_name.clone();
+    let pw_arg = new_password.clone();
+    let otp_arg = new_otpauth.clone();
+    run_keychain_bounded(
+        "credential write",
+        &host_name,
+        CREDENTIAL_OP_TIMEOUT,
+        move || {
+            let ks = KeychainStore;
+            let password = match pw_arg {
+                Some(p) => p,
+                None => get_password(&ks, &host_owned)?.unwrap_or_default(),
+            };
+            let otpauth = match otp_arg {
+                Some(o) => o,
+                None => get_otpauth(&ks, &host_owned)?.unwrap_or_default(),
+            };
+            store_credentials(&ks, &host_owned, &password, &otpauth)
+        },
+    )?;
+
+    // The stored creds just changed — drop any cached copy so the next login
+    // re-reads them instead of serving the old ones for the daemon's lifetime.
+    crate::managers::invalidate_creds_cache(&host_name);
+    log::info!(
+        "[{host_name}] stored credentials updated ({})",
+        changed.join(", ")
+    );
+
+    // A live/active host keeps running on its existing master; tell the client
+    // so it can offer a reconnect.
+    let reconnect_required = {
+        let guard = crate::lock_state(state);
+        guard
+            .hosts
+            .iter()
+            .find(|h| h.host == host_name)
+            .map(|h| h.active || h.is_master_ready)
+            .unwrap_or(false)
+    };
+
+    Ok(json!({
+        "ok": true,
+        "host": host_name,
+        "changed": changed,
+        "reconnect_required": reconnect_required,
     }))
 }
 
@@ -1093,35 +1423,130 @@ mod tests {
     }
 
     #[test]
-    fn totp_in_flight_blocks_second_concurrent_claim() {
-        // First claim for a host succeeds; a second concurrent claim for the
-        // SAME host must be rejected (insert returns false) until released.
-        let host = "totp-guard-test-host";
+    fn keychain_in_flight_blocks_second_concurrent_claim() {
+        // First claim for an (op, host) key succeeds; a second concurrent claim
+        // for the SAME key must be rejected (insert returns false) until released.
+        let key = "totp read:guard-test-host";
         // Ensure a clean slate (other tests may have used the set).
-        totp_in_flight().lock().unwrap().remove(host);
+        keychain_in_flight().lock().unwrap().remove(key);
 
         // First claim.
         assert!(
-            totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            keychain_in_flight().lock().unwrap().insert(key.to_owned()),
             "first claim must succeed"
         );
         // Second concurrent claim is blocked.
         assert!(
-            !totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            !keychain_in_flight().lock().unwrap().insert(key.to_owned()),
             "second concurrent claim must be blocked"
         );
 
         // The RAII guard releases the latch on drop.
         {
-            let _g = TotpInFlightGuard { host: host.to_owned() };
+            let _g = KeychainInFlightGuard { key: key.to_owned() };
         }
         // After release, a new claim succeeds again.
         assert!(
-            totp_in_flight().lock().unwrap().insert(host.to_owned()),
+            keychain_in_flight().lock().unwrap().insert(key.to_owned()),
             "claim must succeed after the guard released the latch"
         );
         // Clean up.
-        totp_in_flight().lock().unwrap().remove(host);
+        keychain_in_flight().lock().unwrap().remove(key);
+    }
+
+    /// The latch key includes the OPERATION, so the app's rotating-code polling
+    /// (`totp read`) must never make a credential read/write for the same host
+    /// report "busy" — that would break "Reveal password" on any host whose chip
+    /// is on screen.
+    #[test]
+    fn keychain_latch_is_per_operation_not_just_per_host() {
+        let host = "latch-op-test-host";
+        let totp_key = format!("totp read:{host}");
+        let read_key = format!("credential read:{host}");
+        keychain_in_flight().lock().unwrap().remove(&totp_key);
+        keychain_in_flight().lock().unwrap().remove(&read_key);
+
+        // Claim the TOTP-read slot for this host…
+        assert!(keychain_in_flight().lock().unwrap().insert(totp_key.clone()));
+        // …a DIFFERENT operation on the same host is still free to claim.
+        assert!(
+            keychain_in_flight().lock().unwrap().insert(read_key.clone()),
+            "a different operation on the same host must not be blocked"
+        );
+        keychain_in_flight().lock().unwrap().remove(&totp_key);
+        keychain_in_flight().lock().unwrap().remove(&read_key);
+    }
+
+    /// `run_keychain_bounded` must return a retryable busy error (and NOT spawn
+    /// a second worker) while the same (op, host) key is claimed.
+    #[test]
+    fn run_keychain_bounded_returns_busy_while_claimed() {
+        let host = "bounded-busy-host";
+        let key = format!("credential read:{host}");
+        keychain_in_flight().lock().unwrap().insert(key.clone());
+        let err = run_keychain_bounded(
+            "credential read",
+            host,
+            std::time::Duration::from_secs(1),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::Internal(ref m) if m.contains("already in flight")),
+            "expected busy error, got {err:?}"
+        );
+        keychain_in_flight().lock().unwrap().remove(&key);
+    }
+
+    /// A closure that never returns must NOT pin the caller: the bound fires and
+    /// an error comes back promptly (the whole point of the chokepoint).
+    #[test]
+    fn run_keychain_bounded_times_out_without_hanging() {
+        let host = "bounded-timeout-host";
+        keychain_in_flight()
+            .lock()
+            .unwrap()
+            .remove(&format!("credential read:{host}"));
+        let start = std::time::Instant::now();
+        let err = run_keychain_bounded(
+            "credential read",
+            host,
+            std::time::Duration::from_millis(150),
+            || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "must not block past the bound");
+        assert!(
+            matches!(err, Error::Internal(ref m) if m.contains("timed out")),
+            "expected timeout error, got {err:?}"
+        );
+    }
+
+    /// The happy path passes the closure's value through unchanged and releases
+    /// the latch, so a second call succeeds.
+    #[test]
+    fn run_keychain_bounded_passes_value_through_and_releases() {
+        let host = "bounded-ok-host";
+        for expected in [1u32, 2u32] {
+            let got = run_keychain_bounded(
+                "credential read",
+                host,
+                std::time::Duration::from_secs(5),
+                move || Ok(expected),
+            )
+            .unwrap();
+            assert_eq!(got, expected);
+        }
+        assert!(
+            !keychain_in_flight()
+                .lock()
+                .unwrap()
+                .contains(&format!("credential read:{host}")),
+            "latch must be released after a successful run"
+        );
     }
 
     #[test]
@@ -1296,6 +1721,137 @@ mod tests {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
         let err = host_totp(&state, &json!({})).unwrap_err();
         assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // host_credentials / host_reveal_credentials / host_set_credentials
+    //
+    // These return BEFORE any Keychain access on every path asserted here
+    // (unknown host, bad name, nothing-to-change, invalid secret), so the tests
+    // run headlessly — no system credential store involved.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn host_credentials_not_found_returns_not_found() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_credentials(&state, &json!({"host": "ghost"})).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn host_credentials_missing_host_param_returns_bad_params() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_credentials(&state, &json!({})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    /// The host name is a Keychain account key — an unsafe name must be rejected
+    /// as BadParams before anything reads the store.
+    #[test]
+    fn host_credentials_rejects_unsafe_host_name() {
+        let state = make_state_with_host("../../etc", false);
+        let err = host_credentials(&state, &json!({"host": "../../etc"})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    #[test]
+    fn host_reveal_credentials_not_found_returns_not_found() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_reveal_credentials(&state, &json!({"host": "ghost"})).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn host_reveal_credentials_rejects_unsafe_host_name() {
+        let state = make_state_with_host("-oProxyCommand=x", false);
+        let err = host_reveal_credentials(&state, &json!({"host": "-oProxyCommand=x"})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)));
+    }
+
+    #[test]
+    fn host_set_credentials_not_found_returns_not_found() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err =
+            host_set_credentials(&state, &json!({"host": "ghost", "password": "x"})).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    /// No `password` and no `otpauth_url` → nothing to do. Must be a loud
+    /// BadParams, not a silent no-op that the UI reports as "saved".
+    #[test]
+    fn host_set_credentials_requires_at_least_one_field() {
+        let state = make_state_with_host("k6", false);
+        let err = host_set_credentials(&state, &json!({"host": "k6"})).unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("nothing to change")),
+            "got {err:?}"
+        );
+    }
+
+    /// An unparseable 2FA secret must be rejected BEFORE the Keychain write —
+    /// storing it would leave the host unable to log in, failing ~30s later
+    /// inside a login worker instead of here.
+    #[test]
+    fn host_set_credentials_rejects_invalid_otpauth_before_writing() {
+        let state = make_state_with_host("k6", false);
+        let err = host_set_credentials(
+            &state,
+            &json!({"host": "k6", "otpauth_url": "otpauth://totp/Example:user?issuer=Example"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("invalid otpauth")),
+            "got {err:?}"
+        );
+    }
+
+    /// An EMPTY string is a different intent from an omitted field: omitting
+    /// keeps the current value, so an empty value is a mistake worth surfacing
+    /// rather than silently wiping the stored credential.
+    #[test]
+    fn host_set_credentials_rejects_empty_values() {
+        let state = make_state_with_host("k6", false);
+        let err =
+            host_set_credentials(&state, &json!({"host": "k6", "password": ""})).unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("password is empty")),
+            "got {err:?}"
+        );
+        let err =
+            host_set_credentials(&state, &json!({"host": "k6", "otpauth_url": "  "})).unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("otpauth_url is empty")),
+            "got {err:?}"
+        );
+    }
+
+    /// host_test_credentials with NO secrets supplied falls back to the stored
+    /// credentials. We can't exercise a real Keychain here, but the host guards
+    /// must still run FIRST — an unsafe name must never reach the fallback (it
+    /// becomes a Keychain account key and ssh argv).
+    #[test]
+    fn host_test_credentials_validates_host_before_stored_fallback() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let v = host_test_credentials(&state, &json!({"host": "-oProxyCommand=x"}), None).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["reason"].as_str().unwrap().contains("invalid host name"));
+
+        let v = host_test_credentials(&state, &json!({}), None).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["reason"], "host required");
+    }
+
+    /// Supplying EITHER secret keeps the old contract (the other field defaults
+    /// to empty) rather than silently mixing in stored values — a half-supplied
+    /// test must fail on the missing piece, not appear to pass with stored creds.
+    #[test]
+    fn host_test_credentials_partial_params_do_not_use_stored_creds() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        // password supplied, otpauth omitted → empty secret → invalid otpauth.
+        let v =
+            host_test_credentials(&state, &json!({"host": "k6", "password": "x"}), None).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["reason"].as_str().unwrap().contains("invalid otpauth"));
     }
 
     // host_mount_toggle — can't run sshfs in tests; verify error on

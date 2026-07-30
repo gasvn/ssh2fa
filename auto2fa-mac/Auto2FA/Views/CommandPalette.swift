@@ -88,6 +88,20 @@ struct CommandPalette: View {
             })
         }
 
+        // Per-host credentials — offered for EVERY host, not just connected
+        // ones: a wrong stored password is exactly why a host won't connect.
+        for host in appState.hosts {
+            out.append(.init(
+                icon: "key.horizontal",
+                title: "Password & setup — \(host.host)",
+                subtitle: "see or change the stored password, 2FA secret, and ssh settings",
+                keywords: [host.host, "password", "credentials", "2fa", "otp",
+                           "secret", "setup", "change"]
+            ) {
+                appState.presentHostSettings(host.host)
+            })
+        }
+
         // Global
         out.append(contentsOf: [
             .init(icon: "plus.circle.fill",

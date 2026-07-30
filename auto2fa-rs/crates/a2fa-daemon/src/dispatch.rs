@@ -195,6 +195,9 @@ fn route_with_ctx(
         Method::HostTestCredentials => hosts::host_test_credentials(state, params,
                                         Some(Arc::clone(&ctx.registry))),
         Method::HostTotp          => hosts::host_totp(state, params),
+        Method::HostCredentials   => hosts::host_credentials(state, params),
+        Method::HostRevealCredentials => hosts::host_reveal_credentials(state, params),
+        Method::HostSetCredentials   => hosts::host_set_credentials(state, params),
 
         // --- Tunnels (read/compute) ---
         Method::ListTunnels       => tunnels::list_tunnels(state),
@@ -385,5 +388,46 @@ mod tests {
         let resp = dispatch(&state, line);
         let v = parse_result(&resp);
         assert_eq!(v["error"]["code"], "not_found");
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-host credential methods — routing only (an unknown host returns
+    // before any Keychain access, so these run headlessly).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn host_credential_methods_are_routed_not_unknown() {
+        let state = empty_state();
+        for method in ["host_credentials", "host_reveal_credentials", "host_set_credentials"] {
+            let line = format!(
+                "{{\"id\":\"c1\",\"method\":\"{method}\",\"params\":{{\"host\":\"ghost\",\"password\":\"x\"}}}}\n"
+            );
+            let v = parse_result(&dispatch(&state, line.as_bytes()));
+            assert_eq!(
+                v["error"]["code"], "not_found",
+                "{method} must reach its handler (got {v})"
+            );
+        }
+    }
+
+    #[test]
+    fn host_set_credentials_without_fields_is_bad_params() {
+        let state = empty_state();
+        {
+            let mut guard = crate::lock_state(&state);
+            guard.hosts.push(a2fa_core::model::Host {
+                host: "k6".into(),
+                status: "Idle".into(),
+                active: false,
+                is_master_ready: false,
+                pool_index: 0,
+                pool_alive: 0,
+                is_mounted: false,
+                last_msg: String::new(),
+            });
+        }
+        let line = b"{\"id\":\"c2\",\"method\":\"host_set_credentials\",\"params\":{\"host\":\"k6\"}}\n";
+        let v = parse_result(&dispatch(&state, line));
+        assert_eq!(v["error"]["code"], "bad_params");
     }
 }

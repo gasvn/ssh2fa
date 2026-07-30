@@ -114,4 +114,34 @@ enum FriendlyText {
         // or we didn't have a translation. Avoid lying about what happened.
         return raw
     }
+
+    /// Translate a failure from a stored-credential read/write (the per-host
+    /// "Password & setup" view) into something the user can act on.
+    ///
+    /// The important case is macOS Keychain authorization. After the app updates,
+    /// the rebuilt background helper is a new binary to macOS, so the login
+    /// Keychain asks permission once per saved item. The raw errors that surfaces
+    /// — `keyring get(k8.password): Platform secure storage failure: User
+    /// canceled the operation` — tell the user nothing about the one thing that
+    /// fixes it: choosing **Always Allow** on that prompt.
+    static func credentialError(_ raw: String) -> String {
+        let lc = raw.lowercased()
+        if lc.contains("user canceled") || lc.contains("user cancelled")
+            || lc.contains("secure storage failure") {
+            return "macOS didn't allow access to the saved credential. Try again and choose “Always Allow” on the Keychain prompt — then it won't ask again."
+        }
+        if lc.contains("timed out") {
+            return "macOS hasn't allowed access yet — a Keychain prompt may be waiting for you. Choose “Always Allow” there, then try again."
+        }
+        if lc.contains("already in flight") {
+            return "Still finishing the previous attempt — try again in a moment."
+        }
+        if lc.contains("keychain is locked") || lc.contains("keychain locked") {
+            return "Your login Keychain is locked — unlock it (log out and back in, or open Keychain Access) and try again."
+        }
+        if lc.contains("unknown method") {
+            return "The background helper is an older version than the app. Quit and reopen SSH2FA so it restarts."
+        }
+        return friendlyError(raw)
+    }
 }

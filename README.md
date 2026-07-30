@@ -48,6 +48,7 @@ $ ssh gpu-04
 **Set up & stay safe**
 - 🚀 **Zero-config setup** — add a host by **name, address, and username**; SSH2FA writes the SSH config for you, so you never need to know or edit `~/.ssh/config`. Already have aliases? **One-click import** reads them from your config.
 - 📷 **QR / paste the secret** — screenshot a Duo / TOTP **QR code** to the clipboard and SSH2FA reads it, or paste the `otpauth://` URL, to capture the 2FA secret (no Base32 to type).
+- 🛠 **See and change what's stored** — every host has a **Password & setup** view (double-click a host, its `⋯` menu, or `⌘K`): where the alias actually points, whether a password and 2FA secret are saved, and which account the secret belongs to. Reveal them behind Touch ID, replace either one after a server password change or a 2FA re-enrolment, and verify the stored pair with **Test login**.
 - 🔒 **Locked down** — passwords and TOTP secrets live in the macOS **Keychain**; an optional **Touch ID** lock gates revealing a credential. No telemetry.
 - 🩺 **Safe by default** — a Troubleshoot panel runs health checks, hosts are **test-logged-in before saving** (never a lockout), and you're warned if a host drifts out of your ssh config.
 - 🍎 **Native macOS 26** — Liquid Glass UI, universal binary, iCloud preference sync, update notifications.

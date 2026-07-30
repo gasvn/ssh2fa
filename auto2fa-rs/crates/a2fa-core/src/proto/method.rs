@@ -9,6 +9,9 @@ pub enum Method {
     HostAdd,
     HostTestCredentials,
     HostTotp,
+    HostCredentials,
+    HostRevealCredentials,
+    HostSetCredentials,
     TunnelAdd,
     TunnelRemove,
     TunnelToggle,
@@ -43,6 +46,9 @@ impl Method {
             Method::HostAdd => "host_add",
             Method::HostTestCredentials => "host_test_credentials",
             Method::HostTotp => "host_totp",
+            Method::HostCredentials => "host_credentials",
+            Method::HostRevealCredentials => "host_reveal_credentials",
+            Method::HostSetCredentials => "host_set_credentials",
             Method::TunnelAdd => "tunnel_add",
             Method::TunnelRemove => "tunnel_remove",
             Method::TunnelToggle => "tunnel_toggle",
@@ -78,6 +84,9 @@ impl Method {
             "host_add" => Some(Method::HostAdd),
             "host_test_credentials" => Some(Method::HostTestCredentials),
             "host_totp" => Some(Method::HostTotp),
+            "host_credentials" => Some(Method::HostCredentials),
+            "host_reveal_credentials" => Some(Method::HostRevealCredentials),
+            "host_set_credentials" => Some(Method::HostSetCredentials),
             "tunnel_add" => Some(Method::TunnelAdd),
             "tunnel_remove" => Some(Method::TunnelRemove),
             "tunnel_toggle" => Some(Method::TunnelToggle),
@@ -113,5 +122,12 @@ mod tests {
         assert_eq!(Method::TunnelSetJumpCandidates.as_str(), "tunnel_set_jump_candidates");
         assert_eq!(Method::from_str("host_add"), Some(Method::HostAdd));
         assert_eq!(Method::from_str("nope"), None);
+        // Per-host credential view/edit surface.
+        assert_eq!(Method::HostCredentials.as_str(), "host_credentials");
+        assert_eq!(Method::HostSetCredentials.as_str(), "host_set_credentials");
+        assert_eq!(
+            Method::from_str("host_reveal_credentials"),
+            Some(Method::HostRevealCredentials)
+        );
     }
 }

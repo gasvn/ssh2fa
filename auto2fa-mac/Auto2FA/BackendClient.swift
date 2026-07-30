@@ -245,6 +245,19 @@ actor BackendClient {
     /// reconnect is already running so we never cancel an in-flight attempt.
     func recoverFromDeadHeartbeat() {
         if isReconnecting { return }
+        // ALREADY-DOWN case: there is no socket to drop, and `yieldConnectionState`
+        // is edge-only — it would swallow another `false` because the last state
+        // is already `false`. So `handleClosed` cannot emit the edge the watcher
+        // needs, and nothing would ever retry. This is what left the app stuck
+        // for ~1.5 h after a daemon update once `reconnectWithBackoff` had
+        // exhausted its ~4-minute budget: connection nil, no edge, no retry.
+        // Kick the reconnect loop directly instead of waiting for an edge that
+        // can never come. On success `connect()` → `markConnected()` emits the
+        // genuine down→up edge, so the banner still clears exactly once.
+        if connection == nil {
+            Task { await reconnectWithBackoff() }
+            return
+        }
         handleClosed(connection)
     }
 
@@ -285,6 +298,12 @@ actor BackendClient {
             // Short timeout: the chip should fall back to its muted state fast
             // rather than hang if a Keychain "Always Allow" prompt is pending.
             return 6
+        case "host_credentials", "host_reveal_credentials", "host_set_credentials":
+            // Keychain read/write, bounded daemon-side by CREDENTIAL_OP_TIMEOUT
+            // (30s — the FIRST read of an account after a daemon restart is slow
+            // while macOS re-evaluates the item's ACL). Sit above that bound so
+            // the daemon's clearer message wins the race.
+            return 35
         default:
             return 10
         }
@@ -584,14 +603,81 @@ actor BackendClient {
     /// wizard to refuse a save when password/OTP are wrong — otherwise the
     /// daemon's auto-retry loop produces dozens of failed-login attempts
     /// which trigger server-side rate-limiting.
-    func testHostCredentials(host: String, password: String,
-                             otpauthURL: String) async throws -> (Bool, String) {
-        let data = try await sendRaw(method: "host_test_credentials", params: [
-            "host": host, "password": password, "otpauth_url": otpauthURL,
-        ])
+    ///
+    /// Passing `nil` for BOTH secrets tests the host's ALREADY-STORED
+    /// credentials — the daemon reads them from the Keychain itself, so the
+    /// "Test login" button in the per-host settings sheet never has to pull
+    /// secrets into the app just to check them.
+    func testHostCredentials(host: String, password: String?,
+                             otpauthURL: String?) async throws -> (Bool, String) {
+        var params: [String: Any] = ["host": host]
+        if let password { params["password"] = password }
+        if let otpauthURL { params["otpauth_url"] = otpauthURL }
+        let data = try await sendRaw(method: "host_test_credentials", params: params)
         struct R: Decodable { let ok: Bool; let reason: String }
         let r = try JSONDecoder().decode(R.self, from: data)
         return (r.ok, r.reason)
+    }
+
+    // MARK: - Per-host stored credentials
+
+    /// What the daemon knows about a host's stored credentials — WITHOUT the
+    /// secrets themselves. Drives the per-host "Password & setup" view.
+    struct HostCredentials: Decodable, Equatable {
+        struct OTP: Decodable, Equatable {
+            var issuer: String?
+            var account: String?
+            var algorithm: String?
+            var digits: Int?
+            var period: Int?
+        }
+        let host: String
+        let has_password: Bool
+        let password_length: Int
+        let has_otp_secret: Bool
+        /// Empty object when no secret is stored (or when it failed to parse).
+        let otp: OTP
+        /// Non-nil when a secret IS stored but no longer parses — that's a
+        /// broken credential, not a missing one.
+        let otp_error: String?
+        let auto_connect: Bool
+    }
+
+    /// Describe a host's stored credentials (no secrets returned).
+    func hostCredentials(_ host: String) async throws -> HostCredentials {
+        let data = try await sendRaw(method: "host_credentials", params: ["host": host])
+        return try JSONDecoder().decode(HostCredentials.self, from: data)
+    }
+
+    /// Read back a host's stored password + 2FA URL IN PLAINTEXT.
+    ///
+    /// Separate from `hostCredentials` on purpose: no display path can leak
+    /// secrets by accident, a caller has to ask for them by name. Callers MUST
+    /// gate this behind device-owner authentication (see `BiometricLock`); the
+    /// daemon logs every reveal.
+    func revealHostCredentials(_ host: String) async throws -> (password: String, otpauthURL: String) {
+        let data = try await sendRaw(method: "host_reveal_credentials", params: ["host": host])
+        struct R: Decodable { let password: String?; let otpauth_url: String? }
+        let r = try JSONDecoder().decode(R.self, from: data)
+        return (r.password ?? "", r.otpauth_url ?? "")
+    }
+
+    /// Result of a credential update: which fields changed, and whether the
+    /// host is currently connected on a master that still uses the OLD creds.
+    struct CredentialUpdate: Decodable, Equatable {
+        let changed: [String]
+        let reconnect_required: Bool
+    }
+
+    /// Change a host's stored password and/or 2FA secret. A `nil` field keeps
+    /// its current stored value; passing `nil` for both is an error daemon-side.
+    func setHostCredentials(host: String, password: String?,
+                            otpauthURL: String?) async throws -> CredentialUpdate {
+        var params: [String: Any] = ["host": host]
+        if let password { params["password"] = password }
+        if let otpauthURL { params["otpauth_url"] = otpauthURL }
+        let data = try await sendRaw(method: "host_set_credentials", params: params)
+        return try JSONDecoder().decode(CredentialUpdate.self, from: data)
     }
 
     func addHost(host: String, password: String, otpauthURL: String,

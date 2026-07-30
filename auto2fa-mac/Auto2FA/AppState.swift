@@ -15,6 +15,9 @@ enum ActiveSheet: Identifiable, Equatable {
     case confirmDelete(tunnelName: String)
     case addHost(prefillAlias: String?)
     case importHosts
+    /// Per-host "Password & setup": view/change the stored password + 2FA
+    /// secret, and see (or edit) the host's connection settings.
+    case hostSettings(host: String)
 
     var id: String {
         switch self {
@@ -24,6 +27,7 @@ enum ActiveSheet: Identifiable, Equatable {
         case .confirmDelete(let n): return "confirmDelete:\(n)"
         case .addHost(let a): return "addHost:\(a ?? "")"
         case .importHosts: return "importHosts"
+        case .hostSettings(let h): return "hostSettings:\(h)"
         }
     }
 }
@@ -940,6 +944,12 @@ final class AppState: ObservableObject {
     func presentConfirmDelete(for tunnel: Tunnel) { activeSheet = .confirmDelete(tunnelName: tunnel.name) }
     func presentAddHost(prefillAlias: String? = nil) { activeSheet = .addHost(prefillAlias: prefillAlias) }
     func presentImport() { refreshConfigCache(); activeSheet = .importHosts }
+    /// Open the per-host credential + connection view. Refreshes the config
+    /// cache first so the sheet shows what ssh would actually resolve today.
+    func presentHostSettings(_ host: String) {
+        refreshConfigCache()
+        activeSheet = .hostSettings(host: host)
+    }
     func dismissSheet() { activeSheet = nil }
 
     /// Re-parse ~/.ssh/config into the in-memory cache. Cheap (small file) and
@@ -991,6 +1001,89 @@ final class AppState: ObservableObject {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".ssh2fa")
             .appendingPathComponent("managed_hosts.json")
+    }
+
+    // MARK: - Per-host credentials + connection settings
+
+    /// The app-managed connection records (guided hosts) from the sidecar.
+    var managedHostConns: [ManagedHostConn] { ManagedHostStore.load(from: managedHostsURL) }
+
+    /// Where a host's HostName/User/Port come from — and whether we may edit them.
+    func connectionSource(for alias: String) -> HostSettingsCore.ConnectionSource {
+        HostSettingsCore.connectionSource(alias: alias,
+                                         sidecar: managedHostConns,
+                                         configHosts: parsedConfig.hosts)
+    }
+
+    /// Describe a host's stored credentials (no secrets). Rethrows so the sheet
+    /// can show the failure inline instead of as a global banner.
+    func hostCredentials(_ host: String) async throws -> BackendClient.HostCredentials {
+        try await client.hostCredentials(host)
+    }
+
+    /// Read a host's stored password + 2FA URL in plaintext. Callers MUST have
+    /// confirmed device-owner auth first (`BiometricLock.confirm`).
+    func revealHostCredentials(_ host: String) async throws -> (password: String, otpauthURL: String) {
+        try await client.revealHostCredentials(host)
+    }
+
+    /// Outcome of a credential change.
+    enum CredentialSaveOutcome {
+        /// Stored. `reconnectRequired` = the host is up on a master that still
+        /// uses the OLD credentials, so the change only applies on next login.
+        case saved(reconnectRequired: Bool)
+        case failed(String)
+    }
+
+    /// Change a host's stored password and/or 2FA secret. A nil field keeps its
+    /// current stored value.
+    func updateHostCredentials(host: String, password: String?,
+                               otpauthURL: String?) async -> CredentialSaveOutcome {
+        do {
+            let r = try await client.setHostCredentials(host: host, password: password,
+                                                        otpauthURL: otpauthURL)
+            return .saved(reconnectRequired: r.reconnect_required)
+        } catch {
+            return .failed((error as? BackendClient.ClientError)?.errorDescription
+                           ?? error.localizedDescription)
+        }
+    }
+
+    /// Verify a host's ALREADY-STORED credentials with a one-shot login. The
+    /// secrets stay in the daemon — nothing is pulled into the app.
+    func testStoredCredentials(host: String) async -> (ok: Bool, reason: String) {
+        do {
+            let (ok, reason) = try await client.testHostCredentials(host: host, password: nil,
+                                                                   otpauthURL: nil)
+            return (ok, reason)
+        } catch {
+            return (false, (error as? BackendClient.ClientError)?.errorDescription
+                           ?? error.localizedDescription)
+        }
+    }
+
+    /// Update a GUIDED host's connection fields (sidecar + regenerated managed
+    /// ssh config). Returns nil on success or a user-displayable error.
+    ///
+    /// Only valid for `.managed` hosts — a host defined in the user's own
+    /// ~/.ssh/config is theirs to edit, and we never rewrite that file.
+    @discardableResult
+    func updateManagedHostConnection(alias: String, hostName: String, user: String,
+                                     port: Int) -> String? {
+        guard case .managed = connectionSource(for: alias) else {
+            return "“\(alias)” is defined in your own ~/.ssh/config — edit it there."
+        }
+        do {
+            try ManagedHostStore.upsert(
+                ManagedHostConn(alias: alias, hostName: hostName, user: user, port: port),
+                in: managedHostsURL)
+        } catch {
+            return "Couldn't save connection settings: \(error.localizedDescription)"
+        }
+        // Rewrite ssh2fa.conf + the `ssh -F` wrapper so the change takes effect
+        // for the daemon AND for terminal reuse.
+        syncManagedSSHConfig()
+        return nil
     }
 
     /// Create a tunnel. Returns nil on success, or a user-displayable error
