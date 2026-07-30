@@ -230,7 +230,7 @@ final class AppState: ObservableObject {
             }
         } catch {
             NSLog("[SSH2FA] bootstrap: connect failed: \(error.localizedDescription)")
-            connectionError = "Connecting to the background helper…"
+            connectionError = String(localized: "Connecting to the background helper…")
             // DON'T return — start the watcher/poll machinery anyway. The
             // old early-return was a dead end: launching the app during a
             // daemon-down window (deploys SIGKILL it; launchd respawns ~10s
@@ -290,7 +290,7 @@ final class AppState: ObservableObject {
                     self.startEventTask()  // re-subscribe events on the new socket
                 } else {
                     await MainActor.run {
-                        self.connectionError = "Reconnecting to the background helper…"
+                        self.connectionError = String(localized: "Reconnecting to the background helper…")
                         self.notchPresenter.show(
                             systemImage: "wifi.slash",
                             title: "Connection lost",
@@ -323,7 +323,7 @@ final class AppState: ObservableObject {
                                 case .failed(let reason):
                                     NSLog("[SSH2FA] daemon respawn failed: \(reason), retrying")
                                     await MainActor.run {
-                                        self.connectionError = "Trouble starting the background helper — retrying…"
+                                        self.connectionError = String(localized: "Trouble starting the background helper — retrying…")
                                     }
                                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
                                     continue
@@ -405,7 +405,7 @@ final class AppState: ObservableObject {
             reloadFailStreak += 1
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if ConnectionRecovery.shouldShowSlowBanner(failStreak: reloadFailStreak) {
-                connectionError = "Reconnecting to the background helper…"
+                connectionError = String(localized: "Reconnecting to the background helper…")
             }
             // A dead heartbeat means the connection is gone — either a silently
             // half-open socket (post-sleep) that NWConnection never reported, or

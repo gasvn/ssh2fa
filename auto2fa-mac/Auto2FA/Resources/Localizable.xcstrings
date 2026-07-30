@@ -1,322 +1,168 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "Add Host": {
+    "": {},
+    "\"%@\" is no longer a Host in ~/.ssh/config — it won't connect. Add it back to your config, or remove it from SSH2FA (⋯ → Remove Host…).": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "添加主机"
+            "value": "“%@”已不在 ~/.ssh/config 中 —— 无法连接。请加回配置文件，或从 SSH2FA 移除（⋯ → 移除主机…）。"
           }
         }
       }
     },
-    "Add from ~/.ssh/config": {
+    "%@ is available": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "从 ~/.ssh/config 添加"
+            "value": "%@ 可用"
           }
         }
       }
     },
-    "Hosts": {
+    "%@ — click ⋯ → Open in Finder": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "主机"
+            "value": "%@ —— 点 ⋯ → 在访达中打开"
           }
         }
       }
     },
-    "Connect": {
+    "%lld": {},
+    "%lld failed connection attempt%@": {
       "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld failed connection attempt%2$@"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接"
+            "value": "%lld 次连接失败%@"
           }
         }
       }
     },
-    "Disconnect": {
+    "%lld selected": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "断开连接"
+            "value": "已选择 %lld 项"
           }
         }
       }
     },
-    "Reconnect": {
+    "%lld✗": {},
+    "(no node)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重新连接"
+            "value": "（无节点）"
           }
         }
       }
     },
-    "Retry": {
+    "(not a valid secret)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重试"
+            "value": "（不是有效的密钥）"
           }
         }
       }
     },
-    "Mount": {
+    "/?token=abc123": {},
+    "/scratch/you/project": {},
+    "22": {},
+    "2FA code unavailable — tap to retry": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "挂载"
+            "value": "无法获取 2FA 验证码 —— 点按重试"
           }
         }
       }
     },
-    "Unmount": {
+    "8888": {},
+    ":%lld": {},
+    ":%lld (local) → :%lld (remote)": {
       "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": ":%1$lld (local) → :%2$lld (remote)"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "卸载"
+            "value": ":%lld（本地）→ :%lld（远程）"
           }
         }
       }
     },
-    "Mount filesystem": {
+    ":%lld → %@:%lld": {
       "localizations": {
-        "zh-Hans": {
+        "en": {
           "stringUnit": {
-            "state": "translated",
-            "value": "挂载文件系统"
+            "state": "new",
+            "value": ":%1$lld → %2$@:%3$lld"
           }
         }
       }
     },
-    "Terminal": {
+    ":%lld → %@:%lld (direct)": {
       "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": ":%1$lld → %2$@:%3$lld (direct)"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "终端"
+            "value": ":%lld → %@:%lld（直连）"
           }
         }
       }
     },
-    "Open Terminal": {
+    ":%lld → :%lld": {
       "localizations": {
-        "zh-Hans": {
+        "en": {
           "stringUnit": {
-            "state": "translated",
-            "value": "打开终端"
+            "state": "new",
+            "value": ":%1$lld → :%2$lld"
           }
         }
       }
     },
-    "Password & Setup…": {
+    "About": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "密码与设置…"
+            "value": "关于"
           }
         }
       }
     },
-    "Remove Host…": {
+    "Actions": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "移除主机…"
-          }
-        }
-      }
-    },
-    "Remove Host": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移除主机"
-          }
-        }
-      }
-    },
-    "Cancel": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "Delete": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "删除"
-          }
-        }
-      }
-    },
-    "Close": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关闭"
-          }
-        }
-      }
-    },
-    "Save changes": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "保存更改"
-          }
-        }
-      }
-    },
-    "Save connection": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "保存连接设置"
-          }
-        }
-      }
-    },
-    "Saved": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已保存"
-          }
-        }
-      }
-    },
-    "Reveal": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "显示"
-          }
-        }
-      }
-    },
-    "Hide": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "隐藏"
-          }
-        }
-      }
-    },
-    "Copy": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "拷贝"
-          }
-        }
-      }
-    },
-    "Test login": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "测试登录"
-          }
-        }
-      }
-    },
-    "Testing…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在测试…"
-          }
-        }
-      }
-    },
-    "Saving…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在保存…"
-          }
-        }
-      }
-    },
-    "SSH password": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH 密码"
-          }
-        }
-      }
-    },
-    "Two-factor secret": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "双因素验证密钥"
-          }
-        }
-      }
-    },
-    "Connection": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "连接"
-          }
-        }
-      }
-    },
-    "Change password": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更改密码"
-          }
-        }
-      }
-    },
-    "Replace 2FA secret": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "替换双因素密钥"
+            "value": "操作"
           }
         }
       }
@@ -331,82 +177,182 @@
         }
       }
     },
-    "Server address": {
+    "Add Host": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务器地址"
+            "value": "添加主机"
           }
         }
       }
     },
-    "Username": {
+    "Add SSH host": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用户名"
+            "value": "添加 SSH 主机"
           }
         }
       }
     },
-    "Port": {
+    "Add a folder you work in — mounting it takes you straight there.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "端口"
+            "value": "添加你常用的文件夹——挂载后可直接进入。"
           }
         }
       }
     },
-    "Ports": {
+    "Add a host (register SSH + 2FA)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "端口"
+            "value": "添加主机（注册 SSH + 2FA）"
           }
         }
       }
     },
-    "Local": {
+    "Add a host manually": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本地"
+            "value": "手动添加主机"
           }
         }
       }
     },
-    "Remote": {
+    "Add a tunnel": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "远程"
+            "value": "添加隧道"
           }
         }
       }
     },
-    "Save": {
+    "Add from ~/.ssh/config": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "保存"
+            "value": "从 ~/.ssh/config 添加"
           }
         }
       }
     },
-    "Dismiss": {
+    "Advanced": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "忽略"
+            "value": "高级"
+          }
+        }
+      }
+    },
+    "After Mac sleeps, the underlying TCP for every SSH master dies. Recommended on — without it tunnels silently break with no automatic recovery.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 睡眠后，每个 SSH 主连接底层的 TCP 都会断开。建议开启 —— 否则隧道会无声中断且不会自动恢复。"
+          }
+        }
+      }
+    },
+    "Always-on notch status (experimental)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常驻灵动岛状态（实验性）"
+          }
+        }
+      }
+    },
+    "Appended after `http://localhost:%lld` when you click 🧭 or auto-open fires. Use this for jupyter `?token=…`, tensorboard `/#scalars`, etc.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击 🧭 或自动打开时，会附加在 `http://localhost:%lld` 之后。适合 jupyter 的 `?token=…`、tensorboard 的 `/#scalars` 等。"
+          }
+        }
+      }
+    },
+    "Applies the next time this tunnel starts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将在此隧道下次启动时生效。"
+          }
+        }
+      }
+    },
+    "Ask the daemon for the next unused local port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向后台助手请求下一个未占用的本地端口"
+          }
+        }
+      }
+    },
+    "Ask the first time": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首次使用时询问"
+          }
+        }
+      }
+    },
+    "Asks for Touch ID (or your Mac password) first": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会先要求 Touch ID（或你的 Mac 密码）"
+          }
+        }
+      }
+    },
+    "Asks for Touch ID (or your Mac password) first. Use it to set up the same account in another authenticator.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会先要求 Touch ID（或你的 Mac 密码）。可用它在另一个验证器 App 中设置同一账户。"
+          }
+        }
+      }
+    },
+    "Authenticating…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在验证…"
+          }
+        }
+      }
+    },
+    "Authentication was cancelled or failed. Try again, or quit.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证已取消或失败。请重试，或退出。"
           }
         }
       }
@@ -421,16 +367,6 @@
         }
       }
     },
-    "Later": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "稍后"
-          }
-        }
-      }
-    },
     "Authorize saved credentials after this update": {
       "localizations": {
         "zh-Hans": {
@@ -441,32 +377,172 @@
         }
       }
     },
-    "Scan QR from clipboard": {
+    "Auto": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "从剪贴板扫描二维码"
+            "value": "自动"
           }
         }
       }
     },
-    "Reveal setup URL": {
+    "Auto (any ready host)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "显示设置链接"
+            "value": "自动（任一就绪主机）"
           }
         }
       }
     },
-    "Current code": {
+    "Auto — any ready host. Click to pin.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前验证码"
+            "value": "自动 —— 任一就绪主机。点击可固定。"
+          }
+        }
+      }
+    },
+    "Auto-mount %@ on connect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接后自动挂载 %@"
+          }
+        }
+      }
+    },
+    "Auto-scroll": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动滚动"
+          }
+        }
+      }
+    },
+    "Automatically check for updates": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动检查更新"
+          }
+        }
+      }
+    },
+    "Back": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回"
+          }
+        }
+      }
+    },
+    "Background helper": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手"
+          }
+        }
+      }
+    },
+    "Background helper isn't running — restart SSH2FA to fix.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手未运行 —— 重启 SSH2FA 即可解决。"
+          }
+        }
+      }
+    },
+    "Browse the host's folders instead of typing a path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览主机上的文件夹，不用手打路径"
+          }
+        }
+      }
+    },
+    "Browse…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览…"
+          }
+        }
+      }
+    },
+    "Built for HPC / cluster logins. You'll need your 2FA **secret key** (the TOTP setup key) — SSH2FA types the codes. It does **not** work with Duo Push / approve-on-phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专为 HPC / 集群登录设计。你需要 2FA 的**密钥**（TOTP 设置密钥）—— 验证码由 SSH2FA 输入。它**不支持** Duo Push / 手机点确认。"
+          }
+        }
+      }
+    },
+    "Can't reach the server — check Wi-Fi or VPN.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接到服务器 —— 请检查 Wi-Fi 或 VPN。"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "Change password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改密码"
+          }
+        }
+      }
+    },
+    "Changing a port reconnects this tunnel on the new port.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改端口会让此隧道在新端口上重新连接。"
+          }
+        }
+      }
+    },
+    "Check for Updates": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查更新"
           }
         }
       }
@@ -481,22 +557,1384 @@
         }
       }
     },
-    "Reconnect now": {
+    "Checking…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "立即重新连接"
+            "value": "正在检查…"
           }
         }
       }
     },
-    "Show ~/.ssh/config in Finder": {
+    "Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在访达中显示 ~/.ssh/config"
+            "value": "大约每天检查一次 GitHub 上的新版本，并在菜单栏标记。绝不会自行下载或安装 —— “关于”标签页会给出一步到位的更新说明。"
+          }
+        }
+      }
+    },
+    "Choose “Always Allow” on each prompt": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每个弹窗都请选择“始终允许”"
+          }
+        }
+      }
+    },
+    "Clear": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除"
+          }
+        }
+      }
+    },
+    "Clear all tags": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除所有标签"
+          }
+        }
+      }
+    },
+    "Clone…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "克隆…"
+          }
+        }
+      }
+    },
+    "Close": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "Command Palette…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令面板…"
+          }
+        }
+      }
+    },
+    "Compact row mode": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "紧凑行模式"
+          }
+        }
+      }
+    },
+    "Compute allocation time left": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "计算资源剩余时间"
+          }
+        }
+      }
+    },
+    "Compute node ended — pick a new one": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "计算节点已结束 —— 请另选一个"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接"
+          }
+        }
+      }
+    },
+    "Connect automatically on startup": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动时自动连接"
+          }
+        }
+      }
+    },
+    "Connect the host first to browse its folders": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先连接主机才能浏览其文件夹"
+          }
+        }
+      }
+    },
+    "Connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接"
+          }
+        }
+      }
+    },
+    "Connected, finishing setup…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接，正在完成设置…"
+          }
+        }
+      }
+    },
+    "Connecting (preparing)…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接（准备中）…"
+          }
+        }
+      }
+    },
+    "Connecting to the background helper…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接后台助手…"
+          }
+        }
+      }
+    },
+    "Connecting…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在连接…"
+          }
+        }
+      }
+    },
+    "Connection": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接"
+          }
+        }
+      }
+    },
+    "Connection dropped — server restarted or network changed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已断开 —— 服务器重启或网络发生变化。"
+          }
+        }
+      }
+    },
+    "Copied ✓": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已拷贝 ✓"
+          }
+        }
+      }
+    },
+    "Copy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝"
+          }
+        }
+      }
+    },
+    "Copy URL": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝 URL"
+          }
+        }
+      }
+    },
+    "Copy command": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝命令"
+          }
+        }
+      }
+    },
+    "Copy diagnostics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝诊断信息"
+          }
+        }
+      }
+    },
+    "Copy localhost:%lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝 localhost:%lld"
+          }
+        }
+      }
+    },
+    "Crashed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已崩溃"
+          }
+        }
+      }
+    },
+    "Create": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "Current code": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前验证码"
+          }
+        }
+      }
+    },
+    "Currently: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前：%@"
+          }
+        }
+      }
+    },
+    "Custom node for '%@'": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@”的自定义节点"
+          }
+        }
+      }
+    },
+    "Custom node…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义节点…"
+          }
+        }
+      }
+    },
+    "Defined by you in ~/.ssh/config, so SSH2FA doesn't change it. Edit that file to change where “%@” points.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是你自己在 ~/.ssh/config 中定义的，SSH2FA 不会改动它。要更改“%@”指向的位置，请编辑该文件。"
+          }
+        }
+      }
+    },
+    "Delete": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除"
+          }
+        }
+      }
+    },
+    "Delete tunnel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除隧道"
+          }
+        }
+      }
+    },
+    "Deleted '%@'": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已删除“%@”"
+          }
+        }
+      }
+    },
+    "Details…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "详情…"
+          }
+        }
+      }
+    },
+    "Disabled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已禁用"
+          }
+        }
+      }
+    },
+    "Disconnect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开连接"
+          }
+        }
+      }
+    },
+    "Dismiss": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略"
+          }
+        }
+      }
+    },
+    "Dismiss the getting-started checklist": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略入门清单"
+          }
+        }
+      }
+    },
+    "Dismiss this message": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "忽略此消息"
+          }
+        }
+      }
+    },
+    "Do Not Disturb (compact notch)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "勿扰模式（紧凑灵动岛）"
+          }
+        }
+      }
+    },
+    "Done": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "Download DMG": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 DMG"
+          }
+        }
+      }
+    },
+    "Dynamic Notch toasts": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "灵动岛提示"
+          }
+        }
+      }
+    },
+    "Enable 2FA": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用 2FA"
+          }
+        }
+      }
+    },
+    "Every host in your ~/.ssh/config is already 2FA-enabled, or your config has no Host entries.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你 ~/.ssh/config 里的主机都已启用 2FA，或者配置中没有 Host 条目。"
+          }
+        }
+      }
+    },
+    "Export Tunnels…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出隧道…"
+          }
+        }
+      }
+    },
+    "Failed — see activity log": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败 —— 请查看活动日志"
+          }
+        }
+      }
+    },
+    "Filter by job, partition, name, node…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按作业、分区、名称、节点筛选…"
+          }
+        }
+      }
+    },
+    "For best reliability, drag SSH2FA.app to /Applications first — SMAppService remembers the bundle path at register time, so moving the .app later silently breaks the auto-launch.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为获得最佳可靠性，请先把 SSH2FA.app 拖到 /Applications —— SMAppService 会记住注册时的路径，之后移动 .app 会让自动启动静默失效。"
+          }
+        }
+      }
+    },
+    "Force-unmount everything (if stuck)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "强制卸载全部（卡住时使用）"
+          }
+        }
+      }
+    },
+    "Found %lld host(s) in your ~/.ssh/config": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ~/.ssh/config 中找到 %lld 个主机"
+          }
+        }
+      }
+    },
+    "Found %lld host(s) in ~/.ssh/config — pick which to protect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ~/.ssh/config 中找到 %lld 个主机 —— 选择要保护的"
+          }
+        }
+      }
+    },
+    "General": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通用"
+          }
+        }
+      }
+    },
+    "Get started": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始使用"
+          }
+        }
+      }
+    },
+    "Go up one folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回上一级文件夹"
+          }
+        }
+      }
+    },
+    "Goal: **$99 / year — the Apple Developer fee.**": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标：**每年 99 美元 —— Apple 开发者会员费。**"
+          }
+        }
+      }
+    },
+    "Has a post-connect command": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有连接后命令"
+          }
+        }
+      }
+    },
+    "Health checks": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "健康检查"
+          }
+        }
+      }
+    },
+    "Help get SSH2FA notarized": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帮助 SSH2FA 完成公证"
+          }
+        }
+      }
+    },
+    "Hide": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Hide the password you typed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏你输入的密码"
+          }
+        }
+      }
+    },
+    "Hide the revealed password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏已显示的密码"
+          }
+        }
+      }
+    },
+    "Host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机"
+          }
+        }
+      }
+    },
+    "Host actions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机操作"
+          }
+        }
+      }
+    },
+    "Host: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机："
+          }
+        }
+      }
+    },
+    "Hosts": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机"
+          }
+        }
+      }
+    },
+    "How SSH2FA works": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 的工作方式"
+          }
+        }
+      }
+    },
+    "How do I get this?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我要去哪里找？"
+          }
+        }
+      }
+    },
+    "Idle": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空闲"
+          }
+        }
+      }
+    },
+    "If your clipboard has `ssh -L 8888:host:8888 user@node` or a localhost URL, prefill from it": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果剪贴板里有 `ssh -L 8888:host:8888 user@node` 或 localhost 链接，就用它预填"
+          }
+        }
+      }
+    },
+    "Import Tunnels…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入隧道…"
+          }
+        }
+      }
+    },
+    "Import hosts from your SSH config file": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从你的 SSH 配置文件导入主机"
+          }
+        }
+      }
+    },
+    "In Do Not Disturb, toasts don't drop a panel down — they just expand compactly around the notch (icon + a few words). Less intrusive while you work.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "勿扰模式下，提示不会下拉出面板 —— 只在灵动岛周围紧凑展开（图标 + 几个字）。工作时干扰更小。"
+          }
+        }
+      }
+    },
+    "Initializing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在初始化"
+          }
+        }
+      }
+    },
+    "It answers the password + 2FA prompt for you and keeps a warm connection to each host, so ssh, scp, and your editor connect instantly with no code to type. Your password and 2FA secret are stored in the macOS Keychain.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它替你应答密码 + 2FA 提示，并为每台主机维持一个热连接，所以 ssh、scp 和你的编辑器都能立刻连上，不用输任何验证码。你的密码和 2FA 密钥保存在 macOS 钥匙串中。"
+          }
+        }
+      }
+    },
+    "It's registered with SSH2FA, but ssh has no entry for this name — so it can't connect. Add a `Host %@` block to ~/.ssh/config, or re-add it with “Add Host” so SSH2FA manages the entry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它已在 SSH2FA 注册，但 ssh 没有这个名字的条目 —— 所以无法连接。请在 ~/.ssh/config 添加 `Host %@` 段，或用“添加主机”重新添加，由 SSH2FA 管理该条目。"
+          }
+        }
+      }
+    },
+    "Its saved password and 2FA secret are deleted from your Keychain, and its connection is closed. Your ~/.ssh/config is not changed. This can't be undone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它保存的密码和 2FA 密钥会从你的钥匙串中删除，连接也会关闭。你的 ~/.ssh/config 不会被修改。此操作无法撤销。"
+          }
+        }
+      }
+    },
+    "JobID": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "作业 ID"
+          }
+        }
+      }
+    },
+    "Ko-fi · instant, 0% platform fee · one-time or monthly": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ko-fi · 即时到账、0% 平台抽成 · 可单次或按月"
+          }
+        }
+      }
+    },
+    "Later": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "稍后"
+          }
+        }
+      }
+    },
+    "Launch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动"
+          }
+        }
+      }
+    },
+    "Load more history (keeps showing it — the live tail won't shrink it back)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载更多历史（会保持显示 —— 实时日志不会把它收回去）"
+          }
+        }
+      }
+    },
+    "Loading 2FA code…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载 2FA 验证码…"
+          }
+        }
+      }
+    },
+    "Loading jobs from squeue…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在从 squeue 加载作业…"
+          }
+        }
+      }
+    },
+    "Loading log…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载日志…"
+          }
+        }
+      }
+    },
+    "Local": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地"
+          }
+        }
+      }
+    },
+    "Local port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地端口"
+          }
+        }
+      }
+    },
+    "Locks the dashboard and log windows behind Touch ID (falls back to your Mac login password). The menu-bar icon stays visible. Re-locks ~60s after you close the window.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用 Touch ID 锁定面板和日志窗口（可回退到 Mac 登录密码）。菜单栏图标仍然可见。关闭窗口约 60 秒后重新锁定。"
+          }
+        }
+      }
+    },
+    "Log into your 2FA-protected SSH hosts once, then stay connected — SSH2FA types your TOTP code for you every time you ssh.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录一次受 2FA 保护的 SSH 主机，然后保持连接 —— 每次 ssh 时 SSH2FA 都替你输入 TOTP 验证码。"
+          }
+        }
+      }
+    },
+    "Login failed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录失败"
+          }
+        }
+      }
+    },
+    "Login rejected — password or OTP is wrong. Re-add the host to fix.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录被拒绝 —— 密码或动态码不正确。重新添加该主机即可解决。"
+          }
+        }
+      }
+    },
+    "Logs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日志"
+          }
+        }
+      }
+    },
+    "Made by Shanghua Gao ·": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "作者：Shanghua Gao ·"
+          }
+        }
+      }
+    },
+    "Master connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主连接已建立"
+          }
+        }
+      }
+    },
+    "Master not connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主连接未建立"
+          }
+        }
+      }
+    },
+    "Mount": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载"
+          }
+        }
+      }
+    },
+    "Mount filesystem": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挂载文件系统"
+          }
+        }
+      }
+    },
+    "Mount this folder automatically as soon as the host connects": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机连上后立即自动挂载此文件夹"
+          }
+        }
+      }
+    },
+    "Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称"
+          }
+        }
+      }
+    },
+    "Name for this folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件夹的名称"
+          }
+        }
+      }
+    },
+    "Needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 TOTP 密钥 —— **不是 Duo Push**（手机点确认那种）。粘贴 otpauth:// 链接或纯 base32 密钥，或者截图二维码后点“扫描二维码”。"
+          }
+        }
+      }
+    },
+    "Needs a TOTP secret key — not Duo Push. Re-enrol the account in your 2FA provider's device page to get a fresh key.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 TOTP 密钥 —— 不是 Duo Push。请在你的 2FA 服务商设备页面重新注册该账户以获取新密钥。"
+          }
+        }
+      }
+    },
+    "New Tunnel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建隧道"
+          }
+        }
+      }
+    },
+    "New Tunnel…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建隧道…"
+          }
+        }
+      }
+    },
+    "New tunnel (⌘N)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建隧道 (⌘N)"
+          }
+        }
+      }
+    },
+    "Next": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "Next free": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一个空闲端口"
+          }
+        }
+      }
+    },
+    "No 2FA secret stored — this host can't complete a login prompt": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未保存 2FA 密钥 —— 此主机无法完成登录验证"
+          }
+        }
+      }
+    },
+    "No events yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无事件。"
+          }
+        }
+      }
+    },
+    "No hosts match “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有匹配“%@”的主机"
+          }
+        }
+      }
+    },
+    "No jobs match “%@”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有匹配“%@”的作业。"
+          }
+        }
+      }
+    },
+    "No lines match “%@”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有匹配“%@”的行。"
+          }
+        }
+      }
+    },
+    "No log output yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无日志输出。"
+          }
+        }
+      }
+    },
+    "No matches.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无匹配项。"
+          }
+        }
+      }
+    },
+    "No password stored for this host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此主机未保存密码"
+          }
+        }
+      }
+    },
+    "No pinned folders yet — “Mount” will mount the whole filesystem (/).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未固定任何文件夹——“挂载”将挂载整个文件系统 (/)。"
+          }
+        }
+      }
+    },
+    "No registered hosts yet — add a host first, then forward a port to it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有已注册的主机 —— 请先添加主机，再向它转发端口。"
+          }
+        }
+      }
+    },
+    "No running jobs found. Use a custom node, or start a SLURM job first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有找到运行中的作业。请使用自定义节点，或先启动一个 SLURM 作业。"
+          }
+        }
+      }
+    },
+    "No sub-folders here — “Pin this folder” to pin it as-is.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这里没有子文件夹 —— 点“固定此文件夹”直接固定当前目录。"
+          }
+        }
+      }
+    },
+    "No tags yet — add one from CLI or tunnels.json.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有标签 —— 可从命令行或 tunnels.json 添加。"
+          }
+        }
+      }
+    },
+    "No tunnels match “%@”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有匹配“%@”的隧道"
+          }
+        }
+      }
+    },
+    "No tunnels with the selected tag.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选标签下没有隧道。"
+          }
+        }
+      }
+    },
+    "Node": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点"
+          }
+        }
+      }
+    },
+    "Not connected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未连接"
+          }
+        }
+      }
+    },
+    "Not found as a Host in ~/.ssh/config — make sure it's a real ssh alias or a reachable hostname.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ~/.ssh/config 中找不到该 Host —— 请确认它是真实的 ssh 别名或可达的主机名。"
+          }
+        }
+      }
+    },
+    "OTP secret: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OTP 密钥："
+          }
+        }
+      }
+    },
+    "Off — the app's \"Open Terminal\" already reuses the connection. Turning this on also makes ssh <host> in your own Terminal skip the 2FA prompt.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭 —— App 的“打开终端”本身已经复用连接。开启后，你在自己终端里运行 ssh <主机> 也能跳过 2FA 验证。"
+          }
+        }
+      }
+    },
+    "On a SLURM cluster? You can also forward a local port to a compute node — see the Tunnels tab.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在用 SLURM 集群？你还可以把本地端口转发到计算节点 —— 见“隧道”标签页。"
+          }
+        }
+      }
+    },
+    "On first connect, macOS asks permission for SSH2FA to use its own saved credentials in your Keychain — click “Always Allow”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首次连接时，macOS 会询问是否允许 SSH2FA 使用它自己保存在钥匙串中的凭据 —— 请点“始终允许”。"
+          }
+        }
+      }
+    },
+    "On — running ssh <host> in your own Terminal reuses SSH2FA's warm connection (via one Include line added to ~/.ssh/config).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启 —— 在你自己的终端里运行 ssh <主机> 会复用 SSH2FA 的热连接（通过向 ~/.ssh/config 添加一行 Include 实现）。"
+          }
+        }
+      }
+    },
+    "Only TOTP codes (the kind you type) are supported — not Duo Push (approve-on-phone). Your secret is stored in the macOS Keychain.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅支持 TOTP 验证码（需要你输入的那种）—— 不支持 Duo Push（手机点确认）。你的密钥保存在 macOS 钥匙串中。"
+          }
+        }
+      }
+    },
+    "Open": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开"
+          }
+        }
+      }
+    },
+    "Open SSH in": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用以下终端打开 SSH"
+          }
+        }
+      }
+    },
+    "Open Terminal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开终端"
           }
         }
       }
@@ -511,12 +1949,182 @@
         }
       }
     },
-    "Whole filesystem (/)": {
+    "Open in Finder after mounting": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "整个文件系统 (/)"
+            "value": "挂载后在访达中打开"
+          }
+        }
+      }
+    },
+    "Open in browser": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在浏览器中打开"
+          }
+        }
+      }
+    },
+    "Open localhost URL in browser when tunnel comes up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道启动后在浏览器中打开 localhost 链接"
+          }
+        }
+      }
+    },
+    "Overview": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "概览"
+          }
+        }
+      }
+    },
+    "Partition": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分区"
+          }
+        }
+      }
+    },
+    "Password & Setup…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码与设置…"
+          }
+        }
+      }
+    },
+    "Password and OTP secret are stored in your macOS Keychain. Never written to disk in plaintext.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码和 OTP 密钥保存在 macOS 钥匙串中，绝不会以明文写入磁盘。"
+          }
+        }
+      }
+    },
+    "Password: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码："
+          }
+        }
+      }
+    },
+    "Paste SSH command": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴 SSH 命令"
+          }
+        }
+      }
+    },
+    "Pick a compute node for '%@'": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为“%@”选择计算节点"
+          }
+        }
+      }
+    },
+    "Pick a compute node to start": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个计算节点以启动"
+          }
+        }
+      }
+    },
+    "Pick hosts to protect →": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要保护的主机 →"
+          }
+        }
+      }
+    },
+    "Pick node": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择节点"
+          }
+        }
+      }
+    },
+    "Pick node & start…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择节点并启动…"
+          }
+        }
+      }
+    },
+    "Pick node…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择节点…"
+          }
+        }
+      }
+    },
+    "Pick which to protect — we pre-fill the alias, you just enter the password and 2FA secret (or scan the QR). We test-login before saving so a wrong code can't lock you out.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要保护的主机 —— 别名会自动填好，你只需输入密码和 2FA 密钥（或扫描二维码）。保存前我们会先试登录，避免错误的密钥把你锁在外面。"
+          }
+        }
+      }
+    },
+    "Pin": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "固定"
+          }
+        }
+      }
+    },
+    "Pin this folder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "固定此文件夹"
           }
         }
       }
@@ -541,47 +2149,1109 @@
         }
       }
     },
-    "Pin": {
+    "Pinned to %@. Click to change.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "固定"
+            "value": "已固定到 %@。点击可更改。"
           }
         }
       }
     },
-    "Done": {
+    "Port": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完成"
+            "value": "端口"
           }
         }
       }
     },
-    "Open in Finder after mounting": {
+    "Port %lld already in use": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "挂载后在访达中打开"
+            "value": "端口 %lld 已被占用"
           }
         }
       }
     },
-    "No pinned folders yet — “Mount” will mount the whole filesystem (/).": {
+    "Port forwarding (optional)": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "尚未固定任何文件夹——“挂载”将挂载整个文件系统 (/)。"
+            "value": "端口转发（可选）"
+          }
+        }
+      }
+    },
+    "Ports": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口"
+          }
+        }
+      }
+    },
+    "Press Return (or the “Test login” button below) to verify before saving.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按回车（或下方的“测试登录”）先验证再保存。"
+          }
+        }
+      }
+    },
+    "Preview: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览："
+          }
+        }
+      }
+    },
+    "Privacy & Security": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私与安全"
+          }
+        }
+      }
+    },
+    "Quit SSH2FA": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出 SSH2FA"
+          }
+        }
+      }
+    },
+    "Re-run checks": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查"
+          }
+        }
+      }
+    },
+    "Rebuild SSH masters + restart tunnels on wake": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "唤醒后重建 SSH 主连接并重启隧道"
+          }
+        }
+      }
+    },
+    "Recent:": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近："
+          }
+        }
+      }
+    },
+    "Reconnect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新连接"
+          }
+        }
+      }
+    },
+    "Reconnect now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即重新连接"
+          }
+        }
+      }
+    },
+    "Reconnecting to the background helper…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新连接后台助手…"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新"
+          }
+        }
+      }
+    },
+    "Release notes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发行说明"
+          }
+        }
+      }
+    },
+    "Reload": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新加载"
+          }
+        }
+      }
+    },
+    "Remote": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程"
+          }
+        }
+      }
+    },
+    "Remote filesystem mounted — click ⋯ → Open in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程文件系统已挂载 —— 点 ⋯ → 在访达中打开"
+          }
+        }
+      }
+    },
+    "Remote folder path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程文件夹路径"
+          }
+        }
+      }
+    },
+    "Remote port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程端口"
+          }
+        }
+      }
+    },
+    "Remove Host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除主机"
+          }
+        }
+      }
+    },
+    "Remove Host…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除主机…"
+          }
+        }
+      }
+    },
+    "Removes the background daemon, its LaunchAgent, and Keychain credentials.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除后台助手、它的 LaunchAgent 以及钥匙串中的凭据。"
+          }
+        }
+      }
+    },
+    "Rename": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名"
+          }
+        }
+      }
+    },
+    "Rename tunnel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名隧道"
+          }
+        }
+      }
+    },
+    "Rename…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名…"
+          }
+        }
+      }
+    },
+    "Replace 2FA secret": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换双因素密钥"
+          }
+        }
+      }
+    },
+    "Replace it below — logins will keep failing until you do.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在下方替换 —— 在此之前登录会持续失败。"
+          }
+        }
+      }
+    },
+    "Require Touch ID to open the dashboard": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开面板需要 Touch ID"
+          }
+        }
+      }
+    },
+    "Restart background helper": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重启后台助手"
+          }
+        }
+      }
+    },
+    "Retry": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "Retry connecting": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试连接"
+          }
+        }
+      }
+    },
+    "Reveal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Reveal log file…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示日志文件…"
+          }
+        }
+      }
+    },
+    "Reveal setup URL": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示设置链接"
+          }
+        }
+      }
+    },
+    "Reveal the stored password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示已保存的密码"
+          }
+        }
+      }
+    },
+    "Runs each time this tunnel transitions to alive. Env: AUTO2FA_TUNNEL_NAME, AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次此隧道变为存活时运行。环境变量：AUTO2FA_TUNNEL_NAME、AUTO2FA_LOCAL_PORT、AUTO2FA_NODE、AUTO2FA_JUMP、AUTO2FA_URL。"
+          }
+        }
+      }
+    },
+    "SSH ControlMaster pool + 2FA login + SLURM-aware port forwarding": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH ControlMaster 连接池 + 2FA 登录 + 感知 SLURM 的端口转发"
+          }
+        }
+      }
+    },
+    "SSH password": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 密码"
+          }
+        }
+      }
+    },
+    "SSH2FA": {},
+    "SSH2FA Logs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 日志"
+          }
+        }
+      }
+    },
+    "SSH2FA is free & open source. The one missing piece is an Apple Developer membership ($99/yr). With it the app can be notarized — it installs with zero Gatekeeper warnings for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 是免费开源的。唯一缺的是 Apple 开发者会员（每年 99 美元）。有了它 App 就能完成公证 —— 所有人安装时都不会有 Gatekeeper 警告，还能有签名更新和开箱即用的 Homebrew cask。如果 SSH2FA 帮你省掉了每天的 2FA 折腾，欢迎为这 99 美元出一份力。"
+          }
+        }
+      }
+    },
+    "SSH2FA is locked": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 已锁定"
+          }
+        }
+      }
+    },
+    "SSH2FA manages this host's ssh config entry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此主机的 ssh 配置条目由 SSH2FA 管理。"
+          }
+        }
+      }
+    },
+    "SSH2FA on GitHub": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub 上的 SSH2FA"
+          }
+        }
+      }
+    },
+    "SSH2FA refers to each host by its ~/.ssh/config alias. Add your first one and enter its password + 2FA secret — that's it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 通过 ~/.ssh/config 中的别名来识别每台主机。添加第一台并输入密码 + 2FA 密钥，就这么简单。"
+          }
+        }
+      }
+    },
+    "SSH2FA uses a small background helper to keep your connections alive. Leave this on unless you run it yourself.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 用一个小型后台助手来维持你的连接。除非你自己运行它，否则请保持开启。"
+          }
+        }
+      }
+    },
+    "SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt. They'll then be merged into a single Keychain item, so future updates ask only once.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 的后台助手已更新，macOS 会为每个已保存的密码和 2FA 密钥询问权限。现在一次性处理完 —— 每个弹窗都选“始终允许”。之后它们会合并成单个钥匙串条目，以后更新只会问一次。"
+          }
+        }
+      }
+    },
+    "Save": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        }
+      }
+    },
+    "Save changes": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存更改"
+          }
+        }
+      }
+    },
+    "Save connection": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存连接设置"
+          }
+        }
+      }
+    },
+    "Save your changes first — the test uses the stored credentials.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先保存更改 —— 测试使用的是已存储的凭据。"
+          }
+        }
+      }
+    },
+    "Saved": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存"
+          }
+        }
+      }
+    },
+    "Saved as SSH alias “%@” (used for ssh %@).": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Saved as SSH alias “%1$@” (used for ssh %2$@)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存为 SSH 别名“%@”（用于 ssh %@）。"
+          }
+        }
+      }
+    },
+    "Saving…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存…"
+          }
+        }
+      }
+    },
+    "Scan QR from clipboard": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从剪贴板扫描二维码"
+          }
+        }
+      }
+    },
+    "Search hosts & tunnels": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索主机与隧道"
+          }
+        }
+      }
+    },
+    "Select the job on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 %@ 上的作业"
+          }
+        }
+      }
+    },
+    "Server address": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器地址"
+          }
+        }
+      }
+    },
+    "Server busy — using backup": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器繁忙 —— 正在使用备用链路"
+          }
+        }
+      }
+    },
+    "Server didn't respond — network is slow, or server is unreachable.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器没有响应 —— 网络较慢，或服务器不可达。"
+          }
+        }
+      }
+    },
+    "Server identity changed — may be a server rebuild, or (rarely) a MITM.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器身份已变更 —— 可能是服务器重装，也可能（极少数情况）是中间人攻击。"
+          }
+        }
+      }
+    },
+    "Server is rate-limiting too many failed logins — sitting out for a few minutes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器因失败登录过多而限流 —— 先等几分钟。"
+          }
+        }
+      }
+    },
+    "Server not accepting connections — sshd is down or wrong port.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器拒绝连接 —— sshd 未运行或端口不对。"
+          }
+        }
+      }
+    },
+    "Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置"
+          }
+        }
+      }
+    },
+    "Settings (⌘,)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置 (⌘,)"
+          }
+        }
+      }
+    },
+    "Show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "Show /tmp/ssh2fa_daemon.log in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示 /tmp/ssh2fa_daemon.log"
+          }
+        }
+      }
+    },
+    "Show /tmp/ssh2fa_daemon.log in Finder (the dashboard's “Logs” button opens the live in-app viewer).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示 /tmp/ssh2fa_daemon.log（面板上的“日志”按钮会打开 App 内的实时查看器）。"
+          }
+        }
+      }
+    },
+    "Show 2FA code (reads this host's secret once)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示 2FA 验证码（读取一次此主机的密钥）"
+          }
+        }
+      }
+    },
+    "Show Dynamic Notch toasts": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示灵动岛提示"
+          }
+        }
+      }
+    },
+    "Show daemon logs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示后台助手日志"
+          }
+        }
+      }
+    },
+    "Show the password you typed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示你输入的密码"
+          }
+        }
+      }
+    },
+    "Show what you typed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示你输入的内容"
+          }
+        }
+      }
+    },
+    "Show ~/.ssh/config in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示 ~/.ssh/config"
+          }
+        }
+      }
+    },
+    "Skip for now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时跳过"
+          }
+        }
+      }
+    },
+    "Skip this version": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过此版本"
+          }
+        }
+      }
+    },
+    "Sleep & Wake": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "睡眠与唤醒"
+          }
+        }
+      }
+    },
+    "Sponsor": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "赞助"
+          }
+        }
+      }
+    },
+    "Sponsor on Ko-fi →": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Ko-fi 上赞助 →"
+          }
+        }
+      }
+    },
+    "Standing by": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待命中"
+          }
+        }
+      }
+    },
+    "Start": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动"
+          }
+        }
+      }
+    },
+    "Start SSH2FA at login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录时启动 SSH2FA"
+          }
+        }
+      }
+    },
+    "Start automatically when daemon boots": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手启动时自动启动"
+          }
+        }
+      }
+    },
+    "Start on daemon launch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手启动时启动"
+          }
+        }
+      }
+    },
+    "Start the background helper when this app launches": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 启动时启动后台助手"
+          }
+        }
+      }
+    },
+    "Starting the background helper… %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动后台助手… %@"
+          }
+        }
+      }
+    },
+    "Starts automatically when the daemon boots": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手启动时自动启动"
+          }
+        }
+      }
+    },
+    "State": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状态"
+          }
+        }
+      }
+    },
+    "Step %lld of 2": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 步，共 2 步"
+          }
+        }
+      }
+    },
+    "Still finishing the previous attempt — try again in a moment.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一次操作还没结束 —— 请稍后再试。"
+          }
+        }
+      }
+    },
+    "Stop": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        }
+      }
+    },
+    "Stopped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止"
+          }
+        }
+      }
+    },
+    "Switched to backup link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已切换到备用链路"
+          }
+        }
+      }
+    },
+    "Switching": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在切换"
+          }
+        }
+      }
+    },
+    "Sync": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步"
+          }
+        }
+      }
+    },
+    "Sync preferences via iCloud Drive (free)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过 iCloud 云盘同步偏好设置（免费）"
+          }
+        }
+      }
+    },
+    "Syncs only these app preferences across your Macs via a file in iCloud Drive — no paid Apple Developer account needed. Never includes your hosts, tunnels, or 2FA secret.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅通过 iCloud 云盘中的一个文件，在你的多台 Mac 间同步这些 App 偏好设置 —— 不需要付费的 Apple 开发者账号。绝不包含你的主机、隧道或 2FA 密钥。"
+          }
+        }
+      }
+    },
+    "System default": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统默认"
+          }
+        }
+      }
+    },
+    "Tags": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标签"
+          }
+        }
+      }
+    },
+    "Tap to copy 2FA code": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点按拷贝 2FA 验证码"
+          }
+        }
+      }
+    },
+    "Target": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标"
+          }
+        }
+      }
+    },
+    "Template": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模板"
+          }
+        }
+      }
+    },
+    "Terminal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端"
+          }
+        }
+      }
+    },
+    "Test login": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试登录"
+          }
+        }
+      }
+    },
+    "Testing login…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在测试登录…"
+          }
+        }
+      }
+    },
+    "Testing…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在测试…"
+          }
+        }
+      }
+    },
+    "The background helper is an older version than the app. Quit and reopen SSH2FA so it restarts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台助手的版本比 App 旧。请退出并重新打开 SSH2FA 让它重启。"
           }
         }
       }
     },
     "The first one is what plain “Mount” uses.": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -591,12 +3261,615 @@
         }
       }
     },
-    "Add a folder you work in — mounting it takes you straight there.": {
+    "The first one is what plain “Mount” uses. “Auto” mounts it as soon as the host connects.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "添加你常用的文件夹——挂载后可直接进入。"
+            "value": "第一个是“挂载”默认使用的文件夹。“自动”会在主机连上后立即挂载。"
+          }
+        }
+      }
+    },
+    "The stored 2FA secret can't be read": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存的 2FA 密钥无法读取"
+          }
+        }
+      }
+    },
+    "Tighter row height + smaller font for the tunnel table. Helpful when you have more than 10 tunnels.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道表格使用更紧凑的行高和更小的字体。隧道超过 10 条时很有用。"
+          }
+        }
+      }
+    },
+    "Time": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间"
+          }
+        }
+      }
+    },
+    "Triggers once per tunnel transition idle → alive. If your tunnel hosts a notebook server (jupyter etc.), this saves you a click.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道每次从空闲变为存活时触发一次。如果隧道上跑的是 notebook 服务（如 jupyter），可以省你一次点击。"
+          }
+        }
+      }
+    },
+    "Trouble starting the background helper — retrying…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动后台助手遇到问题 —— 正在重试…"
+          }
+        }
+      }
+    },
+    "Troubleshoot": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排查问题"
+          }
+        }
+      }
+    },
+    "Try a one-shot login with the stored credentials (no effect on your live connection)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用已存储的凭据做一次性登录测试（不影响你当前的连接）"
+          }
+        }
+      }
+    },
+    "Tunnel actions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道操作"
+          }
+        }
+      }
+    },
+    "Tunnel state changes appear as toasts over the notch. This controls ONLY the notch — failures still show in the dashboard, and macOS notifications still fire when SSH2FA isn't frontmost.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道状态变化会在灵动岛上以提示显示。此项仅控制灵动岛 —— 失败仍会显示在面板中，SSH2FA 不在前台时 macOS 通知也照常发出。"
+          }
+        }
+      }
+    },
+    "Tunnels": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道"
+          }
+        }
+      }
+    },
+    "Tunnels forward a local port to a **SLURM compute node** (e.g. a Jupyter server) over your warm SSH connection — and auto-recover when the node or your network changes.\n\nIf you just want no-retype 2FA SSH, you don't need this — your hosts already work in the Hosts list.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道会通过你已建立的 SSH 连接，把本地端口转发到 **SLURM 计算节点**（比如 Jupyter 服务），并在节点或网络变化时自动恢复。\n\n如果你只想要免重复输入的 2FA SSH，用不到这个 —— 你的主机在“主机”列表里已经能用了。"
+          }
+        }
+      }
+    },
+    "Turn off & remove the Include": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭并移除 Include"
+          }
+        }
+      }
+    },
+    "Turn on (backs up config, adds one Include line)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启（会备份配置并添加一行 Include）"
+          }
+        }
+      }
+    },
+    "Two-factor secret": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双因素验证密钥"
+          }
+        }
+      }
+    },
+    "Type a command…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入命令…"
+          }
+        }
+      }
+    },
+    "Undo": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
+          }
+        }
+      }
+    },
+    "Uninstall SSH2FA…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载 SSH2FA…"
+          }
+        }
+      }
+    },
+    "Unlock": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "解锁"
+          }
+        }
+      }
+    },
+    "Unmount": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载"
+          }
+        }
+      }
+    },
+    "Unpin %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消固定 %@"
+          }
+        }
+      }
+    },
+    "Up one level": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一级"
+          }
+        }
+      }
+    },
+    "Update check failed: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查更新失败：%@"
+          }
+        }
+      }
+    },
+    "Update with ONE of these (SSH2FA never installs on its own):": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用以下任一方式更新（SSH2FA 绝不会自行安装）："
+          }
+        }
+      }
+    },
+    "Updates": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新"
+          }
+        }
+      }
+    },
+    "Use jump host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用跳板机"
+          }
+        }
+      }
+    },
+    "Use selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用所选"
+          }
+        }
+      }
+    },
+    "Use this after changing your password on the server. SSH2FA can't detect that change on its own — logins keep failing until the stored password matches.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在服务器上改过密码后用这里更新。SSH2FA 无法自行察觉这个变化 —— 在存储的密码对上之前，登录会一直失败。"
+          }
+        }
+      }
+    },
+    "User": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用户"
+          }
+        }
+      }
+    },
+    "Username": {
+      "extractionState": "stale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用户名"
+          }
+        }
+      }
+    },
+    "Warm connection reuse": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "热连接复用"
+          }
+        }
+      }
+    },
+    "Warning: %@ is not in ~/.ssh/config and won't connect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "警告：%@ 不在 ~/.ssh/config 中，无法连接"
+          }
+        }
+      }
+    },
+    "Welcome to SSH2FA": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "欢迎使用 SSH2FA"
+          }
+        }
+      }
+    },
+    "When any tunnel is alive or transitioning, a small persistent indicator sits over the notch. Click for the full toast. Off by default — can be visually busy.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当有隧道存活或正在切换状态时，灵动岛上会常驻一个小指示器。点击可查看完整提示。默认关闭 —— 可能会显得杂乱。"
+          }
+        }
+      }
+    },
+    "Which terminal app a host's “Open Terminal” action launches and SSHes in with.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机的“打开终端”操作使用哪个终端 App 来启动并 SSH。"
+          }
+        }
+      }
+    },
+    "Whole filesystem (/)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整个文件系统 (/)"
+          }
+        }
+      }
+    },
+    "Why sponsor? Hover for the goal — click to open Ko-fi ♥": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为什么赞助？悬停查看目标 —— 点击打开 Ko-fi ♥"
+          }
+        }
+      }
+    },
+    "With auto-connect on, the daemon attempts login for this host every time it starts (or every time the app launches it).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启自动连接后，后台助手每次启动（或每次由 App 启动）都会尝试登录此主机。"
+          }
+        }
+      }
+    },
+    "You're on the latest version.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你已是最新版本。"
+          }
+        }
+      }
+    },
+    "Your 2FA app is seeded by a secret. You need that secret (a base32 string) or the full otpauth:// URL it came from. To reveal it:": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的 2FA App 是由一个密钥生成的。你需要这个密钥（一串 base32）或它对应的完整 otpauth:// 链接。获取方法："
+          }
+        }
+      }
+    },
+    "Your login Keychain is locked — unlock it (log out and back in, or open Keychain Access) and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的登录钥匙串已锁定 —— 请解锁（注销后重新登录，或打开“钥匙串访问”）后重试。"
+          }
+        }
+      }
+    },
+    "cluster username (optional)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "集群用户名（可选）"
+          }
+        }
+      }
+    },
+    "direct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直连"
+          }
+        }
+      }
+    },
+    "e.g. lab server, gpu cluster": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "例如：实验室服务器、GPU 集群"
+          }
+        }
+      }
+    },
+    "filter (host name, error keyword, …)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "筛选（主机名、错误关键词…）"
+          }
+        }
+      }
+    },
+    "github.com/gasvn/ssh2fa": {},
+    "gpunode8a11103.hpc.example.edu": {},
+    "iTerm": {},
+    "jupyter": {},
+    "login.example.edu": {},
+    "login.hpc.example.edu": {},
+    "login01.example.edu": {},
+    "macOS didn't allow access to the saved credential. Try again and choose “Always Allow” on the Keychain prompt — then it won't ask again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 未允许访问已保存的凭据。请重试，并在钥匙串弹窗上选择“始终允许”—— 之后就不会再问了。"
+          }
+        }
+      }
+    },
+    "macOS hasn't allowed access yet — a Keychain prompt may be waiting for you. Choose “Always Allow” there, then try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 还未授予访问权限 —— 可能有一个钥匙串弹窗在等你。请在上面选择“始终允许”，然后重试。"
+          }
+        }
+      }
+    },
+    "name (optional)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称（可选）"
+          }
+        }
+      }
+    },
+    "new password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新密码"
+          }
+        }
+      }
+    },
+    "new-name": {},
+    "on a cluster? · ⌘N": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在用集群？· ⌘N"
+          }
+        }
+      }
+    },
+    "otpauth://totp/…?secret=…   — or just the secret key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "otpauth://totp/…?secret=…   —— 或直接填密钥"
+          }
+        }
+      }
+    },
+    "password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码"
+          }
+        }
+      }
+    },
+    "ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "就绪"
+          }
+        }
+      }
+    },
+    "shgao.site": {},
+    "via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经由 %@"
+          }
+        }
+      }
+    },
+    "your login name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的登录名"
+          }
+        }
+      }
+    },
+    "your login name on the server": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你在服务器上的登录名"
+          }
+        }
+      }
+    },
+    "“%@” isn't a Host in ~/.ssh/config": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@”不是 ~/.ssh/config 中的 Host"
+          }
+        }
+      }
+    },
+    "•• ••": {},
+    "→ %@": {},
+    "⚠︎ Off: SSH2FA won't start the helper — your hosts won't connect and nothing here will work unless you run ssh2fa-daemon yourself.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "⚠︎ 已关闭：SSH2FA 不会启动助手 —— 除非你自己运行 ssh2fa-daemon，否则主机无法连接，这里的功能都不可用。"
+          }
+        }
+      }
+    },
+    "⚠︎ This Mac can't evaluate Touch ID or a login password right now — the lock may not engage.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "⚠︎ 这台 Mac 目前无法验证 Touch ID 或登录密码 —— 锁定可能不会生效。"
+          }
+        }
+      }
+    },
+    "⚠︎ iCloud Drive isn't available — turn it on in System Settings to sync.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "⚠︎ iCloud 云盘不可用 —— 请在系统设置中开启以进行同步。"
           }
         }
       }
