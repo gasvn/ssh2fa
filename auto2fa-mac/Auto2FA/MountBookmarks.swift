@@ -34,7 +34,10 @@ struct MountBookmark: Codable, Equatable, Identifiable, Hashable {
         host = try c.decode(String.self, forKey: .host)
         remotePath = try c.decode(String.self, forKey: .remotePath)
         label = (try? c.decode(String.self, forKey: .label)) ?? ""
-        autoMount = (try? c.decodeIfPresent(Bool.self, forKey: .autoMount)) as? Bool ?? false
+        // `decode` (not decodeIfPresent) + `try?`: a missing key throws, which
+        // becomes nil and defaults to false. The previous form nested optionals
+        // and needed a downcast that did nothing.
+        autoMount = (try? c.decode(Bool.self, forKey: .autoMount)) ?? false
     }
 
     /// Display name: the label if given, else the trailing folder name, else

@@ -1356,13 +1356,13 @@ final class AppState: ObservableObject {
             // Drop the app-owned connection record too, or the alias would be
             // re-rendered into ssh2fa.conf on the next sync as a sidecar-only
             // host and quietly reappear in the user's ssh config.
-            try? ManagedHostStore.remove(alias: host, in: managedHostsURL)
+            _ = try? ManagedHostStore.remove(alias: host, in: managedHostsURL)
             // …and this host's pinned folders. Leaving them was inconsistent —
             // removal deletes the credentials outright — and they would silently
             // come back if a host were later added under the same name.
             let keptPins = mountBookmarks.filter { $0.host != host }
             if keptPins.count != mountBookmarks.count {
-                try? MountBookmarkStore.save(keptPins, to: mountBookmarksURL)
+                _ = try? MountBookmarkStore.save(keptPins, to: mountBookmarksURL)
                 mountBookmarks = keptPins
             }
             // Per-host UI state keyed by NAME. Without this a host added back
