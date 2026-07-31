@@ -22,6 +22,14 @@ struct PersistedTunnel {
     remote_port: u16,
     #[serde(default)]
     jump_candidates: Option<Vec<String>>,
+    /// Cumulative stats. `#[serde(default)]` so a tunnels.json written before
+    /// these were persisted still loads (they simply start at zero).
+    #[serde(default)]
+    connect_count: u32,
+    #[serde(default)]
+    fail_count: u32,
+    #[serde(default)]
+    total_uptime_sec: f64,
     #[serde(default)]
     last_node: Option<String>,
     #[serde(default)]
@@ -218,14 +226,15 @@ pub fn load_tunnels(path: &Path) -> Vec<Tunnel> {
             tags: persisted.tags,
             url_path: persisted.url_path,
             wants_alive: persisted.wants_alive,
-            // Runtime fields reset to defaults on load
+            // Cumulative statistics survive a restart (see save_tunnels).
+            total_uptime_sec: persisted.total_uptime_sec,
+            connect_count: persisted.connect_count,
+            fail_count: persisted.fail_count,
+            // Genuinely runtime — reset on load.
             status: TunnelStatus::Idle,
             active_jump: None,
             last_msg: "Ready".to_owned(),
             last_alive_at: 0.0,
-            total_uptime_sec: 0.0,
-            connect_count: 0,
-            fail_count: 0,
         };
         out.push(tunnel);
     }
@@ -283,6 +292,17 @@ pub fn save_tunnels(path: &Path, tuns: &[Tunnel]) -> Result<()> {
             "tags": t.tags,
             "url_path": t.url_path,
             "wants_alive": t.wants_alive,
+            // Cumulative statistics. These are what the UI's Connects /
+            // Failures / Uptime cells show, and leaving them out of this
+            // hand-written JSON silently reset them to zero on every daemon
+            // restart — i.e. on every app update and every reboot — so a
+            // tunnel up for days reported minutes of uptime.
+            // `last_alive_at` is deliberately NOT persisted: it belongs to the
+            // current run, and restoring it would make the next uptime
+            // accumulation count time the tunnel spent not running.
+            "connect_count": t.connect_count,
+            "fail_count": t.fail_count,
+            "total_uptime_sec": t.total_uptime_sec,
         });
         tunnels_map.insert(t.name.clone(), persisted);
     }
@@ -482,5 +502,66 @@ mod tests {
         let reloaded = load_tunnels(&p);
         assert_eq!(reloaded[0].direct_host.as_deref(), Some("loginhost"),
                    "save_tunnels must not drop direct_host");
+    }
+
+    /// REGRESSION: the persisted JSON is hand-written, and the cumulative
+    /// counters were missing from it — so Connects / Failures / Uptime reset to
+    /// zero on every daemon restart (every app update, every reboot).
+    #[test]
+    fn cumulative_stats_survive_a_save_load_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+
+        let mut t = crate::model::Tunnel {
+            name: "nb".into(),
+            local_port: 8888,
+            remote_port: 8888,
+            jump_candidates: None,
+            last_node: Some("node01".into()),
+            last_user: None,
+            direct_host: None,
+            auto_start: false,
+            post_connect_cmd: None,
+            tags: vec![],
+            url_path: None,
+            wants_alive: false,
+            status: crate::model::TunnelStatus::Idle,
+            active_jump: None,
+            last_msg: String::new(),
+            last_alive_at: 0.0,
+            total_uptime_sec: 0.0,
+            connect_count: 0,
+            fail_count: 0,
+        };
+        t.connect_count = 42;
+        t.fail_count = 7;
+        t.total_uptime_sec = 12345.5;
+
+        save_tunnels(&p, &[t]).unwrap();
+        let loaded = load_tunnels(&p);
+        let got = loaded.iter().find(|x| x.name == "nb").expect("tunnel must load");
+        assert_eq!(got.connect_count, 42, "connect count must survive a restart");
+        assert_eq!(got.fail_count, 7, "failure count must survive a restart");
+        assert_eq!(got.total_uptime_sec, 12345.5, "uptime must survive a restart");
+        // Genuinely runtime fields still reset.
+        assert_eq!(got.status, crate::model::TunnelStatus::Idle);
+        assert_eq!(got.last_alive_at, 0.0, "the current-run timestamp must NOT persist");
+    }
+
+    /// A tunnels.json written before the counters were persisted must still
+    /// load — they simply start at zero.
+    #[test]
+    fn a_file_without_the_counters_still_loads() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("tunnels.json");
+        std::fs::write(
+            &p,
+            r#"{"tunnels":{"nb":{"local_port":8888,"remote_port":8888,"wants_alive":false}}}"#,
+        )
+        .unwrap();
+        let loaded = load_tunnels(&p);
+        let got = loaded.iter().find(|x| x.name == "nb").expect("must still load");
+        assert_eq!(got.connect_count, 0);
+        assert_eq!(got.local_port, 8888);
     }
 }

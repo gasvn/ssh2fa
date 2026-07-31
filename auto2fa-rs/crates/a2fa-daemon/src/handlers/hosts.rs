@@ -1499,6 +1499,7 @@ pub fn host_remove(
     let _ = std::fs::remove_dir(mounts_root().join(&host_name));
 
     // 3. Now stop the master.
+    let managers_for_cleanup = managers.clone();
     if let Some(mgrs) = managers {
         spawn_managed_stop(host_name.clone(), Arc::clone(state), mgrs);
     }
@@ -1549,6 +1550,13 @@ pub fn host_remove(
         }
         released
     };
+    // Drop the daemon's per-host state too. Keyed by NAME, so without this a
+    // host added back under the same name inherits the removed one's circuit
+    // breaker (see HostManagers::forget) and silently refuses to connect.
+    if let Some(mgrs) = &managers_for_cleanup {
+        mgrs.forget(&host_name);
+    }
+
     if !released.is_empty() {
         log::info!(
             "[{host_name}] released {} tunnel(s) pinned to this host: {}",

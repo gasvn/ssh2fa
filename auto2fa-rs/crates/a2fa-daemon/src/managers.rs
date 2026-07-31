@@ -376,6 +376,30 @@ impl HostManagers {
             .contains(&(host.to_string(), slot))
     }
 
+    /// Drop every per-host entry so a host that is removed leaves nothing
+    /// behind that a LATER host of the same name would inherit.
+    ///
+    /// `PoolState` carries the circuit breaker — `consecutive_login_failures`,
+    /// `cooldown_until` and the flap back-off. Keyed by host NAME, so removing a
+    /// failing host and adding it back (the most natural thing a user does to
+    /// fix one) resurrected its cooldown and the fresh host silently refused to
+    /// connect, with nothing on screen explaining why.
+    ///
+    /// The `starting` set is deliberately NOT touched: an in-flight worker owns
+    /// its entry through a `StartGuard` and will clear it on exit. Yanking it
+    /// here would let a second start for the same slot begin while the first is
+    /// still running.
+    pub fn forget(&self, host: &str) {
+        self.map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(host);
+        self.probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(host);
+    }
+
     pub fn end_start(&self, host: &str, slot: usize) {
         self.starting
             .lock()
@@ -2164,6 +2188,46 @@ mod tests {
     /// `try_begin_start` returns true the first time for a (host, slot) and
     /// false on a second attempt (a start is in flight). After `end_start` it
     /// returns true again.
+    /// REGRESSION: the circuit breaker is keyed by host NAME and survived a
+    /// removal, so removing a failing host and adding it back — the natural fix
+    /// — resurrected its cooldown and the fresh host refused to connect.
+    #[test]
+    fn forget_clears_the_circuit_breaker_for_a_reused_name() {
+        let managers = HostManagers::new();
+        // A host that has been failing: failures + an armed cooldown.
+        managers.with_pool_mut("k6", |p| {
+            p.consecutive_login_failures = 5;
+            p.cooldown_until = Some(Instant::now() + Duration::from_secs(600));
+        });
+        assert!(managers
+            .with_pool("k6", |p| p.cooldown_until.is_some())
+            .unwrap_or(false));
+
+        managers.forget("k6");
+
+        // A host added back under the same name starts clean.
+        let inherited = managers
+            .with_pool("k6", |p| (p.consecutive_login_failures, p.cooldown_until.is_some()));
+        assert!(
+            inherited.is_none() || inherited == Some((0, false)),
+            "a re-added host must not inherit the old cooldown, got {inherited:?}"
+        );
+    }
+
+    /// An in-flight start owns its `starting` entry via its guard — forget must
+    /// not yank it, or a second start could begin alongside the first.
+    #[test]
+    fn forget_leaves_an_in_flight_start_claim_alone() {
+        let managers = HostManagers::new();
+        assert!(managers.try_begin_start("k6", 0));
+        managers.forget("k6");
+        assert!(
+            managers.is_starting("k6", 0),
+            "an in-flight start must still be marked in flight"
+        );
+        managers.end_start("k6", 0);
+    }
+
     /// Looking must not claim: `is_starting` reports the truth and leaves the
     /// slot free for a genuine start.
     #[test]
