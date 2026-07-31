@@ -322,6 +322,22 @@ pub struct HostManagers {
     /// Lock discipline: this mutex is held only for the brief insert/remove,
     /// NEVER across any ssh I/O.
     starting: Mutex<HashSet<(String, usize)>>,
+
+    /// Session-probe bookkeeping per host: (last probe finished, consecutive
+    /// failures, probe currently running).
+    ///
+    /// `ssh -O check` proves the multiplexer is running, not that the far end
+    /// will grant a session — see `a2fa_core::ssh::session_probe`. This tracks
+    /// the periodic real-session check that closes that gap.
+    probes: Mutex<HashMap<String, ProbeState>>,
+}
+
+/// Per-host state for the session probe.
+#[derive(Debug, Default, Clone)]
+pub struct ProbeState {
+    pub last_finished: Option<Instant>,
+    pub consecutive_failures: u32,
+    pub running: bool,
 }
 
 impl HostManagers {
@@ -348,6 +364,18 @@ impl HostManagers {
     }
 
     /// Release the in-flight start slot for `(host, slot)`.
+    /// Is a start/restart currently in flight for `(host, slot)`?
+    ///
+    /// READ-ONLY. `try_begin_start` would have claimed the slot to answer this,
+    /// and releasing it again leaves a window where a genuine start is refused
+    /// — a probe that only wants to LOOK must not interfere with starting.
+    pub fn is_starting(&self, host: &str, slot: usize) -> bool {
+        self.starting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&(host.to_string(), slot))
+    }
+
     pub fn end_start(&self, host: &str, slot: usize) {
         self.starting
             .lock()
@@ -1063,11 +1091,128 @@ fn heartbeat_loop(
                     &managers,
                     &registry,
                 );
+                // A real-session probe, on its own worker. NEVER inline: it can
+                // take tens of seconds against a loaded login node, and the
+                // heartbeat thread must never block.
+                maybe_spawn_session_probe(&host_name, &state, &managers);
             }
         }));
 
         if result.is_err() {
             warn!("heartbeat: a tick panicked — recovered, continuing next interval");
+        }
+    }
+}
+
+/// Spawn a session probe for `host` if one is due and none is running.
+///
+/// # Why this exists
+///
+/// Every local liveness signal — `master_probe`, `ssh -O check` — answers from
+/// the multiplexer process, so all of them report "alive" for a master whose
+/// far end refuses new sessions (login-node session limits, PAM limits, a
+/// degraded node). ssh's keepalive covers the network-dead case; it does not
+/// cover this one, because the transport is genuinely healthy.
+///
+/// Observed live: a host sat at Connected / `ssh -O check` = "Master running"
+/// while every real command over that master exited 254. The app said
+/// connected; the user could not connect. Asking for a session is the only
+/// thing that distinguishes the two.
+///
+/// Deliberately conservative — a needless rebuild costs a fresh 2FA login:
+/// * at most one probe per host at a time (a running probe blocks the next),
+/// * rare (`ProbeSchedule::interval`), because a probe consumes a session slot
+///   on the far end and hammering a limited node would help cause the failure,
+/// * only acts after `failures_before_rebuild` CONSECUTIVE failures,
+/// * skipped entirely while a start/restart is already in flight for slot 0.
+fn maybe_spawn_session_probe(
+    host: &str,
+    state: &Arc<Mutex<State>>,
+    managers: &Arc<HostManagers>,
+) {
+    use a2fa_core::ssh::session_probe::{session_works, ProbeSchedule};
+    let schedule = ProbeSchedule::default();
+
+    // Only probe a host we currently claim is connected — that claim is exactly
+    // what we are trying to verify.
+    let claims_ready = {
+        let guard = crate::lock_state(state);
+        guard
+            .hosts
+            .iter()
+            .find(|h| h.host == host)
+            .map(|h| h.is_master_ready)
+            .unwrap_or(false)
+    };
+    if !claims_ready {
+        return;
+    }
+    // A rebuild in flight will settle the question by itself.
+    if managers.is_starting(host, 0) {
+        return;
+    }
+
+    // Claim the probe slot.
+    {
+        let mut probes = managers.probes.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = probes.entry(host.to_string()).or_default();
+        if entry.running {
+            return;
+        }
+        let since = entry.last_finished.map(|t| t.elapsed());
+        if !schedule.is_due(since) {
+            return;
+        }
+        entry.running = true;
+    }
+
+    let host_owned = host.to_string();
+    let state = Arc::clone(state);
+    let managers_owned = Arc::clone(managers);
+    let spawn = std::thread::Builder::new()
+        .name(format!("session-probe:{host}"))
+        .spawn(move || {
+            let cp = a2fa_core::ssh::control::active_symlink_path(&host_owned);
+            let ok = session_works(&cp, &host_owned);
+
+            let failures = {
+                let mut probes = managers_owned
+                    .probes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let entry = probes.entry(host_owned.clone()).or_default();
+                entry.running = false;
+                entry.last_finished = Some(Instant::now());
+                entry.consecutive_failures = if ok { 0 } else { entry.consecutive_failures + 1 };
+                entry.consecutive_failures
+            };
+
+            if ok {
+                return;
+            }
+            warn!(
+                "[{host_owned}] session probe failed ({failures} in a row) —                  the master answers `ssh -O check` but will not grant a session"
+            );
+            if !schedule.should_rebuild(failures) {
+                return;
+            }
+            // Mark the slot dead; the existing heartbeat restart path rebuilds
+            // it. Going through the normal path keeps ONE rebuild mechanism.
+            warn!("[{host_owned}] master is up but unusable — marking dead for rebuild");
+            managers_owned.with_pool_mut(&host_owned, |p| {
+                p.slot_status[0] = SlotStatus::Dead;
+            });
+            let mut guard = crate::lock_state(&state);
+            if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
+                h.is_master_ready = false;
+                h.last_msg = "Connection stopped working — reconnecting".into();
+            }
+        });
+    if spawn.is_err() {
+        // Release the claim so a later tick can retry.
+        let mut probes = managers.probes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = probes.get_mut(host) {
+            e.running = false;
         }
     }
 }
@@ -1993,6 +2138,21 @@ mod tests {
     /// `try_begin_start` returns true the first time for a (host, slot) and
     /// false on a second attempt (a start is in flight). After `end_start` it
     /// returns true again.
+    /// Looking must not claim: `is_starting` reports the truth and leaves the
+    /// slot free for a genuine start.
+    #[test]
+    fn is_starting_observes_without_claiming() {
+        let managers = HostManagers::new();
+        assert!(!managers.is_starting("k6", 0));
+        assert!(managers.try_begin_start("k6", 0), "slot must still be claimable");
+        assert!(managers.is_starting("k6", 0));
+        // Observing repeatedly must not release or re-claim it.
+        assert!(managers.is_starting("k6", 0));
+        managers.end_start("k6", 0);
+        assert!(!managers.is_starting("k6", 0));
+        assert!(managers.try_begin_start("k6", 0), "still claimable afterwards");
+    }
+
     #[test]
     fn try_begin_start_blocks_second_concurrent_start() {
         let managers = HostManagers::new();
