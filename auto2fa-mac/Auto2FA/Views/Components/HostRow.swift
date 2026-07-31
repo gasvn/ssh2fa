@@ -325,18 +325,24 @@ struct HostRow: View {
             }
             .disabled(isBusy)
         }
-        if true {
+        // Mounting is a TOGGLE daemon-side, so an already-mounted folder listed
+        // under "Mount" would silently UNMOUNT it. Offer only what isn't
+        // mounted; the mounted ones live in the Unmount menu above.
+        let unmountedPins = appState.bookmarks(for: host.host).filter {
+            !appState.isMounted(host: host.host, remotePath: $0.remotePath)
+        }
+        if host.isMasterReady {
             // A submenu, so pinned folders are one click away instead of a
             // re-navigation every session.
             Menu {
-                ForEach(appState.bookmarks(for: host.host)) { bm in
+                ForEach(unmountedPins) { bm in
                     Button {
                         Task { await appState.toggleMount(host, remotePath: bm.remotePath) }
                     } label: {
                         Label(bm.displayName, systemImage: "pin.fill")
                     }
                 }
-                if !appState.bookmarks(for: host.host).isEmpty { Divider() }
+                if !unmountedPins.isEmpty { Divider() }
                 Button {
                     Task { await appState.toggleMount(host, remotePath: "/") }
                 } label: {

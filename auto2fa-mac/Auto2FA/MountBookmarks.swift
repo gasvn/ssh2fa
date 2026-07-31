@@ -103,23 +103,58 @@ enum MountBookmarks {
 
     /// Directory name the daemon mounts this path under (`~/Mounts/<host>/<slug>`).
     ///
-    /// MUST match `a2fa_core::mounts::slug_for` — the app uses it to tell which
-    /// pinned folder a given mount point corresponds to. Kept deliberately
-    /// simple and mirrored on both sides rather than shipped over the wire on
-    /// every listing.
+    /// MUST match `a2fa_core::mounts::slug_for` — the app derives it to tell
+    /// which pinned folder is mounted, and a mismatch would render every folder
+    /// as unmounted while it is in fact mounted. A parity test on each side
+    /// pins the shared cases, including the non-ASCII ones.
+    ///
+    /// The trailing hash is not decoration: sanitising alone COLLIDES. `/a/b`
+    /// and `/a-b` both reduce to `a-b`, and every non-ASCII path reduced to
+    /// nothing at all — `/数据`, `/项目` and `/` all produced `root`, so
+    /// mounting one shadowed another.
     static func slug(for remotePath: String) -> String {
         let trimmed = remotePath.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if trimmed.isEmpty { return "root" }
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-        var s = String(trimmed.map { allowed.contains($0) ? $0 : "-" })
-        while s.contains("--") { s = s.replacingOccurrences(of: "--", with: "-") }
-        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        if s.isEmpty { return "root" }
-        if s.count > 60 {
-            s = String(s.suffix(60)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        var base = String(trimmed.map { allowed.contains($0) ? $0 : "-" })
+        while base.contains("--") { base = base.replacingOccurrences(of: "--", with: "-") }
+        base = base.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if base.count > 48 {
+            base = String(base.prefix(48)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         }
-        return s
+        let h = String(format: "%08x", fnv1a32(trimmed))
+        return base.isEmpty ? "path-\(h)" : "\(base)-\(h)"
+    }
+
+    /// FNV-1a (32-bit) over UTF-8 bytes — mirrors the Rust `fnv1a32`.
+    private static func fnv1a32(_ s: String) -> UInt32 {
+        var h: UInt32 = 0x811c9dc5
+        for b in Array(s.utf8) {
+            h ^= UInt32(b)
+            h = h &* 0x01000193
+        }
+        return h
+    }
+
+    /// Should this host be auto-mounted right now?
+    ///
+    /// Deliberately NOT edge-triggered on "just became ready". That was the
+    /// original design and it made the feature almost never fire: the app
+    /// assigns `hosts` (running this check) BEFORE it loads the pinned folders,
+    /// so on the first poll there were no pins to act on — and by the second
+    /// poll the host was already ready, so the edge had passed. Hosts are
+    /// normally already connected at launch (the daemon adopts live masters),
+    /// so in practice auto-mount only ever fired after a disconnect.
+    ///
+    /// `alreadyAttempted` is the real idempotence mechanism — the caller clears
+    /// it when the host drops, so one attempt happens per connection, and a
+    /// manual unmount is respected until the next reconnect.
+    static func shouldAutoMount(isReady: Bool,
+                                isMounted: Bool,
+                                alreadyAttempted: Bool,
+                                hasAutoPin: Bool) -> Bool {
+        isReady && !isMounted && !alreadyAttempted && hasAutoPin
     }
 
     /// The folder to mount automatically when `host` connects, if any.

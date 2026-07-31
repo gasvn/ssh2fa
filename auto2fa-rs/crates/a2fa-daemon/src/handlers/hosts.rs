@@ -452,6 +452,21 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     // user is in when they reach for unmount.
     let active = a2fa_core::mounts::list_active_mounts(&mounts_root());
     let this_is_mounted = active.iter().any(|m| m.mount_point == mount_point);
+
+    // An explicit mount_point names an EXISTING mount to unmount. If it is not
+    // mounted, this is not a mount request that happens to have a path — the
+    // toggle would fall through and mount the DEFAULT remote path ("/") at that
+    // directory, i.e. mount something the caller never asked for. Reachable as
+    // a race: the UI lists a mount, it disappears, the user then clicks it.
+    if explicit_point.is_some() && !this_is_mounted {
+        return Ok(json!({
+            "host": host_name,
+            "mounted": false,
+            "mount_point": mount_point.to_string_lossy(),
+            "remote_path": remote_path,
+            "note": "already unmounted",
+        }));
+    }
     // The pre-existing layout mounted the host at ~/Mounts/<host> itself, which
     // blocks creating subdirectories under it. Unmount that legacy mount before
     // mounting into the new layout.
@@ -583,23 +598,6 @@ fn validate_remote_path(path: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Returns true if `path` is an actual mount point.
-/// Uses `std::fs::symlink_metadata` — if the entry exists and its device id
-/// differs from its parent, it is a mount point.
-fn is_mount_point(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let parent = path.parent().unwrap_or(path);
-    let parent_meta = match std::fs::symlink_metadata(parent) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    meta.dev() != parent_meta.dev()
 }
 
 // ---------------------------------------------------------------------------
@@ -1445,7 +1443,7 @@ pub fn host_remove(
     require_host(state, &host_name)?;
 
     // 1. Mark inactive so the heartbeat stops trying to restart it while we
-    //    tear down, then stop the master off the State lock.
+    //    tear down.
     {
         let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
@@ -1453,11 +1451,38 @@ pub fn host_remove(
             h.last_msg = "Removing…".into();
         }
     }
+
+    // 2. Unmount BEFORE stopping the master, while the connection can still
+    //    carry a clean unmount.
+    //
+    //    Skipping this was actively harmful, not merely untidy: the sshfs mount
+    //    outlives the host entry, the master it rides is torn down a moment
+    //    later, and the result is a WEDGED mount that hangs Finder — with the
+    //    host row now gone, leaving no way to unmount it from the app at all.
+    let mounts = a2fa_core::mounts::list_active_mounts(&mounts_root());
+    for m in mounts.iter().filter(|m| m.host == host_name) {
+        log::info!("[{host_name}] unmounting {} before removal", m.mount_point.display());
+        let mp = m.mount_point.to_string_lossy().into_owned();
+        let _ = run_cmd_bounded("umount", &["-f", &mp], std::time::Duration::from_secs(10));
+    }
+    // Anything that refused to unmount gets the full reap (kills the orphaned
+    // macFUSE backend) — a removed host must never leave a wedged mount behind.
+    let still: Vec<_> = a2fa_core::mounts::list_active_mounts(&mounts_root())
+        .into_iter()
+        .filter(|m| m.host == host_name)
+        .collect();
+    for m in &still {
+        log::warn!("[{host_name}] {} did not unmount cleanly — reaping", m.mount_point.display());
+        reap_failed_sshfs(&m.mount_point);
+    }
+    let _ = std::fs::remove_dir(mounts_root().join(&host_name));
+
+    // 3. Now stop the master.
     if let Some(mgrs) = managers {
         spawn_managed_stop(host_name.clone(), Arc::clone(state), mgrs);
     }
 
-    // 2. Delete both Keychain entries on the bounded worker (never inline).
+    // 4. Delete both Keychain entries on the bounded worker (never inline).
     let host_owned = host_name.clone();
     let cred_result = run_keychain_bounded(
         "credential delete",
@@ -1478,14 +1503,14 @@ pub fn host_remove(
     // Whatever happened above, never serve cached secrets for a removed host.
     crate::managers::invalidate_creds_cache(&host_name);
 
-    // 3. Drop the passwords.json entry (serialized read-modify-write).
+    // 5. Drop the passwords.json entry (serialized read-modify-write).
     if let Err(e) = update_meta(&passwords_path(), |meta| {
         meta.remove(&host_name);
     }) {
         log::warn!("[{host_name}] could not update passwords.json during removal: {e}");
     }
 
-    // 4. Drop it from State so it disappears from list_hosts immediately.
+    // 6. Drop it from State so it disappears from list_hosts immediately.
     {
         let mut guard = crate::lock_state(state);
         guard.hosts.retain(|h| h.host != host_name);
@@ -2169,6 +2194,26 @@ mod tests {
     // host_remove
     // -----------------------------------------------------------------------
 
+    /// REGRESSION: removing a host used to leave its sshfs mounts mounted while
+    /// tearing down the master they ride — a wedged mount that hangs Finder,
+    /// with the host row gone so nothing in the app could unmount it. Removal
+    /// must report the host gone AND leave no mount directory behind.
+    #[test]
+    fn host_remove_leaves_no_mount_directory_behind() {
+        let host = "a2fa-test-mountleak";
+        let state = make_state_with_host(host, false);
+        // Simulate the leftover directory a mount leaves under ~/Mounts/<host>.
+        let dir = mounts_root().join(host);
+        let _ = std::fs::create_dir_all(&dir);
+
+        let v = host_remove(&state, &json!({"host": host}), None).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(
+            !dir.exists(),
+            "removal must clean up ~/Mounts/<host>, found {dir:?}"
+        );
+    }
+
     #[test]
     fn host_remove_not_found_returns_not_found() {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
@@ -2359,14 +2404,29 @@ mod tests {
         let a = mount_point_for("k6", "/scratch");
         let b = mount_point_for("k6", "/work");
         assert_ne!(a, b, "two folders must not share a mount point");
-        assert!(a.ends_with("k6/scratch"), "got {a:?}");
-        assert!(b.ends_with("k6/work"), "got {b:?}");
+        // The name carries a readable prefix plus a uniqueness hash (see
+        // mounts::slug_for) — assert the shape, not a literal name.
+        let an = a.file_name().unwrap().to_string_lossy().into_owned();
+        let bn = b.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(an.starts_with("scratch-"), "got {an:?}");
+        assert!(bn.starts_with("work-"), "got {bn:?}");
+        assert!(a.parent().unwrap().ends_with("k6"));
     }
 
     #[test]
     fn mount_point_for_root_is_named_not_empty() {
         let p = mount_point_for("k6", "/");
         assert!(p.ends_with("k6/root"), "got {p:?}");
+    }
+
+    /// Non-ASCII folders must get distinct mount points too — they all
+    /// collapsed to the same one before the slug carried a hash.
+    #[test]
+    fn non_ascii_folders_get_distinct_mount_points() {
+        let a = mount_point_for("k6", "/数据");
+        let b = mount_point_for("k6", "/项目");
+        assert_ne!(a, b);
+        assert_ne!(a, mount_point_for("k6", "/"));
     }
 
     /// Different hosts must never collide even on the same remote path.
@@ -2400,6 +2460,25 @@ mod tests {
         );
         // …and the mount latch must not be left claimed by the rejection.
         assert!(!mount_in_flight().lock().unwrap().contains("k6"));
+    }
+
+    /// REGRESSION: an explicit mount_point that is no longer mounted must be a
+    /// no-op, NOT a mount. The toggle would otherwise fall through and mount the
+    /// default remote path ("/") at that directory — mounting something nobody
+    /// asked for. Reachable as a race: the UI lists a mount, it goes away, the
+    /// user clicks it.
+    #[test]
+    fn unmounting_an_already_unmounted_point_is_a_noop_not_a_mount() {
+        let state = make_state_with_host("a2fa-test-noop", true);
+        let mp = mounts_root().join("a2fa-test-noop").join("nothing-here");
+        let v = host_mount_toggle(
+            &state,
+            &json!({"host": "a2fa-test-noop", "mount_point": mp.to_string_lossy()}),
+        )
+        .unwrap();
+        assert_eq!(v["mounted"], false);
+        assert_eq!(v["note"], "already unmounted");
+        assert!(!mp.exists(), "must not have created or mounted anything");
     }
 
     #[test]

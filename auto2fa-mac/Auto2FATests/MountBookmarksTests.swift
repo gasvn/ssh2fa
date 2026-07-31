@@ -112,21 +112,40 @@ final class MountBookmarksTests: XCTestCase {
 
     /// The app derives the mount directory name to tell which pin is mounted.
     /// It MUST agree with `a2fa_core::mounts::slug_for` — a mismatch would show
-    /// every folder as unmounted while it is in fact mounted.
-    func testSlugMatchesTheDaemonRules() {
+    /// every folder as unmounted while it is in fact mounted. These exact values
+    /// are pinned on BOTH sides.
+    func testSlugMatchesTheDaemonExactly() {
         XCTAssertEqual(MountBookmarks.slug(for: "/"), "root")
         XCTAssertEqual(MountBookmarks.slug(for: ""), "root")
-        XCTAssertEqual(MountBookmarks.slug(for: "/scratch"), "scratch")
-        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project"), "scratch-alice-project")
-        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project/"), "scratch-alice-project")
-        XCTAssertEqual(MountBookmarks.slug(for: "///"), "root")
-        XCTAssertEqual(MountBookmarks.slug(for: "/***"), "root")
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch"), "scratch-c462a115")
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project"),
+                       "scratch-alice-project-209c2eb8")
+        // Trailing slash is the same path.
+        XCTAssertEqual(MountBookmarks.slug(for: "/scratch/alice/project/"),
+                       MountBookmarks.slug(for: "/scratch/alice/project"))
+    }
+
+    /// REGRESSION (mount-point collision): non-ASCII paths all reduced to
+    /// "root", so 数据 / 项目 / "/" shared one mount point and mounting the
+    /// second shadowed the first.
+    func testNonAsciiPathsGetDistinctSlugs() {
+        XCTAssertEqual(MountBookmarks.slug(for: "/数据"), "path-87e94f15")
+        XCTAssertEqual(MountBookmarks.slug(for: "/项目"), "path-949087d6")
+        XCTAssertNotEqual(MountBookmarks.slug(for: "/数据"), MountBookmarks.slug(for: "/项目"))
+        XCTAssertNotEqual(MountBookmarks.slug(for: "/数据"), MountBookmarks.slug(for: "/"))
+    }
+
+    /// The other lossy case: a separator and a literal dash.
+    func testSeparatorAndDashPathsAreDistinguished() {
+        XCTAssertEqual(MountBookmarks.slug(for: "/a/b"), "a-b-3a8e75c1")
+        XCTAssertEqual(MountBookmarks.slug(for: "/a-b"), "a-b-2a89df63")
+        XCTAssertNotEqual(MountBookmarks.slug(for: "/a/b"), MountBookmarks.slug(for: "/a-b"))
     }
 
     /// A slug is ONE filesystem component — it must never reintroduce a
     /// separator, or a mount would land outside its host directory.
     func testSlugIsAlwaysASingleComponent() {
-        for p in ["/a b/c:d", "/../../etc/passwd", "/x/y/z"] {
+        for p in ["/a b/c:d", "/../../etc/passwd", "/x/y/z", "/数据/子目录"] {
             let s = MountBookmarks.slug(for: p)
             XCTAssertFalse(s.contains("/"), "\(p) produced \(s)")
             XCTAssertFalse(s.hasPrefix("-"))
@@ -136,6 +155,43 @@ final class MountBookmarksTests: XCTestCase {
 
     func testSlugIsLengthCapped() {
         XCTAssertLessThanOrEqual(MountBookmarks.slug(for: "/" + String(repeating: "x", count: 500)).count, 60)
+    }
+
+    // MARK: - shouldAutoMount
+
+    func testAutoMountsAReadyUnmountedHostWithAnAutoPin() {
+        XCTAssertTrue(MountBookmarks.shouldAutoMount(
+            isReady: true, isMounted: false, alreadyAttempted: false, hasAutoPin: true))
+    }
+
+    /// REGRESSION: this was edge-triggered on "just became ready", so it almost
+    /// never fired — the app loads hosts BEFORE the pinned folders, so the first
+    /// poll had no pins, and by the second poll the host was already ready and
+    /// the edge had passed. Hosts are normally already connected at launch.
+    func testAutoMountsAHostThatWasAlreadyReadyAtLaunch() {
+        // No "edge" anywhere in the inputs — readiness alone is enough.
+        XCTAssertTrue(MountBookmarks.shouldAutoMount(
+            isReady: true, isMounted: false, alreadyAttempted: false, hasAutoPin: true),
+            "a host already connected at launch must still auto-mount")
+    }
+
+    func testDoesNotAutoMountWhenAlreadyMounted() {
+        XCTAssertFalse(MountBookmarks.shouldAutoMount(
+            isReady: true, isMounted: true, alreadyAttempted: false, hasAutoPin: true))
+    }
+
+    /// One attempt per connection: a manual unmount must stay unmounted rather
+    /// than being immediately re-mounted on the next 5s poll.
+    func testDoesNotRemountAfterAManualUnmount() {
+        XCTAssertFalse(MountBookmarks.shouldAutoMount(
+            isReady: true, isMounted: false, alreadyAttempted: true, hasAutoPin: true))
+    }
+
+    func testDoesNotAutoMountWithoutAnAutoPinOrWhenNotReady() {
+        XCTAssertFalse(MountBookmarks.shouldAutoMount(
+            isReady: true, isMounted: false, alreadyAttempted: false, hasAutoPin: false))
+        XCTAssertFalse(MountBookmarks.shouldAutoMount(
+            isReady: false, isMounted: false, alreadyAttempted: false, hasAutoPin: true))
     }
 
     // MARK: - store round-trip

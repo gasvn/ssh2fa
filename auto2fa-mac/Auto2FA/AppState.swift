@@ -50,7 +50,7 @@ final class AppState: ObservableObject {
     @Published var hosts: [SSHHost] = [] {
         didSet {
             celebrateFirstConnectIfNeeded()
-            autoMountConnectedHosts(previous: oldValue)
+            autoMountConnectedHosts()
         }
     }
     @Published var tunnels: [Tunnel] = []
@@ -1117,20 +1117,20 @@ final class AppState: ObservableObject {
     /// This is what removes the "every session starts by mounting again" step.
     /// Fires on the DISCONNECTED→READY edge only, once per connection, and never
     /// when something is already mounted for that host.
-    private func autoMountConnectedHosts(previous: [SSHHost]) {
-        let wasReady = Dictionary(uniqueKeysWithValues: previous.map { ($0.host, $0.isMasterReady) })
+    private func autoMountConnectedHosts() {
         for host in hosts {
             // Re-arm as soon as the host is not ready, so a reconnect mounts again.
             guard host.isMasterReady else {
                 autoMountAttempted.remove(host.host)
                 continue
             }
-            guard wasReady[host.host] != true else { continue }   // only the edge
-            guard !host.isMounted else { continue }               // already mounted
-            guard !autoMountAttempted.contains(host.host) else { continue }
-            guard let path = MountBookmarks.autoMountPath(for: host.host, in: mountBookmarks) else {
-                continue
-            }
+            let path = MountBookmarks.autoMountPath(for: host.host, in: mountBookmarks)
+            guard MountBookmarks.shouldAutoMount(
+                    isReady: host.isMasterReady,
+                    isMounted: host.isMounted,
+                    alreadyAttempted: autoMountAttempted.contains(host.host),
+                    hasAutoPin: path != nil),
+                  let path else { continue }
             autoMountAttempted.insert(host.host)
             Task { await self.toggleMount(host, remotePath: path, openInFinder: false) }
         }
