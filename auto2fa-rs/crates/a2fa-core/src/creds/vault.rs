@@ -35,8 +35,12 @@ use super::{otpauth_acct, password_acct, SecretStore};
 
 /// Keychain account holding every host's credentials.
 ///
-/// The name is deliberately not a legal host name (`is_safe_host_name` rejects
-/// a leading `_`), so it can never collide with a per-host legacy item.
+/// It cannot collide with a per-host legacy item because those always carry a
+/// `.password` / `.otpauth` SUFFIX (`password_acct` / `otpauth_acct`), and this
+/// name has none. Note the collision-safety does NOT come from the name being
+/// an illegal host name — `is_safe_host_name` permits a leading underscore, so
+/// `__ssh2fa_vault__` is in fact a perfectly legal host name. The suffix is the
+/// whole guarantee; `vault_account_cannot_collide_with_a_host_entry` pins it.
 pub const VAULT_ACCOUNT: &str = "__ssh2fa_vault__";
 
 const VAULT_VERSION: u32 = 1;
@@ -283,6 +287,34 @@ mod tests {
     fn legacy(store: &FakeStore, host: &str, pw: &str, otp: &str) {
         store.set(&password_acct(host), pw).unwrap();
         store.set(&otpauth_acct(host), otp).unwrap();
+    }
+
+    /// The real collision guarantee: legacy per-host accounts always carry a
+    /// suffix, so no host name — not even one spelled exactly like the vault
+    /// account, which `is_safe_host_name` permits — can produce it.
+    #[test]
+    fn vault_account_cannot_collide_with_a_host_entry() {
+        for host in ["k6", VAULT_ACCOUNT, "_underscore", "__ssh2fa_vault__"] {
+            assert_ne!(password_acct(host), VAULT_ACCOUNT, "host {host:?}");
+            assert_ne!(otpauth_acct(host), VAULT_ACCOUNT, "host {host:?}");
+        }
+        // And a host spelled like the vault really is accepted as a host name —
+        // the comment used to claim otherwise.
+        assert!(crate::model::is_safe_host_name(VAULT_ACCOUNT));
+    }
+
+    /// Even a host named exactly like the vault account round-trips without
+    /// disturbing the vault itself.
+    #[test]
+    fn a_host_named_like_the_vault_does_not_corrupt_it() {
+        let s = FakeStore::default();
+        set_host_creds(&s, "k6", HostCreds { password: "real".into(), otpauth: "o".into() })
+            .unwrap();
+        set_host_creds(&s, VAULT_ACCOUNT, HostCreds { password: "odd".into(), otpauth: "o2".into() })
+            .unwrap();
+        assert_eq!(get_host_creds(&s, "k6").unwrap().password, "real");
+        assert_eq!(get_host_creds(&s, VAULT_ACCOUNT).unwrap().password, "odd");
+        assert_eq!(s.map.borrow().len(), 1, "still one item");
     }
 
     #[test]
