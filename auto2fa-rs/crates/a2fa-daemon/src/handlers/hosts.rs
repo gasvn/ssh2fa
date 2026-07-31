@@ -356,14 +356,26 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     // behaviour). Mounting the directory you actually work in — rather than the
     // filesystem root every time — is the difference between a mount you use
     // and one you re-navigate on every login.
-    let remote_path = params
-        .get("remote_path")
-        .and_then(|v| v.as_str())
+    let remote_path = opt_str(params, "remote_path")?
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("/")
         .to_owned();
     validate_remote_path(&remote_path)?;
+
+    // Parsed and validated BEFORE the mount latch is claimed, like remote_path
+    // above: a malformed request must not briefly block legitimate mount work
+    // for this host. (Caught by a test that flaked only when run alongside
+    // another test using the same host name — the latch is process-global.)
+    let explicit_point = opt_str(params, "mount_point")?.map(std::path::PathBuf::from);
+    if let Some(p) = &explicit_point {
+        // Only ever act on paths inside our own mounts root.
+        if !p.starts_with(mounts_root()) {
+            return Err(Error::BadParams(
+                "mount_point must be inside the SSH2FA mounts folder".into(),
+            ));
+        }
+    }
 
     // Claim the per-host latch FIRST (RAII release on every path). A second
     // toggle for the same host while one is in flight returns "busy" instead of
@@ -431,18 +443,6 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     // column cannot be mapped back to a remote path in general (with the fuse-t
     // backend it reads `fuse-t:/<volname>`, not `<host>:<path>`), and the slug
     // in the path is lossy — `/a/b` and `/a-b` produce the same one.
-    let explicit_point = params
-        .get("mount_point")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from);
-    if let Some(p) = &explicit_point {
-        // Only ever act on paths inside our own mounts root.
-        if !p.starts_with(mounts_root()) {
-            return Err(Error::BadParams(
-                "mount_point must be inside the SSH2FA mounts folder".into(),
-            ));
-        }
-    }
     let mount_point = explicit_point
         .clone()
         .unwrap_or_else(|| mount_point_for(&host_name, &remote_path));
@@ -632,7 +632,7 @@ pub fn host_mounts(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
     // Optional host filter; without it, report everything (the app renders the
     // whole set in one pass rather than one RPC per host).
-    let filter = params.get("host").and_then(|v| v.as_str());
+    let filter = opt_str(params, "host")?;
     if let Some(h) = filter {
         if !a2fa_core::model::is_safe_host_name(h) {
             return Err(Error::BadParams("invalid host name".into()));
@@ -683,7 +683,7 @@ pub fn host_mount_repair(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
     let host_name = host_param(params)?;
 
     // Repair every mount for the host, or just one if a path is given.
-    let only_point = params.get("mount_point").and_then(|v| v.as_str());
+    let only_point = opt_str(params, "mount_point")?;
     let root = mounts_root();
     let targets: Vec<std::path::PathBuf> = a2fa_core::mounts::list_active_mounts(&root)
         .into_iter()
@@ -1377,9 +1377,7 @@ pub fn host_list_dir(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
         }
     }
 
-    let path = params
-        .get("path")
-        .and_then(|v| v.as_str())
+    let path = opt_str(params, "path")?
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("/")
@@ -1588,6 +1586,32 @@ fn require_host(state: &Arc<Mutex<State>>, host: &str) -> Result<()> {
     }
 }
 
+/// An OPTIONAL string parameter — absent is fine, present-but-wrong-type is not.
+///
+/// `params.get(k).and_then(|v| v.as_str())` silently maps a number, array or
+/// object to `None`, i.e. "not provided". For a parameter that SELECTS what an
+/// action operates on, that turns a malformed request into a different action:
+/// `host_mount_toggle {"remote_path": 123}` fell back to "/" and mounted the
+/// filesystem root the caller never asked for, and a wrong-typed `mount_point`
+/// stopped addressing an existing mount and toggled one instead. Found by
+/// fuzzing the live IPC surface.
+fn opt_str<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(other) => Err(Error::BadParams(format!(
+            "{key} must be a string, got {}",
+            match other {
+                Value::Number(_) => "a number",
+                Value::Bool(_) => "a boolean",
+                Value::Array(_) => "an array",
+                Value::Object(_) => "an object",
+                _ => "another type",
+            }
+        ))),
+    }
+}
+
 /// Read the `host` param, validating it as a safe host name.
 ///
 /// The name is used as a Keychain account key and (for the test login) as ssh
@@ -1735,14 +1759,8 @@ pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result
     let host_name = host_param(params)?;
     require_host(state, &host_name)?;
 
-    let new_password = params
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned());
-    let new_otpauth = params
-        .get("otpauth_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_owned());
+    let new_password = opt_str(params, "password")?.map(|s| s.to_owned());
+    let new_otpauth = opt_str(params, "otpauth_url")?.map(|s| s.trim().to_owned());
 
     if new_password.is_none() && new_otpauth.is_none() {
         return Err(Error::BadParams(
@@ -2526,10 +2544,11 @@ mod tests {
     /// otherwise a client could ask the daemon to unmount an arbitrary volume.
     #[test]
     fn mount_toggle_refuses_a_mount_point_outside_the_mounts_root() {
-        let state = make_state_with_host("k6", true);
+        let host = "a2fa-test-outsideroot";
+        let state = make_state_with_host(host, true);
         let err = host_mount_toggle(
             &state,
-            &json!({"host": "k6", "mount_point": "/Volumes/SomeoneElse"}),
+            &json!({"host": host, "mount_point": "/Volumes/SomeoneElse"}),
         )
         .unwrap_err();
         assert!(
@@ -2537,7 +2556,7 @@ mod tests {
             "got {err:?}"
         );
         // …and the mount latch must not be left claimed by the rejection.
-        assert!(!mount_in_flight().lock().unwrap().contains("k6"));
+        assert!(!mount_in_flight().lock().unwrap().contains(host));
     }
 
     /// REGRESSION: an explicit mount_point that is no longer mounted must be a
@@ -2557,6 +2576,45 @@ mod tests {
         assert_eq!(v["mounted"], false);
         assert_eq!(v["note"], "already unmounted");
         assert!(!mp.exists(), "must not have created or mounted anything");
+    }
+
+    /// REGRESSION (found by fuzzing the live IPC surface): a wrong-typed
+    /// OPTIONAL parameter was silently read as "absent", which for parameters
+    /// that select WHAT to act on turned a malformed request into a different
+    /// action — `remote_path: 123` mounted "/" instead, and a wrong-typed
+    /// `mount_point` toggled a mount instead of addressing an existing one.
+    #[test]
+    fn wrong_typed_optional_params_are_refused_not_ignored() {
+        // A host name unique to this test: `mount_in_flight` is process-global,
+        // so sharing a name with a parallel test made this flake.
+        let host = "a2fa-test-badtypes";
+        let state = make_state_with_host(host, true);
+        for (method, params) in [
+            ("toggle-path", json!({"host": host, "remote_path": 123})),
+            ("toggle-point", json!({"host": host, "mount_point": 42})),
+        ] {
+            let err = host_mount_toggle(&state, &params).unwrap_err();
+            assert!(
+                matches!(err, Error::BadParams(ref m) if m.contains("must be a string")),
+                "{method}: got {err:?}"
+            );
+        }
+        let err = host_mount_repair(&state, &json!({"host": host, "mount_point": {"a": 1}}))
+            .unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)), "got {err:?}");
+        let err = host_mounts(&state, &json!({"host": 999})).unwrap_err();
+        assert!(matches!(err, Error::BadParams(_)), "got {err:?}");
+        let err = host_set_credentials(&state, &json!({"host": host, "password": 5}))
+            .unwrap_err();
+        assert!(matches!(err, Error::BadParams(ref m) if m.contains("must be a string")));
+    }
+
+    #[test]
+    fn opt_str_accepts_absent_null_and_strings() {
+        let p = json!({"a": "x", "b": null});
+        assert_eq!(opt_str(&p, "a").unwrap(), Some("x"));
+        assert_eq!(opt_str(&p, "b").unwrap(), None);
+        assert_eq!(opt_str(&p, "missing").unwrap(), None);
     }
 
     #[test]

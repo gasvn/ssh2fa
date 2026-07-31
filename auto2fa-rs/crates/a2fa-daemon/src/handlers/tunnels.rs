@@ -681,6 +681,18 @@ pub fn tunnel_set_ports(
         ));
     }
 
+    // Confirm the tunnel exists BEFORE the port checks. The bind check below
+    // momentarily binds the port, which is a real side effect: doing it for a
+    // request that is going to fail anyway needlessly disturbs whatever else is
+    // probing that port. (Caught by a flaky test — this transient bind raced
+    // another test's own bind check on the same port.)
+    {
+        let guard = crate::lock_state(state);
+        if !guard.tunnels.iter().any(|t| t.name == name) {
+            return Err(Error::NotFound(name.clone()));
+        }
+    }
+
     // Reject a local port already claimed by ANOTHER tunnel. Two tunnels on one
     // local port is a guaranteed ExitOnForwardFailure death for whichever starts
     // second, and the failure surfaces far from this edit.
@@ -1423,12 +1435,20 @@ mod tests {
         assert_eq!(guard.tunnels[0].remote_port, 7000);
     }
 
+    /// An unknown tunnel is rejected BEFORE the port checks — the bind check is
+    /// a real side effect (it momentarily binds the port) and must not run for
+    /// a request that cannot succeed.
     #[test]
-    fn set_ports_unknown_tunnel_is_not_found() {
+    fn set_ports_unknown_tunnel_is_not_found_without_touching_the_port() {
         let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
-        let err = tunnel_set_ports(&state, &json!({"name": "ghost", "local_port": 9000}), None)
+        // Hold the port: if the check ran before the existence check, this
+        // would surface as PortInUse instead of NotFound.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let held = listener.local_addr().unwrap().port();
+        let err = tunnel_set_ports(&state, &json!({"name": "ghost", "local_port": held}), None)
             .unwrap_err();
-        assert!(matches!(err, Error::NotFound(_)));
+        assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
+        drop(listener);
     }
 
     // ---- list_tunnels --------------------------------------------------
