@@ -1415,6 +1415,27 @@ pub fn host_list_dir(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value>
 // host_remove — the missing other half of host_add
 // ---------------------------------------------------------------------------
 
+/// Drop `host` from a tunnel's pinned jump-host list.
+///
+/// Returns the new value: `None` means "any ready host", which is what an
+/// emptied list must become. A tunnel pinned ONLY to a host that is then
+/// removed would otherwise wait forever — the jump lookup finds no matching
+/// ready host, so the tunnel parks at "waiting for jump host" and never even
+/// attempts a start, which means the recovery-failure auto-stop never fires
+/// either. Falling back to "any ready host" keeps it working instead of
+/// stranding it.
+pub(crate) fn jump_candidates_without(
+    candidates: &Option<Vec<String>>,
+    host: &str,
+) -> Option<Vec<String>> {
+    let list = candidates.as_ref()?;
+    if !list.iter().any(|c| c == host) {
+        return candidates.clone();
+    }
+    let kept: Vec<String> = list.iter().filter(|c| c.as_str() != host).cloned().collect();
+    if kept.is_empty() { None } else { Some(kept) }
+}
+
 /// Deregister a host completely: stop its master, delete both Keychain entries,
 /// drop it from passwords.json, and remove it from State.
 ///
@@ -1510,10 +1531,31 @@ pub fn host_remove(
         log::warn!("[{host_name}] could not update passwords.json during removal: {e}");
     }
 
-    // 6. Drop it from State so it disappears from list_hosts immediately.
-    {
+    // 6. Drop it from State so it disappears from list_hosts immediately, and
+    //    release any tunnel that was pinned to it (see
+    //    `jump_candidates_without` — a tunnel pinned only to this host would
+    //    otherwise wait for a jump host that can never appear).
+    let released: Vec<String> = {
         let mut guard = crate::lock_state(state);
         guard.hosts.retain(|h| h.host != host_name);
+        let mut released = Vec::new();
+        for t in guard.tunnels.iter_mut() {
+            let updated = jump_candidates_without(&t.jump_candidates, &host_name);
+            if updated != t.jump_candidates {
+                t.jump_candidates = updated;
+                t.last_msg = format!("jump host '{host_name}' was removed — using any ready host");
+                released.push(t.name.clone());
+            }
+        }
+        released
+    };
+    if !released.is_empty() {
+        log::info!(
+            "[{host_name}] released {} tunnel(s) pinned to this host: {}",
+            released.len(),
+            released.join(", ")
+        );
+        crate::handlers::tunnels::persist_tunnels(state);
     }
 
     log::info!("[{host_name}] host removed (credentials_deleted={credentials_deleted})");
@@ -2212,6 +2254,34 @@ mod tests {
             !dir.exists(),
             "removal must clean up ~/Mounts/<host>, found {dir:?}"
         );
+    }
+
+    // ---- jump-host pins survive a host removal -------------------------
+
+    #[test]
+    fn removing_a_host_drops_it_from_a_multi_host_pin() {
+        let c = Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            jump_candidates_without(&c, "b"),
+            Some(vec!["a".to_string(), "c".to_string()])
+        );
+    }
+
+    /// REGRESSION: a tunnel pinned ONLY to the removed host would wait forever
+    /// for a jump host that can never appear — it never even attempts a start,
+    /// so the recovery-failure auto-stop never fires either. An emptied pin must
+    /// become None ("any ready host").
+    #[test]
+    fn removing_the_only_pinned_host_falls_back_to_any_host() {
+        let c = Some(vec!["kempner".to_string()]);
+        assert_eq!(jump_candidates_without(&c, "kempner"), None);
+    }
+
+    #[test]
+    fn removing_an_unrelated_host_leaves_pins_untouched() {
+        let c = Some(vec!["a".to_string()]);
+        assert_eq!(jump_candidates_without(&c, "zzz"), c);
+        assert_eq!(jump_candidates_without(&None, "a"), None);
     }
 
     #[test]

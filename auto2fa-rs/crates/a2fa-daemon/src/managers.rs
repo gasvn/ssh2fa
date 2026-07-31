@@ -1196,6 +1196,32 @@ fn maybe_spawn_session_probe(
             if !schedule.should_rebuild(failures) {
                 return;
             }
+
+            // AUTHORITATIVE RE-CHECK before acting. A probe can be in flight
+            // across a wake: the master it was testing dies, `wake_recover`
+            // rebuilds a healthy replacement on the same ControlPath, and this
+            // probe then finishes with a failure that describes the OLD master.
+            // Acting on it would mark the fresh, healthy master dead and cost a
+            // needless 2FA login. One confirm probe against whatever is there
+            // NOW settles it, and it only runs on the rare failure path.
+            if managers_owned.is_starting(&host_owned, 0) {
+                info!("[{host_owned}] rebuild already in flight — discarding stale probe result");
+                return;
+            }
+            if session_works(&cp, &host_owned) {
+                info!(
+                    "[{host_owned}] confirm probe succeeded — the master was replaced while                      the probe ran; not rebuilding"
+                );
+                let mut probes = managers_owned
+                    .probes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(e) = probes.get_mut(&host_owned) {
+                    e.consecutive_failures = 0;
+                }
+                return;
+            }
+
             // Mark the slot dead; the existing heartbeat restart path rebuilds
             // it. Going through the normal path keeps ONE rebuild mechanism.
             warn!("[{host_owned}] master is up but unusable — marking dead for rebuild");

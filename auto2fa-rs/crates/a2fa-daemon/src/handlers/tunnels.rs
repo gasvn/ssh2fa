@@ -685,16 +685,31 @@ pub fn tunnel_set_ports(
     // local port is a guaranteed ExitOnForwardFailure death for whichever starts
     // second, and the failure surfaces far from this edit.
     if let Some(port) = new_local {
-        let guard = crate::lock_state(state);
-        if let Some(other) = guard
-            .tunnels
-            .iter()
-            .find(|t| t.name != name && t.local_port == port)
-        {
+        let taken_by = {
+            let guard = crate::lock_state(state);
+            guard
+                .tunnels
+                .iter()
+                .find(|t| t.name != name && t.local_port == port)
+                .map(|t| t.name.clone())
+        };
+        if let Some(other) = taken_by {
             return Err(Error::BadParams(format!(
-                "local port {port} is already used by tunnel '{}'",
-                other.name
+                "local port {port} is already used by tunnel '{other}'"
             )));
+        }
+        // …and by anything ELSE on this Mac. `tunnel_add` has always done this
+        // bind check; leaving it out here accepted a port held by an unrelated
+        // process (another dev server, a stale forward) and let it fail later at
+        // ExitOnForwardFailure, far from the edit that caused it. Skipped when
+        // the tunnel already holds the port itself — its own live child binds
+        // it, so the check would reject a no-op edit.
+        let already_ours = {
+            let guard = crate::lock_state(state);
+            guard.tunnels.iter().any(|t| t.name == name && t.local_port == port)
+        };
+        if !already_ours && port_in_use(port) {
+            return Err(Error::PortInUse(port));
         }
     }
 
@@ -1375,6 +1390,37 @@ mod tests {
         assert!(matches!(err, Error::BadParams(ref m) if m.contains("already used")));
         // Keeping its OWN port is not a conflict with itself.
         tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 8888}), None).unwrap();
+    }
+
+    /// `tunnel_add` has always refused a port held by any other process; the
+    /// port EDITOR did not, so it accepted a port owned by an unrelated program
+    /// and deferred the failure to ExitOnForwardFailure at start time.
+    #[test]
+    fn set_ports_rejects_a_port_held_by_another_process() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        // Hold a real port for the duration of the check.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = listener.local_addr().unwrap().port();
+
+        let err = tunnel_set_ports(&state, &json!({"name": "nb", "local_port": taken}), None)
+            .unwrap_err();
+        assert!(matches!(err, Error::PortInUse(p) if p == taken), "got {err:?}");
+        assert_eq!(
+            crate::lock_state(&state).tunnels[0].local_port, 8888,
+            "a rejected edit must change nothing"
+        );
+        drop(listener);
+    }
+
+    /// Re-submitting the tunnel's OWN port must not be rejected — its own live
+    /// child is what binds it.
+    #[test]
+    fn set_ports_allows_resubmitting_its_own_port() {
+        let state = make_tunnel_with_status("nb", 8888, TunnelStatus::Idle);
+        tunnel_set_ports(&state, &json!({"name": "nb", "local_port": 8888, "remote_port": 7000}), None)
+            .unwrap();
+        let guard = crate::lock_state(&state);
+        assert_eq!(guard.tunnels[0].remote_port, 7000);
     }
 
     #[test]
