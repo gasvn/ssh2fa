@@ -24,10 +24,9 @@ Gatekeeper will block it on others.
 1. Builds the **universal** (`arm64` + `x86_64`) Rust daemon via `lipo`
    (falls back to arm64-only if the x86_64 target isn't installed).
 2. `xcodebuild`s the Release app.
-3. Copies `ssh2fa-daemon` into `SSH2FA.app/Contents/Resources/` (the app's
-   first-run installer copies it to `~/.ssh2fa/` and registers the
-   LaunchAgent).
-4. Signs the embedded daemon (pinned identifier `com.ssh2fa.daemon`) then the
+3. Copies `ssh2fa-daemon` into `SSH2FA.app/Contents/Resources/`; the
+   LaunchAgent runs it in place from the signed bundle.
+4. Signs the embedded daemon (pinned code identifier `com.auto2fa.daemon`) then the
    `.app`, with **hardened runtime** + the entitlements in
    `auto2fa-mac/SSH2FA.entitlements`. Prefers a **Developer ID Application**
    cert; falls back to **Apple Development** (local only).
@@ -141,14 +140,15 @@ trashes `~/.ssh2fa`, the LaunchAgent plist, prefs, and every Keychain credential
 under the `auto2fa` service. Validate edits with `brew style ./Casks/ssh2fa.rb`
 and `brew audit --cask gasvn/tap/ssh2fa`.
 
-## Future: Sparkle auto-update
+## In-app updates and future Sparkle support
 
-The current updater only *notifies* (it never downloads/installs — the user
-stays in control of what runs, since the app holds SSH creds). If you later
-want true auto-update, integrate [Sparkle](https://sparkle-project.org): add the
-SPM package, generate an EdDSA key pair, host an `appcast.xml`, and sign each
-DMG with the Sparkle key. That's a deliberate, separate step — not required for
-a first release.
+The app checks GitHub and offers a verified one-click replacement only when the
+running build has a system-trusted signing chain. The current self-signed public
+build deliberately falls back to Homebrew/DMG instructions: downloaded builds
+cannot pass strict certificate validation until releases use Developer ID.
+
+If you later want Sparkle-managed updates, add the SPM package, generate an
+EdDSA key pair, host an `appcast.xml`, and sign each DMG with the Sparkle key.
 
 ## Notes carried from hard-won experience
 

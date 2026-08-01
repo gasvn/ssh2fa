@@ -1109,6 +1109,7 @@ fn test_login(
     ]);
 
     let result = run_login(&argv, password, otp_fn);
+    let ssh_log = std::fs::read_to_string(&log_path).unwrap_or_default();
 
     // Clean up temp files (surface a failure instead of silently leaving it).
     if let Err(e) = std::fs::remove_file(&log_path) {
@@ -1117,12 +1118,35 @@ fn test_login(
 
     match result {
         Ok(LoginOutcome::Success) => (true, String::new()),
-        Ok(LoginOutcome::AuthFailed { reason }) => (false, reason),
-        Ok(LoginOutcome::Timeout) => (false, "Timeout before login completed".into()),
-        Ok(LoginOutcome::Eof { output: _ }) => {
-            (false, "SSH exited before login completed — host unreachable?".into())
+        Ok(LoginOutcome::AuthFailed { reason }) => (
+            false,
+            a2fa_core::ssh::failure::actionable_failure(&reason),
+        ),
+        Ok(LoginOutcome::Timeout { output }) => {
+            let detail = if output.trim().is_empty() && ssh_log.trim().is_empty() {
+                "Connection timed out".into()
+            } else {
+                format!(
+                    "Login timed out; last SSH message: {}",
+                    a2fa_core::ssh::failure::failure_reason_from_sources(
+                        &output,
+                        &ssh_log,
+                    )
+                )
+            };
+            (false, a2fa_core::ssh::failure::actionable_failure(&detail))
         }
-        Err(e) => (false, format!("System error: {e}")),
+        Ok(LoginOutcome::Eof { output }) => {
+            let reason = a2fa_core::ssh::failure::failure_reason_from_sources(
+                &output,
+                &ssh_log,
+            );
+            (false, a2fa_core::ssh::failure::actionable_failure(&reason))
+        }
+        Err(e) => (
+            false,
+            a2fa_core::ssh::failure::actionable_failure(&e.to_string()),
+        ),
     }
 }
 

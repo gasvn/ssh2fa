@@ -147,8 +147,11 @@ pub enum LoginOutcome {
     Success,
     /// Authentication rejected (wrong password / OTP / rate-limited).
     AuthFailed { reason: String },
-    /// The expect loop timed out — host unreachable or extremely slow.
-    Timeout,
+    /// The expect loop timed out — host unreachable or extremely slow. Keep
+    /// the bounded transcript so the caller can distinguish (for example) a
+    /// stalled network handshake from a server banner followed by a hung PAM
+    /// prompt instead of collapsing both to "Timeout".
+    Timeout { output: String },
     /// SSH exited before the expect loop completed.
     Eof { output: String },
 }
@@ -192,6 +195,24 @@ struct Patterns {
     shell_prompt:   Regex,   // $ or # at end of segment
     login_incorrect: Regex,
     permission_denied: Regex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialPrompt {
+    Otp,
+    Password,
+    None,
+}
+
+fn credential_prompt(patterns: &Patterns, text: &str) -> CredentialPrompt {
+    // Deliberately test OTP first: "One-time password:" matches both regexes.
+    if patterns.otp.is_match(text) {
+        CredentialPrompt::Otp
+    } else if patterns.password.is_match(text) {
+        CredentialPrompt::Password
+    } else {
+        CredentialPrompt::None
+    }
 }
 
 impl Patterns {
@@ -325,7 +346,7 @@ pub fn run_login(
         if start.elapsed() >= LOGIN_TIMEOUT + deadline_extension {
             warn!("ssh login timed out after {}s", LOGIN_TIMEOUT.as_secs());
             // reaper kills-and-reaps the still-blocked client on drop.
-            return Ok(LoginOutcome::Timeout);
+            return Ok(LoginOutcome::Timeout { output: buf });
         }
 
         // Check if child has already exited. `expect` is safe: the child is
@@ -430,39 +451,23 @@ pub fn run_login(
             return Ok(LoginOutcome::Success);
         }
 
-        // Failure after ANY credential was sent. These used to be gated on
-        // otp_sent only, so a wrong password (server prints "Permission
-        // denied"/re-prompts "Password:" BEFORE any OTP exchange) matched
-        // nothing, burned the full 60 s, and was reported as "login timed
-        // out" instead of an auth failure.
-        if password_sent || otp_sent {
-            if pat.login_incorrect.is_match(&buf) {
+        // OTP must be handled BEFORE password rejection. Prompts such as
+        // "One-time password:" intentionally match the OTP regex but also
+        // contain the substring "password:"; treating the password regex
+        // first incorrectly reports a bad SSH password without ever sending
+        // the 2FA code. This is server/PAM-prompt dependent, which made the bug
+        // appear only on some clusters.
+        let prompt = credential_prompt(&pat, &buf);
+        if prompt == CredentialPrompt::Otp {
+            if otp_sent {
                 return Ok(LoginOutcome::AuthFailed {
-                    reason: "Login incorrect".into(),
+                    reason: credential_rejection_reason(
+                        password_sent,
+                        otp_sent,
+                        "server re-prompted for a verification code",
+                    ),
                 });
             }
-            if pat.permission_denied.is_match(&buf) {
-                return Ok(LoginOutcome::AuthFailed {
-                    reason: "Permission denied".into(),
-                });
-            }
-            // Server re-prompted for a password AFTER we already sent one
-            // (buf was cleared after sending) — credential rejected. Post-OTP
-            // this is the classic replay/loop-back; pre-OTP it means the
-            // password itself was wrong.
-            if pat.password.is_match(&buf) {
-                return Ok(LoginOutcome::AuthFailed {
-                    reason: if otp_sent {
-                        "Server looped back to Password prompt".into()
-                    } else {
-                        "Password rejected (server re-prompted)".into()
-                    },
-                });
-            }
-        }
-
-        // OTP prompt (before or after password)
-        if !otp_sent && pat.otp.is_match(&buf) {
             let otp_t0 = Instant::now();
             let code = otp_provider()?;
             // Replay-wait time doesn't count against the login budget.
@@ -474,8 +479,51 @@ pub fn run_login(
             continue;
         }
 
+        // Failure after ANY credential was sent. These used to be gated on
+        // otp_sent only, so a wrong password (server prints "Permission
+        // denied"/re-prompts "Password:" BEFORE any OTP exchange) matched
+        // nothing, burned the full 60 s, and was reported as "login timed
+        // out" instead of an auth failure.
+        if password_sent || otp_sent {
+            if pat.login_incorrect.is_match(&buf) {
+                return Ok(LoginOutcome::AuthFailed {
+                    reason: credential_rejection_reason(
+                        password_sent,
+                        otp_sent,
+                        "Login incorrect",
+                    ),
+                });
+            }
+            if pat.permission_denied.is_match(&buf) {
+                return Ok(LoginOutcome::AuthFailed {
+                    reason: credential_rejection_reason(
+                        password_sent,
+                        otp_sent,
+                        "Permission denied",
+                    ),
+                });
+            }
+            // Server re-prompted for a password AFTER we already sent one
+            // (buf was cleared after sending) — credential rejected. Post-OTP
+            // this is the classic replay/loop-back; pre-OTP it means the
+            // password itself was wrong.
+            if prompt == CredentialPrompt::Password {
+                return Ok(LoginOutcome::AuthFailed {
+                    reason: credential_rejection_reason(
+                        password_sent,
+                        otp_sent,
+                        if otp_sent {
+                            "server looped back to Password prompt"
+                        } else {
+                            "server re-prompted"
+                        },
+                    ),
+                });
+            }
+        }
+
         // Password prompt
-        if !password_sent && pat.password.is_match(&buf) {
+        if !password_sent && prompt == CredentialPrompt::Password {
             info!("sending password");
             write_line(&mut writer, password)?;
             password_sent = true;
@@ -494,8 +542,10 @@ pub fn run_login(
         if pat.shell_prompt.is_match(&buf) || buf.contains(LOGIN_OK_MARKER) {
             LoginOutcome::Success
         } else if pat.login_incorrect.is_match(&buf) || pat.permission_denied.is_match(&buf) {
-            let reason = crate::ssh::failure::failure_reason(&buf);
-            LoginOutcome::AuthFailed { reason }
+            let evidence = crate::ssh::failure::failure_reason(&buf);
+            LoginOutcome::AuthFailed {
+                reason: credential_rejection_reason(password_sent, otp_sent, &evidence),
+            }
         } else {
             LoginOutcome::Eof { output: buf }
         }
@@ -520,6 +570,20 @@ fn cap_transcript(buf: &mut String, max: usize) {
         cut += 1;
     }
     buf.drain(..cut);
+}
+
+fn credential_rejection_reason(
+    password_sent: bool,
+    otp_sent: bool,
+    evidence: &str,
+) -> String {
+    if otp_sent {
+        format!("Verification code rejected ({evidence})")
+    } else if password_sent {
+        format!("Password rejected ({evidence})")
+    } else {
+        evidence.to_string()
+    }
 }
 
 fn write_line(w: &mut dyn Write, s: &str) -> Result<()> {
@@ -670,6 +734,55 @@ mod tests {
         // The password prompt must NOT be eaten by the OTP matcher.
         assert!(!pat.otp.is_match("Password:"));
         assert!(pat.password.is_match("Password:"));
+    }
+
+    #[test]
+    fn one_time_password_prompt_is_classified_as_otp_first() {
+        let pat = Patterns::new().unwrap();
+        let prompt = "One-time password: ";
+        assert!(pat.otp.is_match(prompt));
+        assert!(
+            pat.password.is_match(prompt),
+            "documents why regex match order is significant"
+        );
+        assert_eq!(credential_prompt(&pat, prompt), CredentialPrompt::Otp);
+        assert_eq!(
+            credential_prompt(&pat, "Password: "),
+            CredentialPrompt::Password
+        );
+    }
+
+    #[test]
+    fn rejection_reason_names_the_credential_phase() {
+        assert_eq!(
+            credential_rejection_reason(true, false, "Permission denied"),
+            "Password rejected (Permission denied)"
+        );
+        assert_eq!(
+            credential_rejection_reason(true, true, "Permission denied"),
+            "Verification code rejected (Permission denied)"
+        );
+    }
+
+    #[test]
+    fn run_login_sends_otp_for_one_time_password_prompt() {
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "printf 'Password: '; read password; \
+                 printf 'One-time password: '; read otp; \
+                 if [ \"$password\" = 'correct-password' ] && \
+                    [ \"$otp\" = '123456' ]; then \
+                    printf '{}\\n'; \
+                 else printf 'Permission denied\\n'; fi",
+                LOGIN_OK_MARKER
+            ),
+        ];
+
+        let outcome = run_login(&argv, "correct-password", || Ok("123456".into()))
+            .expect("scripted login should run");
+        assert!(matches!(outcome, LoginOutcome::Success));
     }
 
     #[test]

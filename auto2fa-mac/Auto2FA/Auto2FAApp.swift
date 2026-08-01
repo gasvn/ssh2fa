@@ -38,41 +38,25 @@ struct Auto2FAApp: App {
                 // .task avoids the race where ContentView's own .task
                 // would fire bootstrap before we've started the daemon.
                 //
-                // Honor the spawnDaemonOnLaunch user preference — if
-                // off, we just try to connect to an externally-managed
-                // daemon (LaunchAgent, manual launch, etc).
-                let spawnAllowed = UserDefaults.standard
-                    .object(forKey: SettingsKey.spawnDaemonOnLaunch) as? Bool ?? true
-                if spawnAllowed {
-                    // First-run / post-update: install the bundled daemon to
-                    // ~/.ssh2fa + register the LaunchAgent (no-op in a dev
-                    // build or when already installed). This is what makes
-                    // a downloaded .app self-contained — launchd then keeps
-                    // the daemon alive across reboots; ensureRunning below
-                    // just connects (or direct-spawns as a fallback).
-                    // Off the main actor: this runs launchctl (blocking) + a
-                    // bootstrap retry loop with sleeps. On main it froze the UI
-                    // for up to a few seconds on first install / app-move.
-                    // (Read `shared` here on the main actor, then hand the
-                    // instance to the detached task.)
-                    let daemon = DaemonProcess.shared
-                    await Task.detached { daemon.installBundledDaemonIfNeeded() }.value
-                    let result = await DaemonProcess.shared.ensureRunning()
-                    switch result {
-                    case .alreadyRunning:
-                        NSLog("[SSH2FA] daemon was already running")
-                    case .spawned(let pid):
-                        NSLog("[SSH2FA] spawned daemon, PID=\(pid)")
-                    case .failed(let reason):
-                        // Surface the reason but DON'T return — fall
-                        // through to bootstrap() so the connection watcher
-                        // + poll fallback start and recover once a daemon
-                        // appears (launchd may bring one up seconds later).
-                        // The old `return` was a permanent dead end.
-                        appState.connectionError = reason
-                    }
-                } else {
-                    NSLog("[SSH2FA] spawnDaemonOnLaunch=off; assuming external daemon")
+                // First-run / post-update: install and register SSH2FA's
+                // background service. This is intentionally automatic: the old
+                // "start helper" toggle did not stop an already-loaded
+                // LaunchAgent, so its off state was both misleading and left the
+                // app in a partially managed configuration.
+                let daemon = DaemonProcess.shared
+                await Task.detached { daemon.installBundledDaemonIfNeeded() }.value
+                let result = await DaemonProcess.shared.ensureRunning()
+                switch result {
+                case .alreadyRunning:
+                    NSLog("[SSH2FA] daemon was already running")
+                case .spawned(let pid):
+                    NSLog("[SSH2FA] spawned daemon, PID=\(pid)")
+                case .failed(let reason):
+                    // Surface the reason but DON'T return — bootstrap starts
+                    // the recovery machinery in case launchd appears shortly.
+                    NSLog("[SSH2FA] startup failed: \(reason)")
+                    appState.showConnectionFailure(
+                        String(localized: "SSH2FA couldn't start. Quit and reopen the app, then use Troubleshoot if the problem continues."))
                 }
                 await appState.bootstrap()
                 // Notify-only update reminder: daily background check that
@@ -243,8 +227,8 @@ struct Auto2FAApp: App {
                     if ran {
                         appState.notchPresenter.show(
                             systemImage: "arrow.triangle.2.circlepath",
-                            title: "Recovering tunnels…",
-                            description: "rebuilding SSH masters",
+                            title: "Restoring connections…",
+                            description: "checking hosts and tunnels",
                             tint: .yellow
                         )
                     }

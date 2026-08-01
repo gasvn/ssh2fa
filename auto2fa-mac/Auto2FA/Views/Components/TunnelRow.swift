@@ -106,7 +106,7 @@ struct TunnelRow: View {
                     Image(systemName: "bolt.fill")
                         .font(.caption2)
                         .foregroundStyle(.yellow)
-                        .help("Starts automatically when the daemon boots")
+                        .help("Starts automatically with SSH2FA")
                 }
                 if tunnel.postConnectCmd != nil {
                     Image(systemName: "terminal.fill")
@@ -176,7 +176,7 @@ struct TunnelRow: View {
                 // Metadata: aliveSince + fail count — compact fixed column.
                 metadata
                     .frame(width: 92, alignment: .leading)
-            } else if isFailedState && !hovering {
+            } else if isFailedState {
                 // Failed → show WHY inline (previously only in the hover tooltip).
                 Text(FriendlyText.tunnelStatusBlurb(tunnel))
                     .font(.rowMeta)
@@ -189,15 +189,10 @@ struct TunnelRow: View {
 
             Spacer(minLength: Spacing.s)
 
-            // TRAILING ZONE: at rest the via-menu + metadata above are shown; on
-            // hover a right-aligned icon+TEXT action bar (primary actions) + a
-            // labeled `⋯` overflow menu replaces it. Row height stays fixed.
-            if hovering {
-                actions
-                    .transition(.opacity)
-                overflowMenu
-                    .transition(.opacity)
-            } else if isFailedState {
+            // Recovery wins over hover so Retry/Node remain under the pointer
+            // from hover through mouse-down. Checking hover first made these
+            // buttons disappear as the user tried to click them.
+            if isFailedState {
                 // Failed → recovery actions at rest: Retry + re-pick Node.
                 Button { Task { await appState.toggleTunnel(tunnel) } } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
@@ -215,6 +210,11 @@ struct TunnelRow: View {
                     .disabled(appState.inFlightTunnels.contains(tunnel.name))
                     .transition(.opacity)
                 }
+            } else if hovering {
+                actions
+                    .transition(.opacity)
+                overflowMenu
+                    .transition(.opacity)
             }
         }
         .padding(.vertical, compactRows ? 1 : 2)

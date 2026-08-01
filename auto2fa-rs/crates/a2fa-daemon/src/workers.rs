@@ -215,7 +215,9 @@ pub fn spawn_host_start(
                 } else {
                     h.is_master_ready = false;
                     h.status = "Failed".into();
-                    h.last_msg = format!("Master slot {slot} login failed");
+                    h.last_msg = pool.last_failure.clone().unwrap_or_else(|| {
+                        "SSH login failed without a specific error. Open Troubleshoot → Logs for the latest SSH message.".into()
+                    });
                     warn!("[{host_name}] master failed — State updated");
                 }
             }
@@ -229,7 +231,9 @@ pub fn spawn_host_start(
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == spawn_host) {
             h.is_master_ready = false;
             h.status = "Failed".into();
-            h.last_msg = format!("spawn failed: {e}");
+            h.last_msg = a2fa_core::ssh::failure::actionable_failure(&format!(
+                "Could not start the SSH login worker: {e}"
+            ));
         }
     }
 }

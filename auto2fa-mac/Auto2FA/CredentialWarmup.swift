@@ -4,12 +4,11 @@ import Foundation
 ///
 /// # Why this exists
 ///
-/// The background helper is a separate binary, so every SSH2FA update ships a
-/// new one. macOS ties a Keychain item's authorization to the code identity that
-/// reads it, so after an update the first read of each saved item raises an
-/// "Always Allow" prompt — twice per host (password + 2FA secret). Discovered
-/// one at a time, that is a confusing drip: a credential view that hangs, a
-/// login that stalls, a "User canceled" error with no explanation.
+/// Old SSH2FA builds wrote either one Keychain item per secret or a consolidated
+/// item with an unstable access policy.  The current daemon copies those secrets
+/// into one fresh item owned by its stable signed identity.  Reading the old
+/// items may require authorization one final time; the new item does not require
+/// authorization again on later releases.
 ///
 /// Measured on a real install: the first read per item took 7-30s, and items
 /// whose prompt was dismissed returned "User canceled the operation".
@@ -28,35 +27,42 @@ enum CredentialWarmup {
     ///
     /// Deliberately keyed on the BUILD, not the marketing version: two builds of
     /// the same version are still two distinct binaries to macOS.
+    /// - `consolidated`: the saved secrets already live in the verified stable
+    ///   vault. No authorization probe or banner is needed after that.
     static func shouldOffer(hostCount: Int,
                             currentBuild: String,
-                            lastWarmedBuild: String?) -> Bool {
+                            lastWarmedBuild: String?,
+                            consolidated: Bool = false) -> Bool {
         guard hostCount > 0 else { return false }
         guard !currentBuild.isEmpty else { return false }
+        guard !consolidated else { return false }
         return currentBuild != lastWarmedBuild
     }
 
     /// Progress label for the pass, e.g. "Authorizing k6 (2 of 6)…".
     static func progressLabel(host: String, index: Int, total: Int) -> String {
-        "Authorizing \(host) (\(index + 1) of \(total))…"
+        String(localized: "Authorizing \(host) (\(index + 1) of \(total))…")
     }
 
-    /// Outcome summary. `failed` lists hosts whose prompt was denied or timed
-    /// out — they are reported by name, because the fix (reopen and choose
-    /// "Always Allow") is per host.
+    /// Outcome summary. `failed` lists old entries whose one-time read was
+    /// denied or timed out, so the user knows exactly which migration to retry.
     /// `consolidated` = how many hosts were folded into the single Keychain
-    /// item on this run. Reported because it changes what happens NEXT time:
-    /// one prompt per update instead of one per saved secret.
-    static func summary(total: Int, failed: [String], consolidated: Int = 0) -> String {
-        if total == 0 { return "No saved credentials to authorize." }
+    /// item on this run. Reported because it completes the one-time migration.
+    static func summary(total: Int, failed: [String], consolidated: Int = 0,
+                        consolidationSucceeded: Bool = true) -> String {
+        if total == 0 { return String(localized: "No saved credentials to authorize.") }
         if failed.isEmpty {
-            let base = "All \(total) host\(total == 1 ? "" : "s") authorized"
-            if consolidated > 0 {
-                return "\(base), and merged into a single Keychain item — future updates will ask once instead of once per host."
+            // Two keys rather than one with an interpolated "s": a translator
+            // needs the whole phrase, and plural rules differ per language.
+            let base = total == 1
+                ? String(localized: "All 1 host authorized")
+                : String(localized: "All \(total) hosts authorized")
+            if consolidationSucceeded {
+                return String(localized: "\(base), and moved into SSH2FA's stable Keychain vault — macOS won't ask again on future updates.")
             }
-            return "\(base) — macOS won't ask again for this version."
+            return String(localized: "\(base), but the new Keychain vault could not be verified. Try the migration again before relying on saved logins.")
         }
         let names = failed.joined(separator: ", ")
-        return "\(total - failed.count) of \(total) authorized. Not authorized: \(names). Open each one's Password & Setup and choose “Always Allow”."
+        return String(localized: "\(total - failed.count) of \(total) read. Could not read: \(names). Try again and allow SSH2FA to read each old Keychain item; this is the final migration pass.")
     }
 }

@@ -264,7 +264,7 @@ struct TunnelsView: View {
                 Menu("Tags") {
                     tagEditorMenu(for: t)
                 }
-                Toggle("Start on daemon launch", isOn: Binding(
+                Toggle("Start automatically with SSH2FA", isOn: Binding(
                     get: { t.autoStart },
                     set: { newValue in
                         Task { await appState.setTunnelAutostart(t, value: newValue) }

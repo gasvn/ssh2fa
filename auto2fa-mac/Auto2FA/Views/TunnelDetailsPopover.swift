@@ -311,8 +311,11 @@ struct TunnelDetailsPopover: View {
         .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
-    private func sectionHeader(_ t: String) -> some View {
-        Text(t.uppercased())
+    private func sectionHeader(_ t: LocalizedStringKey) -> some View {
+        // .textCase, not `t.uppercased()`: uppercasing the raw literal bypassed
+        // the localized value entirely, so these headers stayed English.
+        Text(t)
+            .textCase(.uppercase)
             .sectionHeaderStyle()
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, Spacing.xs)

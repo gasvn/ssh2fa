@@ -1,6 +1,27 @@
 import XCTest
 
 final class ConnectionRecoveryTests: XCTestCase {
+    func testNormalConnectionActivitiesUseProductLanguage() {
+        let messages = [
+            ConnectionActivity.starting.userMessage,
+            ConnectionActivity.reconnecting.userMessage,
+        ]
+        for message in messages {
+            let lower = message.lowercased()
+            XCTAssertTrue(message.contains("SSH2FA") || lower.contains("connections"))
+            XCTAssertFalse(lower.contains("helper"), "internal helper terminology leaked: \(message)")
+            XCTAssertFalse(lower.contains("daemon"), "internal daemon terminology leaked: \(message)")
+            XCTAssertFalse(lower.contains("error"), "normal activity must not read as an error: \(message)")
+        }
+    }
+
+    func testStartupAndReconnectHaveDifferentUserMeanings() {
+        XCTAssertNotEqual(ConnectionActivity.starting.userMessage,
+                          ConnectionActivity.reconnecting.userMessage)
+        XCTAssertTrue(ConnectionActivity.starting.userMessage.contains("Starting"))
+        XCTAssertTrue(ConnectionActivity.reconnecting.userMessage.contains("Restoring"))
+    }
+
     func testSlowBannerShowsOnlyAtOrPastThreshold() {
         let t = ConnectionRecovery.forceReconnectThreshold
         XCTAssertFalse(ConnectionRecovery.shouldShowSlowBanner(failStreak: 0))
@@ -31,8 +52,8 @@ final class ConnectionRecoveryTests: XCTestCase {
     /// `reconnectWithBackoff` gives up after ~4 minutes. With a fire-exactly-once
     /// trigger, any outage longer than that budget left the app permanently
     /// disconnected — the streak climbed past the threshold and nothing ever
-    /// retried, so the app sat on "Reconnecting to the background helper…" until
-    /// it was relaunched by hand (observed live for ~1.5 h after a daemon update).
+    /// retried until it was relaunched by hand (observed live for ~1.5 h after
+    /// an update).
     func testForceReconnectReArmsSoLongOutagesStillRecover() {
         let t = ConnectionRecovery.forceReconnectThreshold
         // Every further multiple of the threshold re-triggers a reconnect …

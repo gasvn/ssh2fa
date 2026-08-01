@@ -53,3 +53,5 @@ docs/superpowers/
 
 # local scratch derived-data
 auto2fa-mac/.bc/
+auto2fa-mac/.build_check/
+auto2fa-mac/.loc_dd/

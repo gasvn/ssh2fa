@@ -129,26 +129,38 @@ struct HostRow: View {
 
             Spacer(minLength: Spacing.s)
 
-            // TRAILING ZONE: at rest the metadata above is shown; on hover a
-            // right-aligned icon+TEXT action bar (primary actions) + a labeled
-            // `⋯` overflow menu replaces it. Row height stays fixed.
-            if hovering {
+            // Recovery is higher priority than hover. Previously `hovering`
+            // was checked first, so moving the pointer onto Retry immediately
+            // replaced it with the normal action bar before mouse-down; the
+            // visible button was literally impossible to click.
+            if host.displayState == .failed {
+                // Failed → make both the repair surface and retry discoverable.
+                // The inline text says why; Fix opens the exact connection /
+                // password / 2FA controls named by the daemon's diagnosis.
+                HStack(spacing: Spacing.xs) {
+                    Button { appState.presentHostSettings(host.host) } label: {
+                        Label("Fix…", systemImage: "wrench.and.screwdriver")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .help(friendlyMessage)
+
+                    // retryHost (stop→start) — a plain toggle would just STOP
+                    // a failed host, which is still `active`.
+                    Button { Task { await appState.retryHost(host) } } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .disabled(appState.inFlightHosts.contains(host.host))
+                    .help("Retry after applying the suggested fix")
+                }
+                .transition(.opacity)
+            } else if hovering {
                 actions
                     .transition(.opacity)
                 overflowMenu
                     .transition(.opacity)
-            } else if host.displayState == .failed {
-                // Failed → a prominent recovery action at rest (not hover-gated).
-                // retryHost (stop→start) — a plain toggle would just STOP a
-                // failed host, which is still `active`.
-                Button { Task { await appState.retryHost(host) } } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.glass)
-                .controlSize(.small)
-                .disabled(appState.inFlightHosts.contains(host.host))
-                .help("Retry connecting")
-                .transition(.opacity)
             }
         }
         .padding(.vertical, 2)
@@ -231,7 +243,7 @@ struct HostRow: View {
     private func glassActionButton<L: View>(
         id: String,
         disabled: Bool,
-        help: String,
+        help: LocalizedStringKey,
         action: @escaping () -> Void,
         @ViewBuilder label: () -> L
     ) -> some View {

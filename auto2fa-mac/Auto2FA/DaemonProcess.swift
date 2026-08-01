@@ -229,11 +229,18 @@ final class DaemonProcess {
         let home = NSHomeDirectory()
         let autoDir = home + "/.ssh2fa"
         let marker = autoDir + "/.daemon-bundle-version"
-        // Marker = "<app build>@<bundle daemon path>". A change in either (app
-        // updated, or app moved) means launchd should kickstart to pick up the
-        // new binary / path.
+        // Marker = "<daemon code hash>@<bundle daemon path>". A change in
+        // either means launchd should pick up a genuinely new binary/path.
+        // Using the GUI app build here made UI-only updates restart a healthy
+        // daemon and briefly expose an internal reconnect state to the user.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
-        let stamp = "\(appVersion)@\(bundled.path)"
+        let identityURL = bundled.deletingLastPathComponent()
+            .appendingPathComponent("ssh2fa-daemon.codehash")
+        let daemonIdentity = try? String(contentsOf: identityURL, encoding: .utf8)
+        let stamp = BackgroundServicePolicy.bundleStamp(
+            daemonPath: bundled.path,
+            daemonIdentity: daemonIdentity,
+            fallbackAppBuild: appVersion)
 
         try? fm.createDirectory(atPath: autoDir, withIntermediateDirectories: true)
         let prevStamp = (try? String(contentsOfFile: marker, encoding: .utf8))?
@@ -265,15 +272,16 @@ final class DaemonProcess {
         let agentsDir = home + "/Library/LaunchAgents"
         let plistPath = agentsDir + "/\(label).plist"
 
+        let env: [String: String] = [
+            // launchd gives agents a minimal PATH; include the Homebrew
+            // prefixes so the daemon can find sshfs/macFUSE tooling.
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
+            "SSH_CONFIG_PATH": home + "/.ssh/",
+        ]
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [daemonPath],
-            "EnvironmentVariables": [
-                // launchd gives agents a minimal PATH; include the Homebrew
-                // prefixes so the daemon can find sshfs/macFUSE tooling.
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
-                "SSH_CONFIG_PATH": home + "/.ssh/",
-            ],
+            "EnvironmentVariables": env,
             "RunAtLoad": true,
             // Restart on crash but NOT after a clean exit (a graceful SIGTERM
             // tears down masters on purpose).

@@ -66,17 +66,18 @@ final class FriendlyTextTests: XCTestCase {
     /// The exact raw string the daemon returns when macOS denies the Keychain
     /// prompt. Observed live after a helper update: `keyring get(k8.password):
     /// Platform secure storage failure: User canceled the operation.`
-    func testKeychainDenialTellsUserToChooseAlwaysAllow() {
+    func testKeychainDenialExplainsTheOneTimeMigration() {
         let msg = FriendlyText.credentialError(
             "internal: keyring get(k8.password): Platform secure storage failure: User canceled the operation.")
-        XCTAssertTrue(msg.contains("Always Allow"), "must name the button that fixes it: \(msg)")
+        XCTAssertTrue(msg.contains("Allow"), "must name the button that fixes it: \(msg)")
+        XCTAssertTrue(msg.contains("one-time migration"))
         XCTAssertFalse(msg.contains("keyring"), "must not leak the raw API name: \(msg)")
     }
 
     func testKeychainTimeoutPointsAtThePendingPrompt() {
         let msg = FriendlyText.credentialError(
             "internal: credential read timed out for b8 (is the login Keychain locked?) — try again")
-        XCTAssertTrue(msg.contains("Always Allow"))
+        XCTAssertTrue(msg.contains("Allow"))
         XCTAssertFalse(msg.contains("credential read timed out"))
     }
 
@@ -93,6 +94,26 @@ final class FriendlyTextTests: XCTestCase {
         let msg = FriendlyText.credentialError("unknown method host_credentials")
         XCTAssertTrue(msg.contains("reopen") || msg.contains("Quit"))
         XCTAssertFalse(msg.contains("unknown method"))
+        XCTAssertFalse(msg.lowercased().contains("helper"))
+        XCTAssertFalse(msg.lowercased().contains("daemon"))
+    }
+
+    func testDisconnectedMessageDoesNotExposeBackgroundInternals() {
+        let msg = FriendlyText.friendlyError("not connected to ssh2fa-daemon")
+        XCTAssertTrue(msg.contains("SSH2FA"))
+        XCTAssertTrue(msg.contains("reopen"))
+        XCTAssertFalse(msg.lowercased().contains("helper"))
+        XCTAssertFalse(msg.lowercased().contains("daemon"))
+    }
+
+    func testBackgroundTimeoutIsNotMisreportedAsARemoteServerFailure() {
+        let msg = FriendlyText.friendlyError(
+            "daemon timed out after 10s on list_hosts")
+        XCTAssertTrue(msg.contains("SSH2FA"))
+        XCTAssertTrue(msg.lowercased().contains("try again"))
+        XCTAssertFalse(msg.lowercased().contains("server"))
+        XCTAssertFalse(msg.lowercased().contains("daemon"))
+        XCTAssertFalse(msg.contains("list_hosts"))
     }
 
     func testLockedKeychainSaysToUnlockIt() {
@@ -107,5 +128,53 @@ final class FriendlyTextTests: XCTestCase {
         // And it inherits friendlyError's translations.
         XCTAssertEqual(FriendlyText.credentialError("Permission denied, please try again"),
                        FriendlyText.friendlyError("Permission denied, please try again"))
+    }
+
+    // MARK: - actionable SSH login failures
+
+    func testWrongPasswordNamesTheRepairSurface() {
+        let msg = FriendlyText.friendlyError("Password rejected (Permission denied)")
+        XCTAssertTrue(msg.contains("Password & setup"))
+        XCTAssertTrue(msg.contains("Test login"))
+    }
+
+    func testWrongOTPNamesSecretAndClock() {
+        let msg = FriendlyText.friendlyError("Verification code rejected")
+        XCTAssertTrue(msg.contains("2FA"))
+        XCTAssertTrue(msg.lowercased().contains("date") || msg.lowercased().contains("time"))
+    }
+
+    func testSessionLimitNamesServerSideFix() {
+        let msg = FriendlyText.friendlyError("Server session limit reached")
+        XCTAssertTrue(msg.contains("MaxSessions") || msg.contains("PAM"))
+        XCTAssertTrue(msg.lowercased().contains("administrator"))
+    }
+
+    func testDnsFailureNamesHostAndVPN() {
+        let msg = FriendlyText.friendlyError("Could not resolve hostname")
+        XCTAssertTrue(msg.contains("HostName"))
+        XCTAssertTrue(msg.contains("VPN"))
+    }
+
+    func testDaemonActionableMessageIsMappedThroughHostLastMsg() {
+        let msg = FriendlyText.hostLastMsg(
+            "The server rejected the password. Open Password & setup and replace the saved password, then use Test login.")
+        XCTAssertEqual(
+            msg,
+            String(localized: "The server rejected the password. Open Password & setup, replace it, then run Test login.")
+        )
+    }
+
+    func testPermissionDeniedNoLongerSuggestsRemovingTheHost() {
+        let msg = FriendlyText.friendlyError("Permission denied")
+        XCTAssertTrue(msg.contains("Password & setup"))
+        XCTAssertTrue(msg.contains("Test login"))
+        XCTAssertFalse(msg.lowercased().contains("re-add"))
+    }
+
+    func testHostKeyFailureNamesSafeRepair() {
+        let msg = FriendlyText.friendlyError("Host key verification failed")
+        XCTAssertTrue(msg.lowercased().contains("fingerprint"))
+        XCTAssertTrue(msg.contains("known_hosts"))
     }
 }

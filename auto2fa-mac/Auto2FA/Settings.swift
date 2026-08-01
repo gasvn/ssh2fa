@@ -12,19 +12,26 @@ enum SettingsKey {
     static let syncPrefsViaICloud = "auto2fa.sync.icloudPrefs"
     static let autoOpenBrowser = "auto2fa.autoOpenBrowser"
     static let autoRecoverOnWake = "auto2fa.autoRecoverOnWake"
-    static let spawnDaemonOnLaunch = "auto2fa.spawnDaemonOnLaunch"
     static let welcomeShown = "auto2fa.welcomeShown"
     /// Open the mounted folder in Finder right after a successful mount.
     static let openFinderAfterMount = "auto2fa.mount.openFinder"
-    /// App BUILD whose helper the user last authorized against the Keychain.
-    /// See `CredentialWarmup` — each update ships a new helper binary, which
-    /// macOS treats as a new reader of every saved item.
+    /// App build on which the user last dismissed or completed the legacy
+    /// credential migration banner. Completion is tracked separately below.
     static let lastWarmedBuild = "auto2fa.credentials.lastWarmedBuild"
+    /// Set only after the daemon verifies that saved secrets live in the new
+    /// single Keychain item owned by its stable signed identity.
+    static let credentialsConsolidated = "auto2fa.credentials.consolidated"
     static let compactRows = "auto2fa.compactRows"
-    /// "" = ask the first time; "system" = default .command handler; else a
-    /// terminal app bundle id. Used by TerminalLauncher (host "Open Terminal").
+    /// "" / "system" = default .command handler; else a terminal app bundle
+    /// id. Empty is retained only for migration from older builds.
     static let terminalApp = "auto2fa.terminalApp"
     static let warmReuseEnabled = "auto2fa.warmReuseInclude"
+    /// Explicit opt-out. Warm reuse is otherwise installed automatically when
+    /// the first host is added, so normal users never need to understand it.
+    static let warmReuseExplicitlyDisabled = "auto2fa.warmReuseExplicitlyDisabled"
+    /// One-time migration marker for users upgrading from the old opt-in flow.
+    static let warmReuseDefaultMigrated = "auto2fa.warmReuseDefaultMigrated"
+    /// Legacy key from the old first-host consent dialog.
     static let warmReuseAsked   = "auto2fa.warmReuseAsked"
     /// Set the first time a host's "Open Terminal" actually launches — drives the
     /// onboarding checklist's "open a terminal" step.
@@ -64,9 +71,8 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.notchDoNotDisturb) private var notchDoNotDisturb = false
     @AppStorage(SettingsKey.autoOpenBrowser) private var autoOpenBrowser = false
     @AppStorage(SettingsKey.autoRecoverOnWake) private var autoRecoverOnWake = true
-    @AppStorage(SettingsKey.spawnDaemonOnLaunch) private var spawnDaemonOnLaunch = true
     @AppStorage(SettingsKey.compactRows) private var compactRows = false
-    @AppStorage(SettingsKey.terminalApp) private var terminalApp = ""
+    @AppStorage(SettingsKey.terminalApp) private var terminalApp = "system"
     @AppStorage(SettingsKey.warmReuseEnabled) private var warmReuseEnabled = false
     @AppStorage(SettingsKey.requireTouchID) private var requireTouchID = false
     @AppStorage(SettingsKey.syncPrefsViaICloud) private var syncPrefsViaICloud = false
@@ -123,12 +129,16 @@ struct SettingsView: View {
 
                 Section {
                     Picker("Open SSH in", selection: $terminalApp) {
-                        Text("Ask the first time").tag("")
                         Text("System default").tag("system")
                         Text("Terminal").tag(TerminalLauncher.appleTerminalBundleID)
                         if TerminalLauncher.iTermInstalled() {
                             Text("iTerm").tag(TerminalLauncher.iTermBundleID)
                         }
+                    }
+                    .onAppear {
+                        // Older builds used empty to mean "ask the first time".
+                        // The zero-setup default is now the system terminal.
+                        if terminalApp.isEmpty { terminalApp = "system" }
                     }
                     Text("Which terminal app a host's “Open Terminal” action launches and SSHes in with.")
                         .font(.caption)
@@ -137,29 +147,31 @@ struct SettingsView: View {
 
                 Section {
                     Text(warmReuseEnabled
-                         ? "On — running ssh <host> in your own Terminal reuses SSH2FA's warm connection (via one Include line added to ~/.ssh/config)."
-                         : "Off — the app's \"Open Terminal\" already reuses the connection. Turning this on also makes ssh <host> in your own Terminal skip the 2FA prompt.")
+                         ? "Configured automatically — ssh, scp, rsync, and editors reuse SSH2FA's connection without another 2FA prompt."
+                         : "You turned automatic terminal reuse off. The app's \"Open Terminal\" still works without it.")
                         .font(.caption).foregroundStyle(.secondary)
                     if warmReuseEnabled {
                         Button("Turn off & remove the Include") { WarmReuseConsent.revert() }
                     } else {
-                        Button("Turn on (backs up config, adds one Include line)") {
-                            // Pass the live host list so ssh2fa.conf is written
-                            // populated, not momentarily empty until the next poll.
-                            WarmReuseConsent.apply(currentAliases: appState.hosts.map { $0.host })
-                        }
+                        Button("Turn back on") { WarmReuseConsent.apply() }
                     }
-                } header: { Text("Warm connection reuse") }
+                } header: { Text("Terminal reuse") }
 
                 Section {
                     Toggle("Automatically check for updates", isOn: $autoCheckUpdates)
                         .onChange(of: autoCheckUpdates) { _, on in
                             appState.updateAutoCheckChanged(enabled: on)
                         }
-                    Text("Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.")
+                    Text("Checks GitHub about once a day for a newer release and flags it in the menu bar. Installing stays your call: one click in the About tab downloads it, verifies it, and restarts into the new version.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Updates") }
+
+                Section {
+                    Text("Your password and 2FA secret stay in the macOS Keychain, locked to SSH2FA. Its signed identity stays stable across updates, so macOS does not need to authorize it again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: { Text("Stored credentials") }
 
                 Section {
                     Toggle("Require Touch ID to open the dashboard", isOn: $requireTouchID)
@@ -203,23 +215,11 @@ struct SettingsView: View {
                 } header: { Text("Dynamic Notch toasts") }
 
                 Section {
-                    Toggle("Rebuild SSH masters + restart tunnels on wake", isOn: $autoRecoverOnWake)
-                    Text("After Mac sleeps, the underlying TCP for every SSH master dies. Recommended on — without it tunnels silently break with no automatic recovery.")
+                    Toggle("Restore host connections and tunnels after wake", isOn: $autoRecoverOnWake)
+                    Text("Sleep can interrupt long-running SSH connections. Recommended on — SSH2FA checks and restores them automatically when your Mac wakes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: { Text("Sleep & Wake") }
-
-                Section {
-                    Toggle("Start the background helper when this app launches", isOn: $spawnDaemonOnLaunch)
-                    Text("SSH2FA uses a small background helper to keep your connections alive. Leave this on unless you run it yourself.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !spawnDaemonOnLaunch {
-                        Text("⚠︎ Off: SSH2FA won't start the helper — your hosts won't connect and nothing here will work unless you run ssh2fa-daemon yourself.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } header: { Text("Background helper") }
 
                 Section {
                     Toggle("Sync preferences via iCloud Drive (free)", isOn: $syncPrefsViaICloud)
@@ -294,7 +294,7 @@ private struct TroubleshootPane: View {
 
             Divider()
             HStack {
-                Button("Restart background helper") { model.restartDaemon() }
+                Button("Restart SSH2FA service") { model.restartDaemon() }
                 Button("Reveal log file…") {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: "/tmp/ssh2fa_daemon.log")])
@@ -317,7 +317,7 @@ private struct TroubleshootPane: View {
                     Label("Uninstall SSH2FA…", systemImage: "trash")
                 }
                 .tint(.red)
-                Text("Removes the background daemon, its LaunchAgent, and Keychain credentials.")
+                Text("Removes SSH2FA's background service and Keychain credentials.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
             }
@@ -372,7 +372,14 @@ final class DiagnosticsModel: ObservableObject {
     func restartDaemon() {
         let label = "com.ssh2fa.daemon"
         let domain = "gui/\(getuid())"
-        _ = Self.sh("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(label)"])
+        // SIGTERM (`kickstart -k`) makes the daemon intentionally close every
+        // SSH ControlMaster, forcing a full 2FA login on every host. Kill only
+        // the controller process abnormally so its detached SSH sessions stay
+        // alive, then let launchd respawn and adopt them.
+        DaemonProcess.killDaemonPreservingMasters()
+        _ = Self.sh("/bin/launchctl",
+                    BackgroundServicePolicy.restartLaunchctlArguments(
+                        domain: domain, label: label))
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.run() }
     }
 
@@ -402,38 +409,38 @@ final class DiagnosticsModel: ObservableObject {
         let print = sh("/bin/launchctl", ["print", "\(domain)/\(label)"]).out
         if print.contains("state = running") {
             let pid = firstMatch(print, #"pid = (\d+)"#) ?? "?"
-            out.append(DiagCheck(name: "Daemon", status: .ok,
+            out.append(DiagCheck(name: "Background service", status: .ok,
                                  detail: "Running (pid \(pid))."))
         } else if print.isEmpty || print.contains("Could not find service") {
-            out.append(DiagCheck(name: "Daemon", status: .fail,
+            out.append(DiagCheck(name: "Background service", status: .fail,
                                  detail: "Not loaded by launchd.",
-                                 fixHint: "Try “Restart daemon”, or relaunch the app to reinstall the LaunchAgent."))
+                                 fixHint: "Try “Restart SSH2FA service”, or quit and reopen the app."))
         } else {
-            out.append(DiagCheck(name: "Daemon", status: .warn,
+            out.append(DiagCheck(name: "Background service", status: .warn,
                                  detail: "Registered but not running.",
-                                 fixHint: "Try “Restart daemon”."))
+                                 fixHint: "Try “Restart SSH2FA service”."))
         }
 
         // 2. Socket responds.
         if socketResponds(home + "/.ssh2fa/ssh2fa.sock") {
-            out.append(DiagCheck(name: "Daemon socket", status: .ok,
+            out.append(DiagCheck(name: "App-service connection", status: .ok,
                                  detail: "Responding at ~/.ssh2fa/ssh2fa.sock."))
         } else {
-            out.append(DiagCheck(name: "Daemon socket", status: .fail,
+            out.append(DiagCheck(name: "App-service connection", status: .fail,
                                  detail: "No response on ~/.ssh2fa/ssh2fa.sock.",
-                                 fixHint: "The daemon may be starting (signature validation can take a minute on first launch) — wait, then re-check."))
+                                 fixHint: "SSH2FA may still be starting — wait a moment, then re-check."))
         }
 
         // 3. LaunchAgent plist.
         let plist = home + "/Library/LaunchAgents/\(label).plist"
         if FileManager.default.fileExists(atPath: plist) {
             let prog = firstMatch(sh("/usr/bin/plutil", ["-extract", "ProgramArguments.0", "raw", plist]).out, #"(.+)"#) ?? "?"
-            out.append(DiagCheck(name: "LaunchAgent", status: .ok,
+            out.append(DiagCheck(name: "Background startup", status: .ok,
                                  detail: "Installed → \(prog)"))
         } else {
-            out.append(DiagCheck(name: "LaunchAgent", status: .warn,
+            out.append(DiagCheck(name: "Background startup", status: .warn,
                                  detail: "Not installed.",
-                                 fixHint: "Relaunch the app — it installs the LaunchAgent on first run (packaged builds only)."))
+                                 fixHint: "Quit and reopen the app so SSH2FA can install its background startup item."))
         }
 
         // 4. App location.
@@ -441,7 +448,7 @@ final class DiagnosticsModel: ObservableObject {
         out.append(DiagCheck(name: "App location",
                              status: inApps ? .ok : .warn,
                              detail: Bundle.main.bundlePath,
-                             fixHint: inApps ? nil : "Move SSH2FA.app to /Applications so the background helper has a stable path."))
+                             fixHint: inApps ? nil : "Move SSH2FA.app to /Applications so it has a stable path."))
 
         // 5. Quarantine (downloaded + un-notarized).
         let quarantined = sh("/usr/bin/xattr", ["-p", "com.apple.quarantine", Bundle.main.bundlePath]).code == 0
@@ -541,7 +548,11 @@ final class DiagnosticsModel: ObservableObject {
 private struct AboutPane: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var updater = UpdateChecker()
+    /// Shared, NOT @StateObject: an update started from the menu bar must show
+    /// its progress here rather than being a second, competing download.
+    @ObservedObject private var selfUpdater = SelfUpdater.shared
     @State private var copied: String?
+    @State private var showManualCommands = false
 
     private var versionString: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -620,27 +631,41 @@ private struct AboutPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Concrete, copy-paste-able update path for every install method — so the
-    /// reminder is never a dead-end. Each command includes the de-quarantine
-    /// step (the un-notarized build is quarantined on download).
+    /// The update offer. ONE primary action — "Update & Relaunch" — which
+    /// downloads, verifies and installs the new build in place, then restarts
+    /// the app. The Terminal commands are still here, but folded away as the
+    /// fallback they should always have been: they were the *only* path before,
+    /// which meant updating required leaving the app and pasting a shell
+    /// command, and most people simply never did it.
     @ViewBuilder
     private func updateInstructions(version: String, url: URL) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Label("\(UpdateCheckCore.displayVersion(version)) is available",
                   systemImage: "arrow.down.circle")
                 .font(.callout.weight(.medium)).foregroundStyle(.blue)
-            Text("Update with ONE of these (SSH2FA never installs on its own):")
-                .font(.caption2).foregroundStyle(.secondary)
 
-            commandRow(label: "Homebrew", command: UpdateCheckCore.brewUpdateCommand)
-            commandRow(label: "Terminal (any install)", command: UpdateCheckCore.manualUpdateCommand)
+            if let blocker = SelfUpdater.blocker {
+                // Can't replace ourselves from here — say why, and leave the
+                // manual commands open rather than hiding the only way out.
+                Text(SelfUpdater.explain(blocker))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                manualCommands
+            } else {
+                oneClickUpdate(version: version)
+                DisclosureGroup(isExpanded: $showManualCommands) {
+                    manualCommands.padding(.top, 4)
+                } label: {
+                    Text("Update from Terminal instead")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
 
             HStack(spacing: 14) {
-                Link("Download DMG", destination: URL(string:
-                    "https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg")!)
                 Link("Release notes", destination: url)
                 Button("Skip this version") { appState.skipUpdate(version) }
                     .buttonStyle(.link)
+                    .disabled(selfUpdater.phase.isBusy)
             }
             .font(.caption)
             .padding(.top, 2)
@@ -649,6 +674,73 @@ private struct AboutPane: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
         .padding(.horizontal, 16)
+    }
+
+    /// Button + live progress for the in-app install.
+    @ViewBuilder
+    private func oneClickUpdate(version: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch selfUpdater.phase {
+            case .idle, .failed:
+                Button {
+                    Task { await selfUpdater.install(version: version) }
+                } label: {
+                    Label("Update & Relaunch", systemImage: "arrow.down.app")
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityHint(Text("Downloads and installs the new version, then restarts SSH2FA."))
+                Text("Downloads it, checks it, installs it, and restarts SSH2FA. Your hosts stay connected — no new 2FA login.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if case .failed(let msg) = selfUpdater.phase {
+                    Label(msg, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            case .preparing:
+                progressRow(text: String(localized: "Getting the download…"), fraction: nil)
+            case .downloading(let got, let total):
+                progressRow(
+                    text: total > 0
+                        ? String(localized: "Downloading — \(SelfUpdateCore.formatBytes(got)) of \(SelfUpdateCore.formatBytes(total))")
+                        : String(localized: "Downloading…"),
+                    fraction: total > 0 ? SelfUpdateCore.fraction(received: got, total: total) : nil)
+            case .verifying:
+                progressRow(text: String(localized: "Checking the download…"), fraction: nil)
+            case .installing:
+                progressRow(text: String(localized: "Installing…"), fraction: nil)
+            case .relaunching:
+                progressRow(text: String(localized: "Restarting SSH2FA…"), fraction: nil)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func progressRow(text: String, fraction: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let fraction {
+                ProgressView(value: fraction).controlSize(.small)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text(text).font(.caption2).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(text))
+    }
+
+    /// The pre-1.5.4 path, kept for installs that can't replace themselves
+    /// (read-only volume, another user's Applications folder) and for anyone
+    /// who'd rather see what runs.
+    @ViewBuilder
+    private var manualCommands: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            commandRow(label: "Homebrew", command: UpdateCheckCore.brewUpdateCommand)
+            commandRow(label: "Terminal (any install)", command: UpdateCheckCore.manualUpdateCommand)
+            Link("Download the DMG", destination: URL(string:
+                "https://github.com/gasvn/ssh2fa/releases/latest/download/SSH2FA.dmg")!)
+                .font(.caption)
+        }
     }
 
     @ViewBuilder

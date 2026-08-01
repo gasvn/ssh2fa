@@ -11,7 +11,7 @@ final class PreferenceSync {
     static let syncedKeys: [String] = [
         SettingsKey.notchEnabled, SettingsKey.notchPersistent,
         SettingsKey.notchDoNotDisturb, SettingsKey.autoOpenBrowser,
-        SettingsKey.autoRecoverOnWake, SettingsKey.spawnDaemonOnLaunch,
+        SettingsKey.autoRecoverOnWake,
         SettingsKey.compactRows, SettingsKey.requireTouchID,
     ]
     // Device-local bookkeeping (NOT synced).

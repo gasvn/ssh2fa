@@ -39,7 +39,10 @@ enum FriendlyText {
         if s.hasPrefix("Log Open #") { return String(localized: "Connected, finishing setup…") }
         if s.hasPrefix("Rotated ") || s.hasPrefix("Failover ") { return String(localized: "Switched to backup link") }
         if s.lowercased().contains("busy") { return String(localized: "Server busy — using backup") }
-        return s
+        // Login/session diagnoses are produced by the daemon so CLI clients
+        // also receive the exact cause. Run them through the same UI mapper as
+        // tunnel/test-login failures; unknown messages still pass through.
+        return friendlyError(s)
     }
 
     /// "alive 2h", "stale 5m", "idle", "connecting…", "failed — see log"
@@ -86,6 +89,32 @@ enum FriendlyText {
     /// next.
     static func friendlyError(_ raw: String) -> String {
         let lc = raw.lowercased()
+        if lc.contains("password rejected") || lc.contains("rejected the password") {
+            return String(localized: "The server rejected the password. Open Password & setup, replace it, then run Test login.")
+        }
+        if lc.contains("verification code rejected") || lc.contains("otp rejected")
+            || lc.contains("rejected the 2fa code") {
+            return String(localized: "The server rejected the 2FA code. Check the saved secret and the Mac’s date/time, then update it in Password & setup.")
+        }
+        if lc.contains("too many authentication failures") || lc.contains("too many ssh keys") {
+            return String(localized: "Too many SSH keys were tried first. Enable IdentitiesOnly for this host or remove unused keys from ssh-agent, then retry.")
+        }
+        if lc.contains("could not resolve hostname")
+            || lc.contains("host name could not be resolved") {
+            return String(localized: "The host name could not be resolved. Check HostName and connect the required VPN/DNS, then retry.")
+        }
+        if lc.contains("account locked") {
+            return String(localized: "The SSH account is locked. Wait for the lockout period or ask the server administrator to unlock it before retrying.")
+        }
+        if lc.contains("account expired") {
+            return String(localized: "The SSH account has expired. Ask the server administrator to renew it before retrying.")
+        }
+        if lc.contains("maxsessions") || lc.contains("session limit")
+            || lc.contains("refused a new ssh session")
+            || lc.contains("refused a new session")
+            || lc.contains("mux_client_request_session") {
+            return String(localized: "The server is connected but refused a new SSH session. Close old SSH sessions; if it persists, ask the server administrator to check MaxSessions/PAM limits.")
+        }
         if lc.contains("connection refused") {
             return String(localized: "Server not accepting connections — sshd is down or wrong port.")
         }
@@ -95,20 +124,24 @@ enum FriendlyText {
         if lc.contains("connection reset") || lc.contains("broken pipe") {
             return String(localized: "Connection dropped — server restarted or network changed.")
         }
-        if lc.contains("operation timed out") || lc.contains("connect timed out") {
+        if lc.contains("daemon timed out") {
+            return String(localized: "SSH2FA is still starting or recovering. Wait a moment and try again.")
+        }
+        if lc.contains("operation timed out") || lc.contains("connect timed out")
+            || lc.contains("connection timed out") {
             return String(localized: "Server didn't respond — network is slow, or server is unreachable.")
         }
         if lc.contains("permission denied") {
-            return String(localized: "Login rejected — password or OTP is wrong. Re-add the host to fix.")
+            return String(localized: "Login rejected — update the password or 2FA secret in Password & setup, then run Test login.")
         }
         if lc.contains("host key verification failed") {
-            return String(localized: "Server identity changed — may be a server rebuild, or (rarely) a MITM.")
+            return String(localized: "The server identity key changed. Verify its fingerprint with the server administrator before updating known_hosts.")
         }
         if lc.contains("rate-limit") || lc.contains("rate limit") || lc.contains("cool-down") {
             return String(localized: "Server is rate-limiting too many failed logins — sitting out for a few minutes.")
         }
         if lc.contains("daemon unreachable") || lc.contains("not connected") {
-            return String(localized: "Background helper isn't running — restart SSH2FA to fix.")
+            return String(localized: "SSH2FA isn't ready — quit and reopen the app. Use Troubleshoot if the problem continues.")
         }
         // Pass-through: caller's message was already user-friendly enough,
         // or we didn't have a translation. Avoid lying about what happened.
@@ -118,20 +151,17 @@ enum FriendlyText {
     /// Translate a failure from a stored-credential read/write (the per-host
     /// "Password & setup" view) into something the user can act on.
     ///
-    /// The important case is macOS Keychain authorization. After the app updates,
-    /// the rebuilt background helper is a new binary to macOS, so the login
-    /// Keychain asks permission once per saved item. The raw errors that surfaces
-    /// — `keyring get(k8.password): Platform secure storage failure: User
-    /// canceled the operation` — tell the user nothing about the one thing that
-    /// fixes it: choosing **Always Allow** on that prompt.
+    /// The important case is the one-time migration from a legacy Keychain item
+    /// into the stable daemon-owned vault. The raw framework error does not tell
+    /// the user that allowing the old read once is enough to finish the move.
     static func credentialError(_ raw: String) -> String {
         let lc = raw.lowercased()
         if lc.contains("user canceled") || lc.contains("user cancelled")
             || lc.contains("secure storage failure") {
-            return String(localized: "macOS didn't allow access to the saved credential. Try again and choose “Always Allow” on the Keychain prompt — then it won't ask again.")
+            return String(localized: "macOS didn't allow access to the old saved credential. Try again and choose “Allow” on the Keychain prompt so SSH2FA can finish the one-time migration.")
         }
         if lc.contains("timed out") {
-            return String(localized: "macOS hasn't allowed access yet — a Keychain prompt may be waiting for you. Choose “Always Allow” there, then try again.")
+            return String(localized: "macOS hasn't allowed access yet — a Keychain prompt may be waiting for you. Choose “Allow” there, then try again.")
         }
         if lc.contains("already in flight") {
             return String(localized: "Still finishing the previous attempt — try again in a moment.")
@@ -140,7 +170,7 @@ enum FriendlyText {
             return String(localized: "Your login Keychain is locked — unlock it (log out and back in, or open Keychain Access) and try again.")
         }
         if lc.contains("unknown method") {
-            return String(localized: "The background helper is an older version than the app. Quit and reopen SSH2FA so it restarts.")
+            return String(localized: "Part of SSH2FA is still on an older version. Quit and reopen the app to finish the update.")
         }
         return friendlyError(raw)
     }

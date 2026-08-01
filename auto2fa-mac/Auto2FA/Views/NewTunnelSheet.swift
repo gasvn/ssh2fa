@@ -141,7 +141,7 @@ struct NewTunnelSheet: View {
                             }
                         }
                         .buttonStyle(.borderless)
-                        .help("Ask the daemon for the next unused local port")
+                        .help("Choose the next unused local port")
                     }
                 } content: {
                     TextField("8888", text: $portText)
@@ -150,7 +150,7 @@ struct NewTunnelSheet: View {
                         .onSubmit { submit() }
                 }
 
-                Toggle("Start automatically when daemon boots", isOn: $autoStart)
+                Toggle("Start automatically with SSH2FA", isOn: $autoStart)
                     .toggleStyle(.checkbox)
             }
             .padding(Spacing.m)

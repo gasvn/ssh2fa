@@ -20,6 +20,7 @@ enum MacNotifications {
     private static let actionShowActivity = "auto2fa.showActivity"
     static let categoryUpdate = "auto2fa.updateAvailable"
     static let actionViewRelease = "auto2fa.viewRelease"
+    static let actionInstallUpdate = "auto2fa.installUpdate"
 
     /// Install the notification categories. Called once at app launch.
     static func registerCategories() {
@@ -37,13 +38,20 @@ enum MacNotifications {
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
+        // Install first: it's the action the reminder exists for. Before the
+        // in-app updater the only option was "View Release", which left the
+        // user on a web page with a DMG to drag — the reminder was a dead end.
+        let installUpdate = UNNotificationAction(
+            identifier: actionInstallUpdate, title: "Update & Relaunch",
+            options: [.foreground]
+        )
         let viewRelease = UNNotificationAction(
             identifier: actionViewRelease, title: "View Release",
             options: [.foreground]
         )
         let updateCat = UNNotificationCategory(
             identifier: categoryUpdate,
-            actions: [viewRelease],
+            actions: [installUpdate, viewRelease],
             intentIdentifiers: [],
             options: []
         )
@@ -101,10 +109,10 @@ enum MacNotifications {
         guard await ensureAuthorized() else { return false }
         let content = UNMutableNotificationContent()
         content.title = "SSH2FA \(UpdateCheckCore.displayVersion(version)) is available"
-        content.body = "You're on \(UpdateCheckCore.displayVersion(UpdateChecker.currentVersion)). Click for the release, or open Settings → About for one-step update instructions."
+        content.body = "You're on \(UpdateCheckCore.displayVersion(UpdateChecker.currentVersion)). Choose Update & Relaunch to install it now — your connections stay up."
         content.sound = .default
         content.categoryIdentifier = categoryUpdate
-        content.userInfo = ["updateURL": url.absoluteString]
+        content.userInfo = ["updateURL": url.absoluteString, "updateVersion": version]
         // One stable id per version so a repeat post coalesces instead of stacking.
         let req = UNNotificationRequest(identifier: "update.\(version)",
                                         content: content, trigger: nil)
@@ -147,10 +155,19 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         let name = userInfo["tunnel"] as? String
         Task { @MainActor in
-            // Update reminder: "View Release" button OR tapping the toast body
-            // opens the release page. Handle before the tunnel-only guard.
+            // Update reminder. "Update & Relaunch" installs it in place;
+            // "View Release" (or tapping the toast body) opens the release page.
+            // Handle before the tunnel-only guard.
             if let urlStr = userInfo["updateURL"] as? String, let url = URL(string: urlStr) {
-                if id == MacNotifications.actionViewRelease
+                if id == MacNotifications.actionInstallUpdate,
+                   let version = userInfo["updateVersion"] as? String {
+                    // Surface Settings → About first so the download is visible
+                    // rather than the app silently restarting itself.
+                    NSApp.activate(ignoringOtherApps: true)
+                    UserDefaults.standard.set(SettingsTab.about, forKey: SettingsKey.settingsTab)
+                    NotificationCenter.default.post(name: .a2fShowSettings, object: nil)
+                    Task { await SelfUpdater.shared.install(version: version) }
+                } else if id == MacNotifications.actionViewRelease
                     || id == UNNotificationDefaultActionIdentifier {
                     NSWorkspace.shared.open(url)
                 }

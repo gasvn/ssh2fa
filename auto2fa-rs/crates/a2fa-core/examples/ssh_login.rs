@@ -106,8 +106,11 @@ fn main() -> Result<()> {
             eprintln!("[ssh_login] AUTH FAILED: {reason}");
             std::process::exit(2);
         }
-        LoginOutcome::Timeout => {
+        LoginOutcome::Timeout { output } => {
             eprintln!("[ssh_login] TIMEOUT — host unreachable or very slow");
+            if !output.is_empty() {
+                eprintln!("Last output:\n{output}");
+            }
             std::process::exit(3);
         }
         LoginOutcome::Eof { output } => {

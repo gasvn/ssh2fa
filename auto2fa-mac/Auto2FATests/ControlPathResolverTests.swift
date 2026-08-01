@@ -23,4 +23,15 @@ final class ControlPathResolverTests: XCTestCase {
         XCTAssertEqual(ControlPathResolver.pick(fromSSHG: "user u\nport 22\n", alias: "h", dir: "/d"),
                        "/d/cm-ssh2fa-h")
     }
+
+    func testSSHGUsesSameDaemonWrapperAsBackgroundMaster() {
+        XCTAssertEqual(
+            ControlPathResolver.sshGArguments(alias: "cluster", daemonConfig: "/Users/x/.ssh/ssh2fa-daemon.conf"),
+            ["-F", "/Users/x/.ssh/ssh2fa-daemon.conf", "-G", "cluster"])
+    }
+
+    func testSSHGCanFallBackBeforeWrapperExists() {
+        XCTAssertEqual(ControlPathResolver.sshGArguments(alias: "cluster", daemonConfig: nil),
+                       ["-G", "cluster"])
+    }
 }

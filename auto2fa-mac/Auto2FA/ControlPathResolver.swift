@@ -2,8 +2,11 @@ import Foundation
 
 /// Resolves the ControlPath the daemon's single master binds for a host, so the
 /// app (Terminal button) can attach to the warm master. Mirrors a2fa-core
-/// `control.rs` `resolve_control_base`: prefer `ssh -G`'s `controlpath`, else
-/// fall back to `<dir>/cm-ssh2fa-<alias>`.
+/// `control.rs` `resolve_control_base`: run `ssh -G` through the daemon's same
+/// `ssh2fa-daemon.conf`, prefer its `controlpath`, else fall back to
+/// `<dir>/cm-ssh2fa-<alias>`. Using plain `ssh -G` here is incorrect when the
+/// user has not opted to Include ssh2fa.conf in their normal ~/.ssh/config:
+/// the app and daemon can then resolve different sockets.
 enum ControlPathResolver {
     /// Pure: pick the `controlpath` value out of `ssh -G <host>` stdout
     /// (ssh lowercases keys; we match case-insensitively). Returns the expanded
@@ -19,15 +22,26 @@ enum ControlPathResolver {
         return SSHPaths.controlPathFallback(dir: dir, alias: alias)
     }
 
+    /// Build the exact config arguments the daemon uses. Kept pure so a test
+    /// guards against regressing to the user's unrelated default config.
+    static func sshGArguments(alias: String, daemonConfig: String?) -> [String] {
+        var args: [String] = []
+        if let daemonConfig { args += ["-F", daemonConfig] }
+        args += ["-G", alias]
+        return args
+    }
+
     /// Run `ssh -G <alias>` with a hard timeout and resolve. Returns the
     /// fallback if ssh can't run or wedges. NOT exercised by unit tests (spawns
     /// a process). Call OFF the main thread (see TerminalLauncher).
     static func resolve(alias: String,
                         dir: String = SSHPaths.sshDir(),
                         timeout: TimeInterval = 3.0) -> String {
+        let wrapper = SSHPaths.daemonWrapperFile(dir: dir)
+        let daemonConfig = FileManager.default.fileExists(atPath: wrapper) ? wrapper : nil
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = ["-G", alias]
+        proc.arguments = sshGArguments(alias: alias, daemonConfig: daemonConfig)
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice

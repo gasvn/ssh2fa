@@ -11,7 +11,8 @@
 //! irritating thing about updating, and no amount of signing hygiene fixes it:
 //! the count comes from the number of items, not from the signature.
 //!
-//! One item ⇒ at most ONE prompt per update, no matter how many hosts.
+//! One item, created by the stably-signed daemon, means no prompts on later
+//! updates no matter how many hosts are configured.
 //!
 //! # Layout
 //!
@@ -21,8 +22,10 @@
 //! { "version": 1, "hosts": { "k6": { "password": "…", "otpauth": "…" } } }
 //! ```
 //!
-//! Reads fall back to the legacy per-host items so an un-migrated install keeps
-//! working; [`migrate_to_vault`] folds them in and removes them.
+//! Reads fall back to the legacy vault and then the legacy per-host items so an
+//! un-migrated install keeps working.  The old consolidated vault is copied to
+//! a NEW account rather than updated in place: creating a fresh item is what
+//! replaces its stale ACL with the daemon's stable designated requirement.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -33,7 +36,8 @@ use crate::error::{Error, Result};
 
 use super::{otpauth_acct, password_acct, SecretStore};
 
-/// Keychain account holding every host's credentials.
+/// Keychain account holding every host's credentials under the stable daemon
+/// identity introduced in v1.5.10.
 ///
 /// It cannot collide with a per-host legacy item because those always carry a
 /// `.password` / `.otpauth` SUFFIX (`password_acct` / `otpauth_acct`), and this
@@ -41,7 +45,12 @@ use super::{otpauth_acct, password_acct, SecretStore};
 /// an illegal host name — `is_safe_host_name` permits a leading underscore, so
 /// `__ssh2fa_vault__` is in fact a perfectly legal host name. The suffix is the
 /// whole guarantee; `vault_account_cannot_collide_with_a_host_entry` pins it.
-pub const VAULT_ACCOUNT: &str = "__ssh2fa_vault__";
+pub const VAULT_ACCOUNT: &str = "__ssh2fa_vault_v2__";
+
+/// Consolidated item written by v1.5.4-v1.5.9.  It is intentionally retained
+/// after migration: deleting an ACL-stale item can raise another authorization
+/// dialog, while leaving the old encrypted Keychain item in place is harmless.
+pub const LEGACY_VAULT_ACCOUNT: &str = "__ssh2fa_vault__";
 
 const VAULT_VERSION: u32 = 1;
 
@@ -81,17 +90,8 @@ fn vault_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Read the vault. A missing item is an empty vault, not an error.
-///
-/// A vault that fails to PARSE is an error: overwriting unreadable-but-present
-/// credentials would destroy them, and silently returning "empty" would make
-/// every login fail with no explanation.
-pub fn load_vault<S: SecretStore>(store: &S) -> Result<Vault> {
-    let raw = match store.get(VAULT_ACCOUNT)? {
-        Some(r) if !r.trim().is_empty() => r,
-        _ => return Ok(Vault::default()),
-    };
-    let vault: Vault = serde_json::from_str(&raw)
+fn decode_vault(raw: &str) -> Result<Vault> {
+    let vault: Vault = serde_json::from_str(raw)
         .map_err(|e| Error::Internal(format!("credential vault is corrupt: {e}")))?;
     if vault.version > VAULT_VERSION {
         return Err(Error::Internal(format!(
@@ -102,7 +102,56 @@ pub fn load_vault<S: SecretStore>(store: &S) -> Result<Vault> {
     Ok(vault)
 }
 
-fn save_vault<S: SecretStore>(store: &S, vault: &Vault) -> Result<()> {
+/// Read the current vault, migrating the old consolidated account when needed.
+///
+/// A vault that fails to PARSE is an error: overwriting unreadable-but-present
+/// credentials would destroy them, and silently returning "empty" would make
+/// every login fail with no explanation.
+pub fn load_vault<S: SecretStore>(store: &S) -> Result<Vault> {
+    let _g = vault_lock().lock().unwrap_or_else(|e| e.into_inner());
+    load_vault_unlocked(store)
+}
+
+/// Caller must hold `vault_lock`.
+fn load_vault_unlocked<S: SecretStore>(store: &S) -> Result<Vault> {
+    if let Some(raw) = store.get(VAULT_ACCOUNT)?.filter(|r| !r.trim().is_empty()) {
+        return decode_vault(&raw);
+    }
+
+    let Some(legacy_raw) = store
+        .get(LEGACY_VAULT_ACCOUNT)?
+        .filter(|r| !r.trim().is_empty())
+    else {
+        return Ok(Vault::default());
+    };
+    let vault = decode_vault(&legacy_raw)?;
+
+    // Never update the old account in place: an update preserves its stale ACL.
+    // A distinct account forces Keychain to create a new item owned by this
+    // stably-signed daemon.  Verify twice before using it; no marker file is
+    // involved, so a one-time "Allow" read of the old item can never be mistaken
+    // for a completed migration.
+    let expected = serde_json::to_string(&vault)
+        .map_err(|e| Error::Internal(format!("serialize credential vault: {e}")))?;
+    store.set(VAULT_ACCOUNT, &expected)?;
+    for _ in 0..2 {
+        match store.get(VAULT_ACCOUNT)? {
+            Some(back) if back == expected => {}
+            _ => {
+                return Err(Error::Internal(
+                    "new credential vault did not read back correctly; old item was left untouched"
+                        .into(),
+                ));
+            }
+        }
+    }
+    log::info!(
+        "[vault] moved credentials to the stable daemon-owned Keychain item; old item retained"
+    );
+    Ok(vault)
+}
+
+fn save_vault_unlocked<S: SecretStore>(store: &S, vault: &Vault) -> Result<()> {
     let json = serde_json::to_string(vault)
         .map_err(|e| Error::Internal(format!("serialize credential vault: {e}")))?;
     store.set(VAULT_ACCOUNT, &json)
@@ -111,10 +160,10 @@ fn save_vault<S: SecretStore>(store: &S, vault: &Vault) -> Result<()> {
 /// Serialized load → mutate → save.
 pub fn update_vault<S: SecretStore, F: FnOnce(&mut Vault)>(store: &S, f: F) -> Result<()> {
     let _g = vault_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let mut vault = load_vault(store)?;
+    let mut vault = load_vault_unlocked(store)?;
     f(&mut vault);
     vault.version = VAULT_VERSION;
-    save_vault(store, &vault)
+    save_vault_unlocked(store, &vault)
 }
 
 /// One host's credentials: vault first, then the legacy per-host items.
@@ -289,12 +338,68 @@ mod tests {
         store.set(&otpauth_acct(host), otp).unwrap();
     }
 
+    fn vault_with(host: &str, pw: &str) -> Vault {
+        let mut vault = Vault::default();
+        vault.hosts.insert(
+            host.into(),
+            HostCreds {
+                password: pw.into(),
+                otpauth: "otpauth://totp/x?secret=ABC".into(),
+            },
+        );
+        vault
+    }
+
+    #[test]
+    fn old_consolidated_vault_is_copied_to_a_fresh_account() {
+        let s = FakeStore::default();
+        let old = vault_with("k6", "pw-old");
+        s.set(LEGACY_VAULT_ACCOUNT, &serde_json::to_string(&old).unwrap())
+            .unwrap();
+
+        assert_eq!(load_vault(&s).unwrap(), old);
+        let copied = s.get(VAULT_ACCOUNT).unwrap().expect("new vault must exist");
+        assert_eq!(decode_vault(&copied).unwrap(), old);
+        assert!(
+            s.get(LEGACY_VAULT_ACCOUNT).unwrap().is_some(),
+            "the old item must be retained so migration cannot cause a second authorization prompt"
+        );
+    }
+
+    #[test]
+    fn fresh_vault_wins_and_old_item_is_never_reimported() {
+        let s = FakeStore::default();
+        let current = vault_with("k6", "current");
+        let stale = vault_with("k6", "stale");
+        s.set(VAULT_ACCOUNT, &serde_json::to_string(&current).unwrap())
+            .unwrap();
+        s.set(LEGACY_VAULT_ACCOUNT, &serde_json::to_string(&stale).unwrap())
+            .unwrap();
+
+        assert_eq!(load_vault(&s).unwrap(), current);
+    }
+
+    #[test]
+    fn corrupt_old_vault_is_not_overwritten_or_marked_migrated() {
+        let s = FakeStore::default();
+        s.set(LEGACY_VAULT_ACCOUNT, "{not-json").unwrap();
+
+        assert!(load_vault(&s).is_err());
+        assert!(s.get(VAULT_ACCOUNT).unwrap().is_none());
+        assert_eq!(s.get(LEGACY_VAULT_ACCOUNT).unwrap().as_deref(), Some("{not-json"));
+    }
+
     /// The real collision guarantee: legacy per-host accounts always carry a
     /// suffix, so no host name — not even one spelled exactly like the vault
     /// account, which `is_safe_host_name` permits — can produce it.
     #[test]
     fn vault_account_cannot_collide_with_a_host_entry() {
-        for host in ["k6", VAULT_ACCOUNT, "_underscore", "__ssh2fa_vault__"] {
+        for host in [
+            "k6",
+            VAULT_ACCOUNT,
+            LEGACY_VAULT_ACCOUNT,
+            "_underscore",
+        ] {
             assert_ne!(password_acct(host), VAULT_ACCOUNT, "host {host:?}");
             assert_ne!(otpauth_acct(host), VAULT_ACCOUNT, "host {host:?}");
         }

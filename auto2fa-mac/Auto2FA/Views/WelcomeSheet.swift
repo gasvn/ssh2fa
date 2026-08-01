@@ -45,7 +45,7 @@ struct WelcomeSheet: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Text("On first connect, macOS asks permission for SSH2FA to use its own saved credentials in your Keychain — click “Always Allow”.")
+            Text("Saved credentials stay in your macOS Keychain. If you upgraded from an older SSH2FA version, macOS may ask once to let SSH2FA move the old item into its stable vault — click “Allow”.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -85,15 +85,6 @@ struct WelcomeSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(Spacing.m)
                     .groupedContent(cornerRadius: Radius.control)
-            }
-            // First-run warmup: the welcome sheet sits over the dashboard's error
-            // banner, so surface daemon-startup status here too.
-            if let err = appState.connectionError {
-                Label("Starting the background helper… \(FriendlyText.friendlyError(err))",
-                      systemImage: "hourglass")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(Spacing.xl)

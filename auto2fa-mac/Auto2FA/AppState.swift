@@ -54,6 +54,12 @@ final class AppState: ObservableObject {
         }
     }
     @Published var tunnels: [Tunnel] = []
+    /// Normal app-to-service startup/recovery. This is informational state, not
+    /// an error. The UI may show it with a spinner but never a red warning or a
+    /// Troubleshoot button.
+    @Published private(set) var connectionActivity: ConnectionActivity? = .starting
+    /// A terminal connection failure that needs user action. Transient startup
+    /// and reconnecting states must use `connectionActivity` instead.
     @Published var connectionError: String?
     /// Global search text driven by the toolbar field; read by HostsView and
     /// TunnelsView to filter their lists. Empty = show everything.
@@ -96,11 +102,6 @@ final class AppState: ObservableObject {
     /// busy daemon, a brief blip) is NOT shown to the user — only a sustained
     /// run of failures surfaces a (friendly) banner. Reset on any success.
     private var reloadFailStreak = 0
-    /// bootstrap() runs again on the owned-daemon-respawn path, where the
-    /// connection watcher already shows "Daemon reconnected". Show the cold-launch
-    /// "ready" toast only ONCE so a respawn doesn't fire two toasts.
-    private var hasShownReadyToast = false
-
     // MARK: - Update reminder (notify-only)
 
     /// Start the daily background "is there a newer release?" reminder. Safe to
@@ -217,20 +218,13 @@ final class AppState: ObservableObject {
         NSLog("[SSH2FA] bootstrap: connecting to daemon")
         do {
             try await client.connect()
-            connectionError = nil
+            clearConnectionIssue()
             NSLog("[SSH2FA] bootstrap: connected OK")
-            if !hasShownReadyToast {
-                hasShownReadyToast = true
-                notchPresenter.show(
-                    systemImage: "bolt.fill",
-                    title: "SSH2FA ready",
-                    description: "Connected and ready",
-                    tint: .green
-                )
-            }
         } catch {
             NSLog("[SSH2FA] bootstrap: connect failed: \(error.localizedDescription)")
-            connectionError = String(localized: "Connecting to the background helper…")
+            if connectionError == nil {
+                connectionActivity = .starting
+            }
             // DON'T return — start the watcher/poll machinery anyway. The
             // old early-return was a dead end: launching the app during a
             // daemon-down window (deploys SIGKILL it; launchd respawns ~10s
@@ -246,7 +240,7 @@ final class AppState: ObservableObject {
     }
 
     /// Listen for daemon disconnect / reconnect cycles. On disconnect we
-    /// surface a banner + show a notch toast and kick off a backoff retry
+    /// expose only a neutral in-window activity and kick off a backoff retry
     /// in a SEPARATE Task — otherwise the watcher loop blocks for the
     /// full backoff window (up to ~2 minutes) and the `true` yielded on
     /// reconnect arrives but isn't consumed until then.
@@ -265,38 +259,17 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 if connected {
                     await MainActor.run {
-                        self.connectionError = nil
-                        // If the cold-launch bootstrap never connected (daemon was
-                        // down at launch), THIS is the first-ever connect — show
-                        // "ready", not "reconnected". Otherwise it's a true reconnect.
-                        if !self.hasShownReadyToast {
-                            self.hasShownReadyToast = true
-                            self.notchPresenter.show(
-                                systemImage: "bolt.fill",
-                                title: "SSH2FA ready",
-                                description: "Connected and ready",
-                                tint: .green
-                            )
-                        } else {
-                            self.notchPresenter.show(
-                                systemImage: "bolt.fill",
-                                title: "Reconnected",
-                                description: "Back online",
-                                tint: .green
-                            )
-                        }
+                        self.clearConnectionIssue()
                     }
                     await self.reloadAll()
                     self.startEventTask()  // re-subscribe events on the new socket
                 } else {
                     await MainActor.run {
-                        self.connectionError = String(localized: "Reconnecting to the background helper…")
-                        self.notchPresenter.show(
-                            systemImage: "wifi.slash",
-                            title: "Connection lost",
-                            description: "auto-reconnecting…",
-                            tint: .orange
-                        )
+                        // The background control channel dropped; this does not
+                        // mean the user's SSH sessions dropped. Keep it as a
+                        // neutral in-window activity and recover silently.
+                        self.connectionError = nil
+                        self.connectionActivity = .reconnecting
                     }
                     // Run reconnect detached so the watcher loop keeps
                     // pulling state changes from the stream.
@@ -323,7 +296,7 @@ final class AppState: ObservableObject {
                                 case .failed(let reason):
                                     NSLog("[SSH2FA] daemon respawn failed: \(reason), retrying")
                                     await MainActor.run {
-                                        self.connectionError = String(localized: "Trouble starting the background helper — retrying…")
+                                        self.connectionActivity = .reconnecting
                                     }
                                     try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
                                     continue
@@ -335,19 +308,31 @@ final class AppState: ObservableObject {
                         }
                         // If every backoff attempt failed, say so plainly
                         // instead of leaving the "retrying…" banner up forever.
-                        // (On success reconnectWithBackoff yields true, which
-                        // the watcher turns into connectionError = nil.)
+                        // On success reconnectWithBackoff yields true, which
+                        // the watcher uses to clear the neutral activity.
                         let ok = await self.client.reconnectWithBackoff()
                         if !ok && !Task.isCancelled {
                             await MainActor.run {
-                                self.connectionError =
-                                    "Couldn't reconnect to the background helper. Try quitting and reopening SSH2FA."
+                                self.showConnectionFailure(
+                                    String(localized: "SSH2FA couldn't restore its background connection. Quit and reopen SSH2FA, then use Troubleshoot if the problem continues."))
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Record a terminal startup/recovery failure. Keep raw implementation
+    /// details in logs; callers pass a concise, actionable user-facing message.
+    func showConnectionFailure(_ message: String) {
+        connectionActivity = nil
+        connectionError = message
+    }
+
+    private func clearConnectionIssue() {
+        connectionActivity = nil
+        connectionError = nil
     }
 
     /// The first time ANY host reaches Connected, show a one-off celebratory
@@ -387,9 +372,16 @@ final class AppState: ObservableObject {
             // Success → the daemon is reachable. Clear any stale transient
             // banner and reset the failure streak.
             reloadFailStreak = 0
-            if connectionError != nil { connectionError = nil }
-            refreshConfigCache()
+            clearConnectionIssue()
             syncManagedSSHConfig()
+            // Normal `ssh <host>` should reuse the verified master without the
+            // user learning about ControlMaster/ControlPath or finding a toggle.
+            // Runs once for existing installs; an explicit Settings opt-out wins.
+            WarmReuseConsent.enableByDefaultIfNeeded(
+                currentAliases: hosts.map { $0.host }, migration: true)
+            // Parse after the possible one-time Include insertion so this poll's
+            // UI already sees the effective config (no transient false warning).
+            refreshConfigCache()
             // Keep the pinned-folder cache warm: HostRow's Mount submenu reads
             // it on every render, so without this the pins are invisible until
             // the manage sheet happens to be opened.
@@ -405,7 +397,7 @@ final class AppState: ObservableObject {
             reloadFailStreak += 1
             NSLog("[SSH2FA] reloadAll failed (streak \(reloadFailStreak)): \(error.localizedDescription)")
             if ConnectionRecovery.shouldShowSlowBanner(failStreak: reloadFailStreak) {
-                connectionError = String(localized: "Reconnecting to the background helper…")
+                if connectionError == nil { connectionActivity = .reconnecting }
             }
             // A dead heartbeat means the connection is gone — either a silently
             // half-open socket (post-sleep) that NWConnection never reported, or
@@ -465,7 +457,7 @@ final class AppState: ObservableObject {
         do {
             self.hosts = try await client.listHosts()
             updateDockBadge()
-            if connectionError != nil { connectionError = nil }
+            clearConnectionIssue()
         } catch {
             // Event-driven refresh — swallow transient errors (don't flash a
             // banner). reloadAll's streak logic + the connection watcher own
@@ -484,7 +476,7 @@ final class AppState: ObservableObject {
             let liveNames = Set(self.tunnels.map(\.name))
             self.lastNotchSignature = self.lastNotchSignature.filter { liveNames.contains($0.key) }
             checkDeadlines()   // event-driven path must also fire/prune expiry warnings
-            if connectionError != nil { connectionError = nil }
+            clearConnectionIssue()
         } catch {
             // Event-driven refresh — swallow transient errors (see reloadHostsOnly).
             NSLog("[SSH2FA] reloadTunnelsOnly failed: \(error.localizedDescription)")
@@ -701,7 +693,7 @@ final class AppState: ObservableObject {
         )
     }
     func showActionError(_ error: Error) {
-        showActionError(error.localizedDescription)
+        showActionError(FriendlyText.friendlyError(error.localizedDescription))
     }
 
     func toggleHost(_ host: SSHHost) async {
@@ -1291,12 +1283,23 @@ final class AppState: ObservableObject {
         CredentialWarmup.shouldOffer(
             hostCount: hosts.count,
             currentBuild: UpdateChecker.currentBuild,
-            lastWarmedBuild: UserDefaults.standard.string(forKey: SettingsKey.lastWarmedBuild))
+            lastWarmedBuild: UserDefaults.standard.string(forKey: SettingsKey.lastWarmedBuild),
+            consolidated: credentialsAreConsolidated)
     }
 
-    /// Read every host's stored credentials once, sequentially, so macOS raises
-    /// its "Always Allow" prompts as one understood batch instead of ambushing
-    /// the user later mid-task.
+    /// True once the saved secrets are in one Keychain item.
+    ///
+    /// Set only after the daemon successfully verifies the consolidated vault.
+    /// Do not infer this from `lastWarmedBuild`: older versions recorded that
+    /// value even after a temporary one-read authorization, which is the bug
+    /// that made the dialog return forever.
+    private var credentialsAreConsolidated: Bool {
+        UserDefaults.standard.bool(forKey: SettingsKey.credentialsConsolidated)
+    }
+
+    /// Read every host's old stored credentials once, sequentially, so the
+    /// one-time stable-vault migration happens as one understood batch instead
+    /// of interrupting later logins.
     ///
     /// SEQUENTIAL on purpose: macOS serializes Keychain access process-wide, and
     /// concurrent reads would stack prompts on top of each other. Uses
@@ -1319,18 +1322,22 @@ final class AppState: ObservableObject {
         // once per saved secret — the prompt count comes from the number of
         // items, not from the signature.
         var consolidated = 0
+        var consolidationSucceeded = false
         if failed.isEmpty {
-            warmupProgress = "Consolidating into a single Keychain item…"
+            warmupProgress = String(localized: "Consolidating into a single Keychain item…")
             if let report = try? await client.consolidateCredentials() {
                 consolidated = report.migrated
+                consolidationSucceeded = true
+                UserDefaults.standard.set(true, forKey: SettingsKey.credentialsConsolidated)
             }
         }
         warmupProgress = nil
         warmupSummary = CredentialWarmup.summary(total: names.count, failed: failed,
-                                                 consolidated: consolidated)
+                                                 consolidated: consolidated,
+                                                 consolidationSucceeded: consolidationSucceeded)
         // Only mark the build done when everything succeeded — otherwise the
         // offer stands so the user gets another chance at the ones they denied.
-        if failed.isEmpty {
+        if failed.isEmpty && consolidationSucceeded {
             UserDefaults.standard.set(UpdateChecker.currentBuild,
                                       forKey: SettingsKey.lastWarmedBuild)
         }
@@ -1595,7 +1602,7 @@ final class AppState: ObservableObject {
             notchPresenter.show(
                 systemImage: "exclamationmark.arrow.circlepath",
                 title: "Reset complete",
-                description: "\(r.tunnelsStopped) tunnels stopped, \(r.mastersRebuilt) masters rebuilding",
+                description: "\(r.tunnelsStopped) tunnels stopped, \(r.mastersRebuilt) host connections restarting",
                 tint: .orange
             )
         } catch { showActionError(error) }
@@ -1611,7 +1618,7 @@ final class AppState: ObservableObject {
                                          otpauthURL: otpauthURL,
                                          autoConnect: autoConnect)
             await reloadAll()
-            WarmReuseConsent.offerIfNeeded(currentAliases: hosts.map { $0.host })
+            WarmReuseConsent.enableByDefaultIfNeeded(currentAliases: hosts.map { $0.host })
             return nil
         } catch {
             return (error as? BackendClient.ClientError)?.errorDescription

@@ -103,10 +103,80 @@ pub fn lock_path() -> PathBuf {
 // run()
 // ---------------------------------------------------------------------------
 
+/// Refuse to start a TEST daemon that would operate on the real installation.
+///
+/// # The incident this prevents
+///
+/// `AUTO2FA_SOCK` exists so a test can run a daemon without disturbing the real
+/// one. But the socket is not the only thing a daemon touches: it also reads
+/// `~/.ssh` for hosts, sweeps `~/.ssh/cm-ssh2fa-*` ControlMasters it considers
+/// stale, and reads credentials out of the login Keychain. `conformance.rs` set
+/// only the socket and lock, so every `cargo test` run started a daemon that
+///
+///   * killed all five of the user's live ControlMasters ("killed STRAY
+///     ControlMaster … /Users/…/.ssh/cm-ssh2fa-k6"), forcing a fresh 2FA login;
+///   * read the real Keychain from an UNSIGNED debug binary, which macOS
+///     challenges every single time — and because an unsigned build gets a new
+///     code identity on every compile, "Always Allow" can never stick;
+///   * logged in to the user's real servers ("sending password").
+///
+/// That is the source of the "it keeps asking for my Keychain password"
+/// complaint that survived every fix on the app side.
+///
+/// A test daemon must therefore declare both an isolated config directory and
+/// `SSH2FA_DISABLE_KEYCHAIN=1`. Failing loudly at startup is deliberate: an
+/// alternate socket/config path alone does not create an alternate Keychain.
+fn guard_test_isolation(sock: &std::path::Path) -> Result<()> {
+    let overridden = std::env::var("AUTO2FA_SOCK").is_ok();
+    let cfg = a2fa_core::config::config_dir();
+    let real = resolve_home().join(".ssh");
+    let keychain_disabled = std::env::var_os("SSH2FA_DISABLE_KEYCHAIN").is_some();
+    validate_test_isolation(sock, overridden, &cfg, &real, keychain_disabled)
+}
+
+/// Pure half of `guard_test_isolation`, kept separate so the safety invariant
+/// is testable without racing process-global environment variables.
+fn validate_test_isolation(
+    sock: &std::path::Path,
+    overridden: bool,
+    cfg: &std::path::Path,
+    real: &std::path::Path,
+    keychain_disabled: bool,
+) -> Result<()> {
+    if !overridden {
+        return Ok(()); // the real daemon, started normally
+    }
+    if cfg == real {
+        let msg = format!(
+            "refusing to start: AUTO2FA_SOCK is set (socket {}), which means this is a \
+             test/dev daemon, but the config directory is still the REAL one ({}). \
+             It would sweep the user's live ControlMasters, read their Keychain, and \
+             log in to their servers. Set SSH_CONFIG_PATH to a temporary directory.",
+            sock.display(),
+            real.display()
+        );
+        log::error!("{msg}");
+        return Err(anyhow::anyhow!(msg));
+    }
+    if !keychain_disabled {
+        let msg = format!(
+            "refusing to start: AUTO2FA_SOCK is set (socket {}) but \
+             SSH2FA_DISABLE_KEYCHAIN=1 is missing. A test/dev daemon would still \
+             access the user's REAL login Keychain even with an isolated config \
+             directory.",
+            sock.display()
+        );
+        log::error!("{msg}");
+        return Err(anyhow::anyhow!(msg));
+    }
+    Ok(())
+}
+
 /// Start the daemon.  Blocks until SIGINT or SIGTERM.
 pub fn run() -> Result<()> {
     let lock_p = lock_path();
     let sock_p = socket_path();
+    guard_test_isolation(&sock_p)?;
 
     log::info!("ssh2fa-daemon starting (sock={}, lock={})", sock_p.display(), lock_p.display());
 
@@ -619,9 +689,16 @@ fn handle_connection(stream: UnixStream, ctx: DaemonCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
 
     #[test]
     fn socket_path_default_contains_auto2fa() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("AUTO2FA_SOCK");
         let p = socket_path();
         assert!(
@@ -632,6 +709,7 @@ mod tests {
 
     #[test]
     fn socket_path_override_via_env() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("AUTO2FA_SOCK", "/tmp/test_override.sock");
         let p = socket_path();
         assert_eq!(p, PathBuf::from("/tmp/test_override.sock"));
@@ -640,9 +718,68 @@ mod tests {
 
     #[test]
     fn lock_path_override_via_env() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var("AUTO2FA_LOCK", "/tmp/test_override.lock");
         let p = lock_path();
         assert_eq!(p, PathBuf::from("/tmp/test_override.lock"));
         std::env::remove_var("AUTO2FA_LOCK");
+    }
+
+    #[test]
+    fn real_daemon_does_not_require_test_guards() {
+        let real = PathBuf::from("/Users/example/.ssh");
+        assert!(validate_test_isolation(
+            Path::new("/Users/example/.ssh2fa/ssh2fa.sock"),
+            false,
+            &real,
+            &real,
+            false,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn alternate_socket_refuses_the_real_ssh_directory() {
+        let real = PathBuf::from("/Users/example/.ssh");
+        let err = validate_test_isolation(
+            Path::new("/tmp/test.sock"),
+            true,
+            &real,
+            &real,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("REAL one"));
+    }
+
+    #[test]
+    fn alternate_socket_refuses_an_unisolated_keychain() {
+        let real = PathBuf::from("/Users/example/.ssh");
+        let temp = PathBuf::from("/tmp/ssh2fa-test-config");
+        let err = validate_test_isolation(
+            Path::new("/tmp/test.sock"),
+            true,
+            &temp,
+            &real,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("SSH2FA_DISABLE_KEYCHAIN=1"));
+    }
+
+    #[test]
+    fn alternate_socket_accepts_both_isolation_guards() {
+        let real = PathBuf::from("/Users/example/.ssh");
+        let temp = PathBuf::from("/tmp/ssh2fa-test-config");
+        assert!(validate_test_isolation(
+            Path::new("/tmp/test.sock"),
+            true,
+            &temp,
+            &real,
+            true,
+        )
+        .is_ok());
     }
 }

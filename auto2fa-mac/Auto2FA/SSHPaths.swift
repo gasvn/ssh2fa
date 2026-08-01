@@ -16,6 +16,7 @@ enum SSHPaths {
 
     static func configFile(dir: String) -> String { dir + "/config" }
     static func managedConfFile(dir: String) -> String { dir + "/ssh2fa.conf" }
+    static func daemonWrapperFile(dir: String) -> String { dir + "/ssh2fa-daemon.conf" }
     static func backupFile(dir: String, timestamp: String) -> String {
         dir + "/config.ssh2fa-backup-" + timestamp
     }

@@ -92,6 +92,13 @@ cp -R "$APP" "$STAGE_APP"
 # ── Step 3: embed the daemon ──────────────────────────────────────────────────
 cp "$DAEMON_UNIVERSAL" "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
 chmod +x "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
+# Record the unsigned daemon code hash inside the bundle. The app uses this —
+# not the GUI app's build number — to decide whether the background service
+# actually changed. A UI-only release must not restart a healthy daemon and
+# create a needless reconnect window.
+DAEMON_CODE_HASH="$(shasum -a 256 "$DAEMON_UNIVERSAL" | awk '{print $1}')"
+printf '%s\n' "$DAEMON_CODE_HASH" \
+  > "$STAGE_APP/Contents/Resources/ssh2fa-daemon.codehash"
 echo "→ embedded daemon in $APP_NAME.app/Contents/Resources"
 
 # ── Step 4: choose identity + sign ────────────────────────────────────────────
@@ -112,7 +119,35 @@ if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -p codesigning 2>/dev/null \
               | awk -F'"' '/SSH2FA Code Signing/{print $2; exit}')"
 fi
-[ -z "$SIGN_ID" ] && SIGN_ID="-"
+if [ -z "$SIGN_ID" ]; then
+  # HARD FAIL rather than silently signing ad-hoc.
+  #
+  # An ad-hoc signature has a cdhash-based designated requirement, i.e. a NEW
+  # code identity for every single build. macOS ties a Keychain item's
+  # authorization to the identity of the binary that reads it, so an ad-hoc
+  # daemon makes every user re-authorize EVERY saved credential on EVERY
+  # release — the "why does it keep asking for my Keychain password" complaint.
+  # A stable certificate makes that prompt a one-time event instead.
+  #
+  # This already happened once (v1.0.0 shipped ad-hoc after a cert was revoked),
+  # and it was silent: the script just printed "signing identity: -" and carried
+  # on. Releasing must now be a deliberate choice.
+  echo "ERROR: no code-signing identity found." >&2
+  echo "       Expected a 'Developer ID Application' cert, or the self-signed" >&2
+  echo "       'SSH2FA Code Signing' cert in your login keychain." >&2
+  echo "" >&2
+  echo "       Refusing to sign ad-hoc: ad-hoc gives every build a different code" >&2
+  echo "       identity, which forces every user to re-authorize every saved" >&2
+  echo "       Keychain item on every update." >&2
+  echo "" >&2
+  echo "       Set AUTO2FA_ALLOW_ADHOC=1 to override (local testing only —" >&2
+  echo "       never for a build you publish)." >&2
+  if [ "${AUTO2FA_ALLOW_ADHOC:-0}" != "1" ]; then
+    exit 1
+  fi
+  echo "       AUTO2FA_ALLOW_ADHOC=1 set — continuing with an ad-hoc signature." >&2
+  SIGN_ID="-"
+fi
 echo "→ signing identity: $SIGN_ID  (developer-id=$IS_DEVELOPER_ID)"
 
 # Hardened runtime + secure timestamp + entitlements are ONLY for a real
@@ -131,6 +166,30 @@ SIGN_EXTRA=()
 codesign --force --sign "$SIGN_ID" --identifier "$DAEMON_IDENTIFIER" ${SIGN_EXTRA[@]+"${SIGN_EXTRA[@]}"} \
   "$STAGE_APP/Contents/Resources/ssh2fa-daemon"
 echo "  signed embedded daemon"
+
+# The daemon's designated requirement is LOAD-BEARING, not cosmetic.
+#
+# macOS locks each saved Keychain item to the code allowed to read it. Verified
+# against a real Keychain: two different builds sharing one identifier and one
+# signing certificate share one designated requirement, so macOS recognises the
+# rebuilt daemon and never re-asks. Change either half and every existing user
+# is challenged again for every saved credential — and each "Always Allow"
+# makes them type their Mac login password.
+#
+# So: fail the build if the daemon did not come out with a stable, certificate
+# based requirement. A cdhash-based one (ad-hoc) means a new identity per build.
+DAEMON_DR="$(codesign -d -r- "$STAGE_APP/Contents/Resources/ssh2fa-daemon" 2>&1 | sed -n 's/^designated => //p')"
+case "$DAEMON_DR" in
+  *"identifier \"$DAEMON_IDENTIFIER\""*"certificate leaf"*)
+    echo "  daemon requirement is stable across rebuilds: $DAEMON_DR" ;;
+  *)
+    echo "ERROR: the daemon's designated requirement is not certificate-based." >&2
+    echo "       got: ${DAEMON_DR:-<none>}" >&2
+    echo "       Every user would have to re-authorize every saved credential" >&2
+    echo "       after this release. Sign with a real certificate." >&2
+    [ "${AUTO2FA_ALLOW_ADHOC:-0}" = "1" ] || exit 1
+    echo "       AUTO2FA_ALLOW_ADHOC=1 set — continuing anyway." >&2 ;;
+esac
 
 APP_SIGN_EXTRA=( ${SIGN_EXTRA[@]+"${SIGN_EXTRA[@]}"} )
 [ "$IS_DEVELOPER_ID" = "1" ] && APP_SIGN_EXTRA+=( --entitlements "$ENTITLEMENTS" )

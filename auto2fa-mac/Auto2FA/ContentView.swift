@@ -17,7 +17,7 @@ struct ContentView: View {
     // warning (real builds were ~3s slower because of it).
     var body: some View {
         mainStack
-            .overlay(alignment: .top) { errorBanner }
+            .overlay(alignment: .top) { messageBanner }
             .overlay(alignment: .bottom) { undoSnackbar }
             .animation(.easeInOut(duration: 0.2), value: appState.undoableDelete?.name)
             .sheet(item: sheetBinding()) { sheet in sheetContent(for: sheet) }
@@ -49,6 +49,8 @@ struct ContentView: View {
                 CommandPalette().environmentObject(appState)
             }
             .onChange(of: appState.hosts.count) { _, _ in maybeShowWelcome() }
+            .onChange(of: appState.connectionActivity) { _, _ in maybeShowWelcome() }
+            .onChange(of: appState.connectionError) { _, _ in maybeShowWelcome() }
             .onAppear { maybeShowWelcome() }
             .onReceive(NotificationCenter.default.publisher(for: .a2fShowPalette)) { _ in
                 showingPalette = true
@@ -101,7 +103,7 @@ struct ContentView: View {
             Button { openWindow(id: "logs") } label: {
                 Label("Logs", systemImage: "doc.text.magnifyingglass")
             }
-            .help("Show daemon logs")
+            .help("Show SSH2FA logs")
         }
         ToolbarItem(placement: .primaryAction) {
             Button { openSettings() } label: {
@@ -112,7 +114,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var errorBanner: some View {
+    private var messageBanner: some View {
         VStack(spacing: Spacing.s) {
             if let err = appState.connectionError {
                 // Connection problems → offer a path to the diagnostics (which
@@ -121,6 +123,9 @@ struct ContentView: View {
                 bannerRow(text: FriendlyText.friendlyError(err), rawHelp: err, tint: .red,
                           action: ("Troubleshoot", { openTroubleshoot() }),
                           dismiss: { appState.connectionError = nil })
+            } else if let activity = appState.connectionActivity,
+                      !appState.hosts.isEmpty {
+                activityRow(text: activity.userMessage)
             }
             if let act = appState.actionError {
                 bannerRow(text: act, rawHelp: act, tint: .orange,
@@ -130,7 +135,22 @@ struct ContentView: View {
         }
         .padding(.top, Spacing.m)
         .animation(.easeInOut(duration: 0.2), value: appState.connectionError)
+        .animation(.easeInOut(duration: 0.2), value: appState.connectionActivity)
         .animation(.easeInOut(duration: 0.2), value: appState.actionError)
+    }
+
+    private func activityRow(text: String) -> some View {
+        HStack(spacing: Spacing.s) {
+            ProgressView().controlSize(.small)
+            Text(text)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: Spacing.s)
+        }
+        .padding(.horizontal, Spacing.m)
+        .padding(.vertical, Spacing.s)
+        .glassChrome()
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     @ViewBuilder
@@ -235,12 +255,14 @@ struct ContentView: View {
         }
     }
 
-    /// Show the welcome sheet on first launch where the daemon reports no
+    /// Show the welcome sheet on first launch once SSH2FA is ready and reports no
     /// hosts AND the user hasn't dismissed it before. Once they hit Skip
     /// or Add Host we set the flag and never re-show.
     private func maybeShowWelcome() {
         let seen = UserDefaults.standard.bool(forKey: SettingsKey.welcomeShown)
-        if !seen && appState.hosts.isEmpty {
+        if !seen && appState.hosts.isEmpty
+            && appState.connectionActivity == nil
+            && appState.connectionError == nil {
             showingWelcome = true
         }
     }

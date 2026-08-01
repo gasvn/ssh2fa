@@ -331,7 +331,7 @@ struct AddHostSheet: View {
 
             Toggle("Connect automatically on startup", isOn: $autoConnect)
                 .toggleStyle(.checkbox)
-            Text("With auto-connect on, the daemon attempts login for this host every time it starts (or every time the app launches it).")
+            Text("With auto-connect on, SSH2FA restores this host connection automatically after login, restart, or network recovery.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -371,7 +371,7 @@ struct AddHostSheet: View {
     }
 
     @ViewBuilder
-    private func field<Content: View>(_ label: String, _ content: Content) -> some View {
+    private func field<Content: View>(_ label: LocalizedStringKey, _ content: Content) -> some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             content

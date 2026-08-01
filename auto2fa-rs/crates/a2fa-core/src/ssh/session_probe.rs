@@ -21,6 +21,7 @@
 
 use std::time::Duration;
 
+use crate::ssh::failure::{actionable_failure, failure_reason};
 use crate::sys::run_cmd_bounded;
 
 /// Hard deadline for the probe command.
@@ -40,20 +41,44 @@ pub const SESSION_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
 /// MUST NOT be called from the heartbeat thread: it can take tens of seconds.
 /// Callers run it on a worker.
 pub fn session_works(control_path: &std::path::Path, host: &str) -> bool {
+    session_failure(control_path, host).is_none()
+}
+
+/// Ask the master for a real session and return an actionable explanation on
+/// failure. The old boolean API proved that the session failed, then discarded
+/// the server's stderr (`MaxSessions`, PAM denial, account policy, etc.)—the
+/// exact information the user needs to fix the problem.
+pub fn session_failure(control_path: &std::path::Path, host: &str) -> Option<String> {
     let cp = control_path.to_string_lossy().into_owned();
-    let args = [
-        "-o", &format!("ControlPath={cp}"),
-        "-o", "ControlMaster=no",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=10",
-        host,
-        "true",
-    ];
-    match run_cmd_bounded("ssh", &args, SESSION_PROBE_TIMEOUT) {
-        Some(out) => out.status.success(),
+    let mut args: Vec<String> = crate::config::paths::managed_config_args();
+    args.extend([
+        "-o".into(), format!("ControlPath={cp}"),
+        "-o".into(), "ControlMaster=no".into(),
+        // If the mux disappears between scheduling and exec, OpenSSH normally
+        // falls back to a fresh TCP connection. A user with a working SSH key
+        // could then make this probe pass even though the master under test is
+        // unusable. Existing-master reuse bypasses ProxyCommand; fallback must
+        // hit /usr/bin/false and fail, so success proves THIS ControlPath ran
+        // the remote command.
+        "-o".into(), "ProxyCommand=/usr/bin/false".into(),
+        "-o".into(), "BatchMode=yes".into(),
+        "-o".into(), "LogLevel=ERROR".into(),
+        "-o".into(), "ConnectTimeout=10".into(),
+        host.into(),
+        "true".into(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_cmd_bounded("ssh", &arg_refs, SESSION_PROBE_TIMEOUT) {
+        Some(out) if out.status.success() => None,
+        Some(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let transcript = if stderr.trim().is_empty() { &stdout } else { &stderr };
+            Some(actionable_failure(&failure_reason(transcript)))
+        }
         // Timed out or could not spawn — treat as "no answer", NOT as proof of
         // death. `ProbeSchedule` requires repeated failures before acting.
-        None => false,
+        None => Some(actionable_failure("SSH session probe timed out")),
     }
 }
 

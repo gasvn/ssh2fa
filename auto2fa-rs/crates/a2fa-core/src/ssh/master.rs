@@ -20,7 +20,7 @@ use log::{info, warn};
 
 use crate::error::Result;
 use crate::ssh::control;
-use crate::ssh::failure::failure_reason;
+use crate::ssh::failure::{actionable_failure, failure_reason_from_sources};
 use crate::ssh::pty_auth::{run_login, LoginOutcome};
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,12 @@ pub struct PoolState {
     /// Consecutive confident `Dead` probe results per slot (hysteresis). Reset
     /// to 0 on any `Alive`; untouched by `Inconclusive`.
     pub consecutive_probe_failures: [u32; POOL_SIZE],
+
+    /// Most recent user-facing login failure for this host. `start_master`
+    /// used to return only `bool`, so the daemon replaced every concrete SSH,
+    /// OTP, and system error with "Master login failed". Keeping the diagnosis
+    /// beside the slot result lets every worker propagate it to CLI/App state.
+    pub last_failure: Option<String>,
 }
 
 impl PoolState {
@@ -120,6 +126,7 @@ impl PoolState {
             flap_count: 0,
             flap_backoff_until: None,
             consecutive_probe_failures: [0; POOL_SIZE],
+            last_failure: None,
         }
     }
 
@@ -448,7 +455,7 @@ pub fn start_master(
 
     let mut argv: Vec<String> = crate::config::paths::managed_config_args();
     argv.extend([
-        "-E".into(),      log_file,
+        "-E".into(),      log_file.clone(),
         "-o".into(),      "StrictHostKeyChecking=no".into(),
         "-o".into(),      "UserKnownHostsFile=/dev/null".into(),
     ]);
@@ -468,6 +475,7 @@ pub fn start_master(
             state.slot_status[index] = SlotStatus::Ready;
             state.consecutive_login_failures = 0;
             state.cooldown_until = None;
+            state.last_failure = None;
             // Start the uptime clock for flap detection (connect-then-drop).
             state.mark_slot_ready(index);
             // Point the active symlink at this slot if it is the active one.
@@ -487,15 +495,26 @@ pub fn start_master(
         }
         Ok(LoginOutcome::AuthFailed { reason }) => {
             warn!("[{}] master slot {index} auth failed: {reason}", state.host);
+            state.last_failure = Some(actionable_failure(&reason));
             state.slot_status[index] = SlotStatus::Failed;
             state.record_login_failure();
             false
         }
-        Ok(LoginOutcome::Timeout) => {
+        Ok(LoginOutcome::Timeout { output }) => {
             // A perpetually-timing-out host must trip the breaker too —
             // otherwise the heartbeat re-spawns a 60s login worker every cycle
             // forever. Mirror the AuthFailed/Err arms.
             warn!("[{}] master slot {index} login timed out", state.host);
+            let ssh_log = std::fs::read_to_string(&log_file).unwrap_or_default();
+            let detail = if output.trim().is_empty() && ssh_log.trim().is_empty() {
+                "Connection timed out".to_string()
+            } else {
+                format!(
+                    "Login timed out; last SSH message: {}",
+                    failure_reason_from_sources(&output, &ssh_log)
+                )
+            };
+            state.last_failure = Some(actionable_failure(&detail));
             state.slot_status[index] = SlotStatus::Failed;
             state.record_login_failure();
             false
@@ -504,11 +523,13 @@ pub fn start_master(
             // Early EOF (ssh died before the prompt) is also a failed attempt;
             // a host that keeps EOF-ing should likewise trip the breaker rather
             // than be re-driven every cycle.
-            let reason = failure_reason(&output);
+            let ssh_log = std::fs::read_to_string(&log_file).unwrap_or_default();
+            let reason = failure_reason_from_sources(&output, &ssh_log);
             warn!(
                 "[{}] master slot {index} exited early: {reason}",
                 state.host
             );
+            state.last_failure = Some(actionable_failure(&reason));
             state.slot_status[index] = SlotStatus::Dead;
             state.record_login_failure();
             false
@@ -519,6 +540,7 @@ pub fn start_master(
             // otherwise the heartbeat would re-drive a hopeless login every
             // cycle forever. Mirror the AuthFailed arm's counter + cooldown.
             warn!("[{}] master slot {index} system error: {e}", state.host);
+            state.last_failure = Some(actionable_failure(&e.to_string()));
             state.slot_status[index] = SlotStatus::Dead;
             state.record_login_failure();
             false

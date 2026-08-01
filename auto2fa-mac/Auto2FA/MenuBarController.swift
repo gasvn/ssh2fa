@@ -172,19 +172,27 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         menu.addItem(openApp)
         menu.addItem(.separator())
 
-        // Update available (notify-only) — surfaced at the top. A submenu gives
-        // the user an actual path: how to update (for their install method),
-        // release notes, and a way to skip a version they don't want. The app
-        // never downloads or installs on its own.
+        // Update available — surfaced at the top. The primary item INSTALLS it
+        // (download → verify → swap → relaunch); nothing is downloaded until
+        // the user picks it. Settings → About opens alongside so the download
+        // has somewhere to show progress, and so the action is never invisible.
         if let upd = appState?.availableUpdate {
             let v = UpdateCheckCore.displayVersion(upd.version)
             let item = NSMenuItem(title: "⬆︎ Update available — \(v)", action: nil, keyEquivalent: "")
             item.toolTip = "A newer SSH2FA release is available."
             let sub = NSMenu()
-            let how = NSMenuItem(title: "How to update…",
+            let install = NSMenuItem(title: SelfUpdater.shared.phase.isBusy
+                                        ? "Updating…" : "Update & Relaunch",
+                                     action: #selector(installUpdateNow(_:)), keyEquivalent: "")
+            install.target = self
+            install.representedObject = upd.version
+            install.isEnabled = !SelfUpdater.shared.phase.isBusy
+            install.toolTip = "Download \(v), install it, and restart SSH2FA. Connected hosts stay connected."
+            sub.addItem(install)
+            let how = NSMenuItem(title: "Update options…",
                                  action: #selector(openUpdateInstructions(_:)), keyEquivalent: "")
             how.target = self
-            how.toolTip = "Open Settings → About for one-step update instructions."
+            how.toolTip = "Open Settings → About for update progress and manual instructions."
             sub.addItem(how)
             let notes = NSMenuItem(title: "View release notes",
                                    action: #selector(viewReleaseNotes(_:)), keyEquivalent: "")
@@ -382,11 +390,22 @@ final class MenuBarController: NSObject, ObservableObject, NSMenuDelegate {
         NotificationCenter.default.post(name: .a2fShowPalette, object: nil)
     }
 
-    /// "How to update…" → deep-link to Settings → About, which now shows
-    /// copy-paste update commands for both Homebrew and manual installs.
+    /// "Update options…" → deep-link to Settings → About, which shows update
+    /// progress plus the manual commands for installs that can't self-update.
     @objc private func openUpdateInstructions(_ sender: Any?) {
         UserDefaults.standard.set(SettingsTab.about, forKey: SettingsKey.settingsTab)
         showSettingsWindow()
+    }
+
+    /// "Update & Relaunch" → start the in-app install right away.
+    ///
+    /// Settings → About is opened FIRST so the download has a visible home: a
+    /// menu-bar click that silently downloads 7 MB and then restarts the app
+    /// would be indistinguishable from a crash.
+    @objc private func installUpdateNow(_ sender: NSMenuItem) {
+        guard let version = sender.representedObject as? String else { return }
+        openUpdateInstructions(nil)
+        Task { await SelfUpdater.shared.install(version: version) }
     }
 
     @objc private func viewReleaseNotes(_ sender: NSMenuItem) {
@@ -484,7 +503,7 @@ enum UninstallFlow {
     static func runInteractive() {
         let alert = NSAlert()
         alert.messageText = "Uninstall SSH2FA?"
-        alert.informativeText = "This stops and removes the background daemon, deletes its LaunchAgent, and removes every credential SSH2FA saved in your Keychain. Afterward, drag SSH2FA.app to the Trash yourself."
+        alert.informativeText = "This stops SSH2FA's background service and removes every credential SSH2FA saved in your Keychain. Afterward, drag SSH2FA.app to the Trash yourself."
         alert.alertStyle = .warning
         let purge = NSButton(checkboxWithTitle: "Also delete my saved hosts & tunnels (passwords.json, tunnels.json)",
                              target: nil, action: nil)
@@ -501,7 +520,7 @@ enum UninstallFlow {
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
         let done = NSAlert()
         done.messageText = "SSH2FA uninstalled"
-        done.informativeText = "The daemon, LaunchAgent and Keychain credentials are removed. Drag SSH2FA.app (now revealed in Finder) to the Trash to finish."
+        done.informativeText = "SSH2FA's background service and Keychain credentials are removed. Drag SSH2FA.app (now revealed in Finder) to the Trash to finish."
         done.addButton(withTitle: "Quit")
         done.runModal()
         NSApp.terminate(nil)

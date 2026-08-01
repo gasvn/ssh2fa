@@ -32,6 +32,26 @@
         }
       }
     },
+    "%@ — macOS won't ask again for this version.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ —— 这个版本 macOS 不会再询问了。"
+          }
+        }
+      }
+    },
+    "%@, and merged into a single Keychain item — future updates will ask once instead of once per host.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@,并已合并为单个钥匙串条目 —— 以后更新只会询问一次,而不是每台主机各问一次。"
+          }
+        }
+      }
+    },
     "%lld": {},
     "%lld failed connection attempt%@": {
       "localizations": {
@@ -45,6 +65,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 次连接失败%@"
+          }
+        }
+      }
+    },
+    "%lld of %lld authorized. Not authorized: %@. Open each one's Password & Setup and choose “Always Allow”.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld of %2$lld authorized. Not authorized: %3$@. Open each one's Password & Setup and choose “Always Allow”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已授权 %1$lld / %2$lld 项。未授权:%3$@。请分别打开它们的\"密码与设置\"并选择「始终允许」。"
           }
         }
       }
@@ -89,6 +125,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法获取 2FA 验证码 —— 点按重试"
+          }
+        }
+      }
+    },
+    "2FA secret (otpauth:// URL or secret key)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两步验证密钥（otpauth:// 链接或密钥串）"
           }
         }
       }
@@ -267,6 +313,26 @@
         }
       }
     },
+    "All %lld hosts authorized": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 台主机已全部授权"
+          }
+        }
+      }
+    },
+    "All 1 host authorized": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 台主机已授权"
+          }
+        }
+      }
+    },
     "Always-on notch status (experimental)": {
       "localizations": {
         "zh-Hans": {
@@ -377,6 +443,22 @@
         }
       }
     },
+    "Authorizing %@ (%lld of %lld)…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Authorizing %1$@ (%2$lld of %3$lld)…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在授权 %1$@(第 %2$lld / %3$lld 个)…"
+          }
+        }
+      }
+    },
     "Auto": {
       "localizations": {
         "zh-Hans": {
@@ -447,22 +529,12 @@
         }
       }
     },
-    "Background helper": {
+    "SSH2FA isn't ready — quit and reopen the app. Use Troubleshoot if the problem continues.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台助手"
-          }
-        }
-      }
-    },
-    "Background helper isn't running — restart SSH2FA to fix.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "后台助手未运行 —— 重启 SSH2FA 即可解决。"
+            "value": "SSH2FA 尚未就绪 —— 请退出并重新打开应用。如果问题仍然存在，请使用“故障排查”。"
           }
         }
       }
@@ -473,6 +545,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "浏览主机上的文件夹，不用手打路径"
+          }
+        }
+      }
+    },
+    "Browser URL suffix": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览器网址后缀"
           }
         }
       }
@@ -547,6 +629,16 @@
         }
       }
     },
+    "Checking the download…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在校验下载内容…"
+          }
+        }
+      }
+    },
     "Checking what's stored…": {
       "localizations": {
         "zh-Hans": {
@@ -567,7 +659,18 @@
         }
       }
     },
+    "Checks GitHub about once a day for a newer release and flags it in the menu bar. Installing stays your call: one click in the About tab downloads it, verifies it, and restarts into the new version.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大约每天检查一次 GitHub 上是否有新版本，并在菜单栏标记。是否安装仍由你决定：在\"关于\"标签页点一下，就会自动下载、校验，并重启进入新版本。"
+          }
+        }
+      }
+    },
     "Checks GitHub about once a day for a newer release and flags it in the menu bar. Never downloads or installs anything on its own — the About tab shows one-step update instructions.": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -667,6 +770,16 @@
         }
       }
     },
+    "Confirming macOS remembered the permission…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在确认 macOS 是否记住了授权…"
+          }
+        }
+      }
+    },
     "Connect": {
       "localizations": {
         "zh-Hans": {
@@ -683,6 +796,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "启动时自动连接"
+          }
+        }
+      }
+    },
+    "Connect host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接主机"
           }
         }
       }
@@ -727,12 +850,12 @@
         }
       }
     },
-    "Connecting to the background helper…": {
+    "Starting SSH2FA…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在连接后台助手…"
+            "value": "正在启动 SSH2FA…"
           }
         }
       }
@@ -748,7 +871,6 @@
       }
     },
     "Connection": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -764,6 +886,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接已断开 —— 服务器重启或网络发生变化。"
+          }
+        }
+      }
+    },
+    "Connection problem: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接问题：%@"
+          }
+        }
+      }
+    },
+    "Consolidating into a single Keychain item…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在合并为单个钥匙串条目…"
           }
         }
       }
@@ -824,6 +966,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "拷贝 localhost:%lld"
+          }
+        }
+      }
+    },
+    "Couldn't open the downloaded disk image.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开下载的磁盘映像。"
+          }
+        }
+      }
+    },
+    "Couldn't start the installer step: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动安装步骤：%@"
+          }
+        }
+      }
+    },
+    "Couldn't write the new version next to the current one: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法把新版本写入当前版本旁边：%@"
           }
         }
       }
@@ -958,6 +1130,16 @@
         }
       }
     },
+    "Disconnect host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开主机"
+          }
+        }
+      }
+    },
     "Dismiss": {
       "localizations": {
         "zh-Hans": {
@@ -1009,11 +1191,68 @@
       }
     },
     "Download DMG": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "下载 DMG"
+          }
+        }
+      }
+    },
+    "Download the DMG": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 DMG"
+          }
+        }
+      }
+    },
+    "Downloading — %@ of %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Downloading — %1$@ of %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载 — %@ / %@"
+          }
+        }
+      }
+    },
+    "Downloading…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载…"
+          }
+        }
+      }
+    },
+    "Downloads and installs the new version, then restarts SSH2FA.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载并安装新版本，然后重新启动 SSH2FA。"
+          }
+        }
+      }
+    },
+    "Downloads it, checks it, installs it, and restarts SSH2FA. Your hosts stay connected — no new 2FA login.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动下载、校验、安装，然后重启 SSH2FA。已连接的主机保持连接，无需重新做两步验证。"
           }
         }
       }
@@ -1078,6 +1317,16 @@
         }
       }
     },
+    "Fix…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修复…"
+          }
+        }
+      }
+    },
     "For best reliability, drag SSH2FA.app to /Applications first — SMAppService remembers the bundle path at register time, so moving the .app later silently breaks the auto-launch.": {
       "localizations": {
         "zh-Hans": {
@@ -1134,6 +1383,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "开始使用"
+          }
+        }
+      }
+    },
+    "Getting the download…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在获取下载地址…"
+          }
+        }
+      }
+    },
+    "GitHub returned HTTP %lld when looking for the download.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找下载文件时 GitHub 返回 HTTP %lld。"
           }
         }
       }
@@ -1248,6 +1517,16 @@
         }
       }
     },
+    "Hostname or SSH alias": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机名或 SSH 别名"
+          }
+        }
+      }
+    },
     "Hosts": {
       "localizations": {
         "zh-Hans": {
@@ -1334,6 +1613,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在初始化"
+          }
+        }
+      }
+    },
+    "Installing…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安装…"
           }
         }
       }
@@ -1498,12 +1787,12 @@
         }
       }
     },
-    "Login rejected — password or OTP is wrong. Re-add the host to fix.": {
+    "Login rejected — update the password or 2FA secret in Password & setup, then run Test login.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "登录被拒绝 —— 密码或动态码不正确。重新添加该主机即可解决。"
+            "value": "登录被拒绝。请在“密码与设置”中更新密码或两步验证密钥，然后运行“测试登录”。"
           }
         }
       }
@@ -1559,7 +1848,6 @@
       }
     },
     "Mount filesystem": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1775,6 +2063,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有找到运行中的作业。请使用自定义节点，或先启动一个 SLURM 作业。"
+          }
+        }
+      }
+    },
+    "No saved credentials to authorize.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有需要授权的已存凭据。"
           }
         }
       }
@@ -1999,6 +2297,16 @@
         }
       }
     },
+    "Password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密码"
+          }
+        }
+      }
+    },
     "Password & Setup…": {
       "localizations": {
         "zh-Hans": {
@@ -2160,7 +2468,6 @@
       }
     },
     "Port": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2191,7 +2498,6 @@
       }
     },
     "Ports": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2251,12 +2557,12 @@
         }
       }
     },
-    "Rebuild SSH masters + restart tunnels on wake": {
+    "Recent activity": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "唤醒后重建 SSH 主连接并重启隧道"
+            "value": "最近活动"
           }
         }
       }
@@ -2291,12 +2597,12 @@
         }
       }
     },
-    "Reconnecting to the background helper…": {
+    "Restoring SSH connections…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在重新连接后台助手…"
+            "value": "正在恢复 SSH 连接…"
           }
         }
       }
@@ -2391,12 +2697,12 @@
         }
       }
     },
-    "Removes the background daemon, its LaunchAgent, and Keychain credentials.": {
+    "Removes SSH2FA's background service and Keychain credentials.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "移除后台助手、它的 LaunchAgent 以及钥匙串中的凭据。"
+            "value": "移除 SSH2FA 的后台服务和钥匙串凭据。"
           }
         }
       }
@@ -2461,12 +2767,22 @@
         }
       }
     },
-    "Restart background helper": {
+    "Restart SSH2FA service": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重启后台助手"
+            "value": "重启 SSH2FA 服务"
+          }
+        }
+      }
+    },
+    "Restarting SSH2FA…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新启动 SSH2FA…"
           }
         }
       }
@@ -2481,7 +2797,18 @@
         }
       }
     },
+    "Retry after applying the suggested fix": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按建议修复后重试"
+          }
+        }
+      }
+    },
     "Retry connecting": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2531,6 +2858,16 @@
         }
       }
     },
+    "Run on connect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接后运行"
+          }
+        }
+      }
+    },
     "Runs each time this tunnel transitions to alive. Env: AUTO2FA_TUNNEL_NAME, AUTO2FA_LOCAL_PORT, AUTO2FA_NODE, AUTO2FA_JUMP, AUTO2FA_URL.": {
       "localizations": {
         "zh-Hans": {
@@ -2552,7 +2889,6 @@
       }
     },
     "SSH password": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2573,6 +2909,16 @@
         }
       }
     },
+    "SSH2FA doesn't have permission to update itself in %@ — it may have been installed by another user.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 没有权限在 %@ 中更新自己 —— 它可能是由另一个用户安装的。"
+          }
+        }
+      }
+    },
     "SSH2FA is free & open source. The one missing piece is an Apple Developer membership ($99/yr). With it the app can be notarized — it installs with zero Gatekeeper warnings for everyone, plus signed updates and a Homebrew cask that just works. If SSH2FA saves you the daily 2FA dance, chip in toward the $99.": {
       "localizations": {
         "zh-Hans": {
@@ -2589,6 +2935,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "SSH2FA 已锁定"
+          }
+        }
+      }
+    },
+    "SSH2FA is running from a read-only location (probably still inside the disk image). Drag it to your Applications folder first, then updates install with one click.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 正在只读位置运行（多半还在磁盘映像里）。请先把它拖到\"应用程序\"文件夹，之后更新就能一键完成。"
           }
         }
       }
@@ -2623,22 +2979,22 @@
         }
       }
     },
-    "SSH2FA uses a small background helper to keep your connections alive. Leave this on unless you run it yourself.": {
+    "Your password and 2FA secret stay in the macOS Keychain, locked to SSH2FA. Its signed identity stays stable across updates, so macOS does not need to authorize it again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "SSH2FA 用一个小型后台助手来维持你的连接。除非你自己运行它，否则请保持开启。"
+            "value": "你的密码和 2FA 密钥保存在 macOS 钥匙串中，并仅供 SSH2FA 使用。它的签名身份在更新后保持稳定，因此 macOS 无需再次授权。"
           }
         }
       }
     },
-    "SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt. They'll then be merged into a single Keychain item, so future updates ask only once.": {
+    "SSH2FA needs to move older saved credentials into its new stable Keychain vault. macOS may ask permission to read the old items one final time; choose Allow. After migration, future updates will not ask again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "SSH2FA 的后台助手已更新，macOS 会为每个已保存的密码和 2FA 密钥询问权限。现在一次性处理完 —— 每个弹窗都选“始终允许”。之后它们会合并成单个钥匙串条目，以后更新只会问一次。"
+            "value": "SSH2FA 需要把旧版保存的凭据迁移到新的稳定钥匙串保险库。macOS 可能会最后一次请求读取旧条目；请选择“允许”。迁移完成后，后续更新不会再次询问。"
           }
         }
       }
@@ -2709,6 +3065,16 @@
         }
       }
     },
+    "Saved credentials re-authorized — macOS won't ask again for this version.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已存凭据重新授权完成 —— 这个版本 macOS 不会再询问了。"
+          }
+        }
+      }
+    },
     "Saving…": {
       "localizations": {
         "zh-Hans": {
@@ -2750,7 +3116,6 @@
       }
     },
     "Server address": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -2776,16 +3141,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "服务器没有响应 —— 网络较慢，或服务器不可达。"
-          }
-        }
-      }
-    },
-    "Server identity changed — may be a server rebuild, or (rarely) a MITM.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "服务器身份已变更 —— 可能是服务器重装，也可能（极少数情况）是中间人攻击。"
           }
         }
       }
@@ -2880,12 +3235,12 @@
         }
       }
     },
-    "Show daemon logs": {
+    "Show SSH2FA logs…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "显示后台助手日志"
+            "value": "显示 SSH2FA 日志…"
           }
         }
       }
@@ -3000,52 +3355,32 @@
         }
       }
     },
-    "Start automatically when daemon boots": {
+    "Start automatically with SSH2FA": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台助手启动时自动启动"
+            "value": "随 SSH2FA 自动启动"
           }
         }
       }
     },
-    "Start on daemon launch": {
+    "SSH2FA isn't ready": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台助手启动时启动"
+            "value": "SSH2FA 尚未就绪"
           }
         }
       }
     },
-    "Start the background helper when this app launches": {
+    "Starts automatically with SSH2FA": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "App 启动时启动后台助手"
-          }
-        }
-      }
-    },
-    "Starting the background helper… %@": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在启动后台助手… %@"
-          }
-        }
-      }
-    },
-    "Starts automatically when the daemon boots": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "后台助手启动时自动启动"
+            "value": "随 SSH2FA 自动启动"
           }
         }
       }
@@ -3240,12 +3575,92 @@
         }
       }
     },
-    "The background helper is an older version than the app. Quit and reopen SSH2FA so it restarts.": {
+    "That release doesn't publish a downloadable app — update manually this time.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台助手的版本比 App 旧。请退出并重新打开 SSH2FA 让它重启。"
+            "value": "该版本没有提供可下载的应用 —— 这次请手动更新。"
+          }
+        }
+      }
+    },
+    "The SSH account has expired. Ask the server administrator to renew it before retrying.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 账号已过期。请联系服务器管理员续期后再重试。"
+          }
+        }
+      }
+    },
+    "The SSH account is locked. Wait for the lockout period or ask the server administrator to unlock it before retrying.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 账号已被锁定。请等待锁定期结束，或联系服务器管理员解锁后再重试。"
+          }
+        }
+      }
+    },
+    "Part of SSH2FA is still on an older version. Quit and reopen the app to finish the update.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 的部分组件仍是旧版本。请退出并重新打开应用以完成更新。"
+          }
+        }
+      }
+    },
+    "The disk image didn't contain SSH2FA.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "磁盘映像里没有 SSH2FA。"
+          }
+        }
+      }
+    },
+    "The download didn't match the checksum GitHub published — it may have been corrupted in transit. Try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载内容与 GitHub 公布的校验和不一致 —— 可能在传输中损坏了。请重试。"
+          }
+        }
+      }
+    },
+    "The download failed with HTTP %lld.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载失败，HTTP %lld。"
+          }
+        }
+      }
+    },
+    "The downloaded app failed macOS's signature check, so it wasn't installed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的应用未通过 macOS 的签名校验，因此没有安装。"
+          }
+        }
+      }
+    },
+    "The downloaded app is missing its version information.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的应用缺少版本信息。"
           }
         }
       }
@@ -3271,12 +3686,82 @@
         }
       }
     },
+    "The host name could not be resolved. Check HostName and connect the required VPN/DNS, then retry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法解析主机名。请检查 HostName，并连接所需的 VPN/DNS，然后重试。"
+          }
+        }
+      }
+    },
+    "The server identity key changed. Verify its fingerprint with the server administrator before updating known_hosts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器身份密钥已更改。在更新 known_hosts 前，请先向服务器管理员核对新指纹。"
+          }
+        }
+      }
+    },
+    "The server is connected but refused a new SSH session. Close old SSH sessions; if it persists, ask the server administrator to check MaxSessions/PAM limits.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器已连接，但拒绝建立新的 SSH 会话。请关闭旧的 SSH 会话；若仍旧如此，请联系服务器管理员检查 MaxSessions/PAM 限制。"
+          }
+        }
+      }
+    },
+    "The server rejected the 2FA code. Check the saved secret and the Mac’s date/time, then update it in Password & setup.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器拒绝了两步验证码。请检查已保存的密钥和 Mac 的日期/时间，然后在\"密码与设置\"中更新。"
+          }
+        }
+      }
+    },
+    "The server rejected the password. Open Password & setup, replace it, then run Test login.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器拒绝了密码。请打开\"密码与设置\"替换密码，然后运行\"测试登录\"。"
+          }
+        }
+      }
+    },
     "The stored 2FA secret can't be read": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "保存的 2FA 密钥无法读取"
+          }
+        }
+      }
+    },
+    "This build isn't running from an app bundle, so it can't update itself.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个版本不是从 .app 应用包里运行的，无法自我更新。"
+          }
+        }
+      }
+    },
+    "This SSH2FA build uses a local signing certificate, so macOS won't allow a verified one-click update yet. Update with Homebrew or download the new version below.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 SSH2FA 使用本地签名证书，macOS 暂时不允许经过验证的一键更新。请使用 Homebrew 更新，或在下方下载新版本。"
           }
         }
       }
@@ -3301,6 +3786,16 @@
         }
       }
     },
+    "Too many SSH keys were tried first. Enable IdentitiesOnly for this host or remove unused keys from ssh-agent, then retry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先尝试了过多 SSH 密钥。请为该主机启用 IdentitiesOnly，或从 ssh-agent 中移除不用的密钥，然后重试。"
+          }
+        }
+      }
+    },
     "Triggers once per tunnel transition idle → alive. If your tunnel hosts a notebook server (jupyter etc.), this saves you a click.": {
       "localizations": {
         "zh-Hans": {
@@ -3311,12 +3806,12 @@
         }
       }
     },
-    "Trouble starting the background helper — retrying…": {
+    "SSH2FA couldn't restore its background connection. Quit and reopen SSH2FA, then use Troubleshoot if the problem continues.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "启动后台助手遇到问题 —— 正在重试…"
+            "value": "SSH2FA 无法恢复后台连接。请退出并重新打开 SSH2FA；如果问题仍然存在，请使用“故障排查”。"
           }
         }
       }
@@ -3402,7 +3897,6 @@
       }
     },
     "Two-factor secret": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3462,6 +3956,16 @@
         }
       }
     },
+    "Unmount filesystem": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载文件系统"
+          }
+        }
+      }
+    },
     "Unpin %@": {
       "localizations": {
         "zh-Hans": {
@@ -3482,6 +3986,16 @@
         }
       }
     },
+    "Update & Relaunch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新并重启"
+          }
+        }
+      }
+    },
     "Update check failed: %@": {
       "localizations": {
         "zh-Hans": {
@@ -3492,7 +4006,18 @@
         }
       }
     },
+    "Update from Terminal instead": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改用终端命令更新"
+          }
+        }
+      }
+    },
     "Update with ONE of these (SSH2FA never installs on its own):": {
+      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3553,7 +4078,6 @@
       }
     },
     "Username": {
-      "extractionState": "stale",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3730,12 +4254,42 @@
         }
       }
     },
+    "macOS didn't allow access to the saved credentials. Open a host's Password & Setup, try again, and choose “Always Allow”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 没有放行对已存凭据的访问。请打开任一主机的\"密码与设置\"重试,并选择「始终允许」。"
+          }
+        }
+      }
+    },
     "macOS hasn't allowed access yet — a Keychain prompt may be waiting for you. Choose “Always Allow” there, then try again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "macOS 还未授予访问权限 —— 可能有一个钥匙串弹窗在等你。请在上面选择“始终允许”，然后重试。"
+          }
+        }
+      }
+    },
+    "macOS is running SSH2FA from a temporary read-only copy. Move the app to your Applications folder and open it from there, then updates install with one click.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 正在以一份临时只读副本运行 SSH2FA。请把应用移到\"应用程序\"文件夹，并从那里打开，之后更新就能一键完成。"
+          }
+        }
+      }
+    },
+    "macOS is still asking every time. That happens when “Allow” is chosen instead of “Always Allow” — “Allow” permits one single use. Next time the prompt appears, choose “Always Allow” and it will stop.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 仍然每次都在询问。这通常是因为点了「允许」而不是「始终允许」——「允许」只放行这一次。下次弹出时请选「始终允许」,就不会再问了。"
           }
         }
       }
@@ -3844,12 +4398,112 @@
     },
     "•• ••": {},
     "→ %@": {},
-    "⚠︎ Off: SSH2FA won't start the helper — your hosts won't connect and nothing here will work unless you run ssh2fa-daemon yourself.": {
+    "SSH2FA couldn't start. Quit and reopen the app, then use Troubleshoot if the problem continues.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "⚠︎ 已关闭：SSH2FA 不会启动助手 —— 除非你自己运行 ssh2fa-daemon，否则主机无法连接，这里的功能都不可用。"
+            "value": "SSH2FA 无法启动。请退出并重新打开应用；如果问题仍然存在，请使用“故障排查”。"
+          }
+        }
+      }
+    },
+    "Restore connections": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复连接"
+          }
+        }
+      }
+    },
+    "check hosts and restore interrupted connections": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查主机并恢复中断的连接"
+          }
+        }
+      }
+    },
+    "stop tunnels and reconnect every host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止隧道并重新连接所有主机"
+          }
+        }
+      }
+    },
+    "Restore host connections and tunnels after wake": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "唤醒后恢复主机连接和隧道"
+          }
+        }
+      }
+    },
+    "Sleep can interrupt long-running SSH connections. Recommended on — SSH2FA checks and restores them automatically when your Mac wakes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "睡眠可能中断长时间运行的 SSH 连接。建议开启 —— Mac 唤醒时，SSH2FA 会自动检查并恢复连接。"
+          }
+        }
+      }
+    },
+    "With auto-connect on, SSH2FA restores this host connection automatically after login, restart, or network recovery.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启自动连接后，SSH2FA 会在登录、重启或网络恢复后自动恢复这台主机的连接。"
+          }
+        }
+      }
+    },
+    "Choose the next unused local port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择下一个未使用的本地端口"
+          }
+        }
+      }
+    },
+    "Restoring connections…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在恢复连接…"
+          }
+        }
+      }
+    },
+    "checking hosts and tunnels": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查主机和隧道"
+          }
+        }
+      }
+    },
+    "SSH2FA is still starting or recovering. Wait a moment and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 仍在启动或恢复中。请稍等片刻后重试。"
           }
         }
       }

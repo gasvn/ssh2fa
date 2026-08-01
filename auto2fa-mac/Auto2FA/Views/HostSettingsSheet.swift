@@ -86,19 +86,29 @@ struct HostSettingsSheet: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: Spacing.m) {
-            Image(systemName: "key.horizontal.fill")
-                .font(.title2)
-                .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(hostName).font(.dashTitle)
-                Text(HostSettingsCore.targetSummary(source) ?? "Password & setup")
-                    .font(.countBadge)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            HStack(spacing: Spacing.m) {
+                Image(systemName: "key.horizontal.fill")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hostName).font(.dashTitle)
+                    Text(HostSettingsCore.targetSummary(source) ?? "Password & setup")
+                        .font(.countBadge)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let h = host {
+                    StatusBadge(host: h.displayState, text: FriendlyText.hostStatus(h.status))
+                }
             }
-            Spacer()
-            if let h = host {
-                StatusBadge(host: h.displayState, text: FriendlyText.hostStatus(h.status))
+            if let h = host, h.displayState == .failed, !h.lastMsg.isEmpty {
+                Label(FriendlyText.hostLastMsg(h.lastMsg),
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Connection problem: \(FriendlyText.hostLastMsg(h.lastMsg))")
             }
         }
         .padding(.horizontal, Spacing.xl)
@@ -569,7 +579,7 @@ struct HostSettingsSheet: View {
     // MARK: - Small building blocks
 
     @ViewBuilder
-    private func card<Content: View>(_ title: String, systemImage: String,
+    private func card<Content: View>(_ title: LocalizedStringKey, systemImage: String,
                                      @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Spacing.m) {
             Label(title, systemImage: systemImage)
@@ -583,7 +593,7 @@ struct HostSettingsSheet: View {
     }
 
     @ViewBuilder
-    private func labeledField<F: View>(_ label: String, _ field: F) -> some View {
+    private func labeledField<F: View>(_ label: LocalizedStringKey, _ field: F) -> some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             Text(label).font(.rowMeta).foregroundStyle(.secondary)
             field.textFieldStyle(.roundedBorder)
@@ -591,7 +601,7 @@ struct HostSettingsSheet: View {
     }
 
     @ViewBuilder
-    private func readOnlyRow(_ label: String, _ value: String) -> some View {
+    private func readOnlyRow(_ label: LocalizedStringKey, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
             Text(label)
                 .font(.rowMeta)

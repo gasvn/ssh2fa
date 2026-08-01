@@ -102,9 +102,25 @@ impl RustDaemon {
             .join("debug")
             .join("ssh2fa-daemon");
 
+        // Isolate the config directory. Without this the test daemon falls back
+        // to the developer's real ~/.ssh: it loads their actual hosts, sweeps
+        // their live ControlMasters (killing warm connections and forcing a
+        // fresh 2FA login), reads their real Keychain — from an UNSIGNED debug
+        // binary, so macOS raises an authorization dialog on every test run and
+        // can never remember the answer — and logs in to their real servers.
+        // Observed doing exactly that. `server::guard_test_isolation` now also
+        // refuses to start without this, so the two defend each other.
+        let cfg_dir = std::env::temp_dir().join(format!("ssh2fa-conformance-{}", std::process::id()));
+        std::fs::create_dir_all(&cfg_dir).expect("create isolated config dir");
+
         let child = Command::new(&bin)
             .env("AUTO2FA_SOCK", RUST_SOCK)
             .env("AUTO2FA_LOCK", RUST_LOCK)
+            .env("SSH_CONFIG_PATH", &cfg_dir)
+            // Socket/config isolation does not isolate the macOS login
+            // Keychain. The daemon guard requires this, and KeychainStore
+            // refuses every operation while it is set.
+            .env("SSH2FA_DISABLE_KEYCHAIN", "1")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

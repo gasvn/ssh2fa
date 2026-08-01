@@ -1,6 +1,30 @@
 import XCTest
 
 final class SSHConfigManagerTests: XCTestCase {
+    func testWarmReuseIsDefaultOnceAHostExists() {
+        XCTAssertTrue(SSHConfigManager.shouldEnableWarmReuseByDefault(
+            hasHosts: true, enabled: false, explicitlyDisabled: false,
+            migration: false, migrationCompleted: false))
+        XCTAssertFalse(SSHConfigManager.shouldEnableWarmReuseByDefault(
+            hasHosts: false, enabled: false, explicitlyDisabled: false,
+            migration: false, migrationCompleted: false))
+    }
+
+    func testWarmReuseDefaultRespectsExplicitOptOut() {
+        XCTAssertFalse(SSHConfigManager.shouldEnableWarmReuseByDefault(
+            hasHosts: true, enabled: false, explicitlyDisabled: true,
+            migration: false, migrationCompleted: false))
+    }
+
+    func testWarmReuseMigrationRunsOnlyOnce() {
+        XCTAssertTrue(SSHConfigManager.shouldEnableWarmReuseByDefault(
+            hasHosts: true, enabled: false, explicitlyDisabled: false,
+            migration: true, migrationCompleted: false))
+        XCTAssertFalse(SSHConfigManager.shouldEnableWarmReuseByDefault(
+            hasHosts: true, enabled: false, explicitlyDisabled: false,
+            migration: true, migrationCompleted: true))
+    }
+
     // BLOCKER regression: a guided host lives in the sidecar BEFORE the daemon
     // registers it (registration happens only after the mandatory test-login).
     // The merge must still emit a Host block for it, or `ssh -F` can't resolve

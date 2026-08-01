@@ -103,6 +103,33 @@ pub fn invalidate_creds_cache(host: &str) {
     *cache.epoch.entry(host.to_string()).or_insert(0) += 1;
 }
 
+/// Deadline for the login path's Keychain read.
+///
+/// # Why this is not 10 seconds
+///
+/// It was, and that single number produced the "why does it keep asking for my
+/// password" complaint. Two facts collide:
+///
+/// * The FIRST read of an item after the daemon restarts routinely takes well
+///   over 10s — macOS re-evaluates the item's ACL against the new process, and
+///   if it decides to ask, the clock includes the human noticing a dialog,
+///   reading it, and typing their login password to grant "Always Allow".
+/// * A timed-out read is not cached, and the heartbeat retries the login about
+///   every 15s. Each retry starts a BRAND NEW Keychain read.
+///
+/// So a read that merely needed 12s never completed: it timed out, retried,
+/// timed out, retried. Observed in the daemon log — one host failing at
+/// 21:48:56, 21:49:12, 21:49:27, 21:49:43, and four hosts failing in the same
+/// second — which the user experiences as an endless stream of password
+/// prompts. The other Keychain path (`CREDENTIAL_OP_TIMEOUT`) had already
+/// learned this and moved to 30s; this one had not.
+///
+/// Waiting longer is safe: the read runs on its own sub-worker, only the one
+/// login worker for this host waits on it, and the deadline is still hard.
+/// Finishing ONE slow read is what stops the storm — it populates the cache and
+/// authorizes the item, so every later read is instant.
+const KEYCHAIN_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Read a host's `(password, secret)`, served from the process cache when
 /// present and otherwise read once from the macOS Keychain (and cached if
 /// complete).
@@ -116,15 +143,16 @@ pub fn invalidate_creds_cache(host: &str) {
 /// in-flight StartGuard, so an unbounded read here wedged the slot (and,
 /// process-wide, every host's login) forever.
 ///
-/// Missing / unreadable / timed-out creds degrade to empty strings (login
-/// then simply fails for that host) rather than propagating an error, and
-/// are NOT cached so a later attempt retries the read.
-fn load_creds(host: &str) -> (String, String) {
+/// Missing / unreadable / timed-out credentials return a specific error. The
+/// caller publishes that diagnosis to the host snapshot instead of attempting
+/// SSH with empty strings and misleadingly reporting a bad password. Failures
+/// are NOT cached, so a later attempt retries the read.
+fn load_creds(host: &str) -> std::result::Result<(String, String), String> {
     // Fast path: serve from cache so retries never re-prompt the Keychain.
     {
         let cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(creds) = cache.creds.get(host) {
-            return creds.clone();
+            return Ok(creds.clone());
         }
     }
     // Capture the epoch BEFORE the read so a concurrent invalidation (re-key)
@@ -137,10 +165,10 @@ fn load_creds(host: &str) -> (String, String) {
     // pending SecurityAgent prompt wedged the slot "in flight" FOREVER (the
     // heartbeat logged "restart already in flight, skipping" indefinitely),
     // and macOS serializes Keychain access process-wide so one prompt stalled
-    // every host. Timeout -> empty creds -> the login fails loudly, the guard
-    // releases, and the heartbeat retries later (re-reading the Keychain,
-    // since incomplete creds are never cached). An abandoned sub-worker that
-    // completes late writes only into the cache - harmless.
+    // every host. Timeout -> a specific preflight failure, the guard releases,
+    // and the heartbeat retries later (re-reading the Keychain, since failed
+    // reads are never cached). An abandoned sub-worker that completes late
+    // writes only complete credentials into the cache - harmless.
     let creds = {
         let (tx, rx) = std::sync::mpsc::channel();
         let host_owned = host.to_string();
@@ -152,38 +180,54 @@ fn load_creds(host: &str) -> (String, String) {
                 use a2fa_core::totp::extract_secret;
 
                 let ks = KeychainStore;
-                let password = get_password(&ks, &host_owned).ok().flatten().unwrap_or_default();
-                let otpauth = get_otpauth(&ks, &host_owned).ok().flatten().unwrap_or_default();
-                let secret = extract_secret(&otpauth).unwrap_or_default();
-                let creds = (password, secret);
+                let result: std::result::Result<(String, String), String> = (|| {
+                    let password = get_password(&ks, &host_owned)
+                        .map_err(|e| format!("Keychain could not read the saved password: {e}"))?
+                        .unwrap_or_default();
+                    if password.is_empty() {
+                        return Err("Missing saved password".into());
+                    }
+                    let otpauth = get_otpauth(&ks, &host_owned)
+                        .map_err(|e| format!("Keychain could not read the saved 2FA secret: {e}"))?
+                        .unwrap_or_default();
+                    if otpauth.trim().is_empty() {
+                        return Err("Missing saved 2FA secret".into());
+                    }
+                    let secret = extract_secret(&otpauth)
+                        .map_err(|e| format!("Invalid otpauth/2FA secret: {e}"))?;
+                    if secret.is_empty() {
+                        return Err("Missing saved 2FA secret".into());
+                    }
+                    Ok((password, secret))
+                })();
                 // Cache from HERE so even a timed-out-but-late-completing read
                 // benefits the next attempt (complete creds only) — BUT only
                 // if no invalidation raced the read (epoch unchanged). A
                 // re-key (remove→re-add) bumps the epoch; inserting our
                 // now-stale read would serve the OLD password forever.
-                if creds_complete(&creds) {
+                if let Ok(creds) = &result {
                     let mut cache = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
                     let current = cache.epoch.get(&host_owned).copied().unwrap_or(0);
-                    if current == start_epoch {
+                    if current == start_epoch && creds_complete(creds) {
                         cache.creds.insert(host_owned.clone(), creds.clone());
                     }
                 }
-                let _ = tx.send(creds);
+                let _ = tx.send(result);
             });
         match spawn_res {
-            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(_) => match rx.recv_timeout(KEYCHAIN_READ_TIMEOUT) {
                 Ok(creds) => creds,
                 Err(_) => {
                     warn!(
                         "[{host}] keychain read timed out (locked keychain / pending \
                          prompt?) - this login attempt will fail and retry later"
                     );
-                    (String::new(), String::new())
+                    Err("Keychain read timed out (a locked Keychain or an unanswered permission prompt may be waiting)".into())
                 }
             },
             Err(e) => {
                 warn!("[{host}] failed to spawn keychain-read worker: {e}");
-                (String::new(), String::new())
+                Err(format!("Could not start the Keychain reader: {e}"))
             }
         }
     };
@@ -191,6 +235,35 @@ fn load_creds(host: &str) -> (String, String) {
     // (Complete creds were cached inside the sub-worker; incomplete ones are
     // never cached so a later attempt retries the Keychain.)
     creds
+}
+
+/// Publish a failure that happened before ssh could even be started (normally
+/// Keychain/missing credential/invalid 2FA data). Previously these became empty
+/// strings and the later SSH attempt misleadingly told the user their password
+/// was wrong.
+fn publish_preflight_failure(
+    host: &str,
+    slot: usize,
+    raw_reason: &str,
+    state: &Arc<Mutex<State>>,
+    managers: &Arc<HostManagers>,
+) {
+    let message = a2fa_core::ssh::failure::actionable_failure(raw_reason);
+    managers.with_pool_mut(host, |p| {
+        if slot < POOL_SIZE {
+            p.slot_status[slot] = SlotStatus::Failed;
+        }
+        p.last_failure = Some(message.clone());
+        p.record_login_failure();
+    });
+    let mut guard = crate::lock_state(state);
+    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host) {
+        h.is_master_ready = false;
+        h.pool_alive = 0;
+        h.status = "Failed".into();
+        h.last_msg = message.clone();
+    }
+    warn!("[{host}] login preflight failed: {raw_reason}");
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +411,12 @@ pub struct ProbeState {
     pub last_finished: Option<Instant>,
     pub consecutive_failures: u32,
     pub running: bool,
+    pub last_failure: Option<String>,
+    /// True after adopting a local mux until a real remote command succeeds.
+    pub verification_required: bool,
+    /// Changes whenever the master under this ControlPath is replaced/adopted.
+    /// An in-flight probe may update State only if its captured epoch matches.
+    pub verification_epoch: u64,
 }
 
 impl HostManagers {
@@ -374,6 +453,30 @@ impl HostManagers {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&(host.to_string(), slot))
+    }
+
+    /// Whether Connected is currently forbidden by real-session evidence (a
+    /// failed probe, or a locally-adopted mux that has not been verified yet).
+    pub fn session_connection_unverified(&self, host: &str) -> bool {
+        self.probes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(host)
+            .map(|p| p.verification_required || p.consecutive_failures > 0)
+            .unwrap_or(false)
+    }
+
+    /// A new or locally-adopted ControlMaster has not proved that the remote
+    /// side will grant a reusable session. Invalidate any in-flight probe for
+    /// the prior master and make the next heartbeat probe this generation.
+    pub fn require_session_verification(&self, host: &str) {
+        let mut probes = self.probes.lock().unwrap_or_else(|e| e.into_inner());
+        let p = probes.entry(host.to_string()).or_default();
+        p.last_finished = None;
+        p.consecutive_failures = 0;
+        p.last_failure = None;
+        p.verification_required = true;
+        p.verification_epoch = p.verification_epoch.wrapping_add(1);
     }
 
     /// Drop every per-host entry so a host that is removed leaves nothing
@@ -444,6 +547,7 @@ impl HostManagers {
             flap_count: p.flap_count,
             flap_backoff_until: p.flap_backoff_until,
             consecutive_probe_failures: p.consecutive_probe_failures,
+            last_failure: p.last_failure.clone(),
         })
     }
 
@@ -480,6 +584,7 @@ impl HostManagers {
                     flap_count: p.flap_count,
                     flap_backoff_until: p.flap_backoff_until,
                     consecutive_probe_failures: p.consecutive_probe_failures,
+                    last_failure: p.last_failure.clone(),
                 })
                 .collect()
         };
@@ -519,6 +624,7 @@ impl HostManagers {
             dst.last_rotate = src.last_rotate;
             dst.probe_backoff_until = src.probe_backoff_until;
             dst.active_index = src.active_index;
+            dst.last_failure = src.last_failure.clone();
         });
     }
 
@@ -538,6 +644,7 @@ impl HostManagers {
             }
             dst.consecutive_login_failures = src.consecutive_login_failures;
             dst.cooldown_until = src.cooldown_until;
+            dst.last_failure = src.last_failure.clone();
         });
     }
 }
@@ -615,15 +722,9 @@ pub fn boot_autostart(
                     a2fa_core::ssh::control::sweep_duplicate_masters(&p, &host_name);
                 }
             }
-            let mut guard = crate::lock_state(state);
-            if let Some(h) = guard.hosts.iter_mut().find(|hh| hh.host == host_name) {
-                h.is_master_ready = true;
-                h.pool_alive = 1;
-                h.pool_index = idx as u8;
-                h.status = "Connected".into();
-                h.last_msg = "Adopted live master (no login)".into();
-            }
-            info!("[{host_name}] boot: adopted live master slot {idx} — skipping login");
+            managers.require_session_verification(&host_name);
+            mark_host_verifying_session(state, &host_name, idx, 1);
+            info!("[{host_name}] boot: adopted live master slot {idx} — verifying remote session");
             continue;
         }
 
@@ -684,6 +785,7 @@ pub fn spawn_managed_start(
     let guard_host = host_name.clone();
     // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
     let err_managers = Arc::clone(&managers);
+    let err_state = Arc::clone(&state);
     let err_host = host_name.clone();
     let spawn_res = std::thread::Builder::new()
         .name(format!("managed-start:{host_name}:{slot}"))
@@ -697,13 +799,20 @@ pub fn spawn_managed_start(
 
             // 0. Read Keychain creds IN-THREAD (may block on an unanswered
             //    "Always Allow" prompt — but only this worker is affected).
-            let (password, secret) = load_creds(&host_name);
+            let (password, secret) = match load_creds(&host_name) {
+                Ok(creds) => creds,
+                Err(reason) => {
+                    publish_preflight_failure(&host_name, slot, &reason, &state, &managers);
+                    return;
+                }
+            };
 
             // 1. Snapshot the current PoolState (brief lock).
             let mut pool = managers.snapshot(&host_name);
 
             // 2. Build the OTP closure (no locks held).
             let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
+            managers.require_session_verification(&host_name);
 
             info!("[{host_name}] managed-start worker: slot {slot}");
 
@@ -742,12 +851,8 @@ pub fn spawn_managed_start(
             let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 if ready {
-                    h.is_master_ready = true;
-                    h.pool_alive = 1;
-                    h.pool_index = slot as u8;
-                    h.status = "Connected".into();
-                    h.last_msg = format!("Master slot {slot} ready");
-                    info!("[{host_name}] managed-start: slot {slot} Ready — State updated");
+                    set_host_verifying_session(h, slot, 1);
+                    info!("[{host_name}] managed-start: slot {slot} Ready — verifying remote session");
                 } else {
                     h.is_master_ready = false;
                     h.status = if pool.in_cooldown() {
@@ -755,7 +860,9 @@ pub fn spawn_managed_start(
                     } else {
                         "Failed".into()
                     };
-                    h.last_msg = format!("Master slot {slot} login failed");
+                    h.last_msg = pool.last_failure.clone().unwrap_or_else(|| {
+                        "SSH login failed without a specific error. Open Troubleshoot → Logs for the latest SSH message.".into()
+                    });
                     warn!("[{host_name}] managed-start: slot {slot} failed — State updated");
                 }
             }
@@ -766,6 +873,13 @@ pub fn spawn_managed_start(
         // would stay wedged for the daemon's life. The heartbeat loop retries.
         warn!("[{err_host}] managed-start: failed to spawn worker thread: {e} — releasing token");
         err_managers.end_start(&err_host, slot);
+        publish_preflight_failure(
+            &err_host,
+            slot,
+            &format!("Could not start the SSH login worker: {e}"),
+            &err_state,
+            &err_managers,
+        );
     }
 }
 
@@ -813,6 +927,7 @@ pub fn spawn_master_rebuild(
     let guard_host = host_name.clone();
     // Clones for the spawn-Err path (closure consumes `managers`/`host_name`).
     let err_managers = Arc::clone(&managers);
+    let err_state = Arc::clone(&state);
     let err_host = host_name.clone();
     let spawn_res = std::thread::Builder::new()
         .name(format!("master-rebuild:{host_name}"))
@@ -835,7 +950,14 @@ pub fn spawn_master_rebuild(
             }
 
             // --- Phase 0: read Keychain creds in-thread ---
-            let (password, secret) = load_creds(&host_name);
+            let (password, secret) = match load_creds(&host_name) {
+                Ok(creds) => creds,
+                Err(reason) => {
+                    publish_preflight_failure(&host_name, 0, &reason, &state, &managers);
+                    return;
+                }
+            };
+            managers.require_session_verification(&host_name);
 
             // --- Phase 1: stop every slot (off-lock) ---
             let mut pool = managers.snapshot(&host_name);
@@ -891,12 +1013,8 @@ pub fn spawn_master_rebuild(
             let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                 if ready {
-                    h.is_master_ready = true;
-                    h.pool_alive = 1;
-                    h.pool_index = 0;
-                    h.status = "Connected".into();
-                    h.last_msg = "Master rebuilt (slot 0 ready)".into();
-                    info!("[{host_name}] master-rebuild: slot 0 Ready — State updated");
+                    set_host_verifying_session(h, 0, 1);
+                    info!("[{host_name}] master-rebuild: slot 0 Ready — verifying remote session");
                 } else {
                     h.is_master_ready = false;
                     h.status = if pool.in_cooldown() {
@@ -904,7 +1022,9 @@ pub fn spawn_master_rebuild(
                     } else {
                         "Failed".into()
                     };
-                    h.last_msg = "Master rebuild failed (slot 0)".into();
+                    h.last_msg = pool.last_failure.clone().unwrap_or_else(|| {
+                        "SSH reconnect failed without a specific error. Open Troubleshoot → Logs for the latest SSH message.".into()
+                    });
                     warn!("[{host_name}] master-rebuild: slot 0 failed — State updated");
                 }
             }
@@ -915,6 +1035,13 @@ pub fn spawn_master_rebuild(
         // can re-claim it.
         warn!("[{err_host}] master-rebuild: failed to spawn worker thread: {e} — releasing token");
         err_managers.end_start(&err_host, 0);
+        publish_preflight_failure(
+            &err_host,
+            0,
+            &format!("Could not start the SSH login worker: {e}"),
+            &err_state,
+            &err_managers,
+        );
     }
 }
 
@@ -1154,21 +1281,24 @@ fn maybe_spawn_session_probe(
     state: &Arc<Mutex<State>>,
     managers: &Arc<HostManagers>,
 ) {
-    use a2fa_core::ssh::session_probe::{session_works, ProbeSchedule};
+    use a2fa_core::ssh::session_probe::{session_failure, ProbeSchedule};
     let schedule = ProbeSchedule::default();
 
     // Only probe a host we currently claim is connected — that claim is exactly
     // what we are trying to verify.
-    let claims_ready = {
+    let active = {
         let guard = crate::lock_state(state);
         guard
             .hosts
             .iter()
             .find(|h| h.host == host)
-            .map(|h| h.is_master_ready)
+            .map(|h| h.active)
             .unwrap_or(false)
     };
-    if !claims_ready {
+    let has_master = managers
+        .with_pool(host, |p| p.slot_status[0] == SlotStatus::Ready)
+        .unwrap_or(false);
+    if !active || !has_master {
         return;
     }
     // A rebuild in flight will settle the question by itself.
@@ -1176,8 +1306,8 @@ fn maybe_spawn_session_probe(
         return;
     }
 
-    // Claim the probe slot.
-    {
+    // Claim the probe slot and capture which master generation it is testing.
+    let probe_epoch = {
         let mut probes = managers.probes.lock().unwrap_or_else(|e| e.into_inner());
         let entry = probes.entry(host.to_string()).or_default();
         if entry.running {
@@ -1188,7 +1318,8 @@ fn maybe_spawn_session_probe(
             return;
         }
         entry.running = true;
-    }
+        entry.verification_epoch
+    };
 
     let host_owned = host.to_string();
     let state = Arc::clone(state);
@@ -1197,7 +1328,8 @@ fn maybe_spawn_session_probe(
         .name(format!("session-probe:{host}"))
         .spawn(move || {
             let cp = a2fa_core::ssh::control::active_symlink_path(&host_owned);
-            let ok = session_works(&cp, &host_owned);
+            let failure = session_failure(&cp, &host_owned);
+            let ok = failure.is_none();
 
             let failures = {
                 let mut probes = managers_owned
@@ -1206,17 +1338,51 @@ fn maybe_spawn_session_probe(
                     .unwrap_or_else(|e| e.into_inner());
                 let entry = probes.entry(host_owned.clone()).or_default();
                 entry.running = false;
+                if entry.verification_epoch != probe_epoch {
+                    info!("[{host_owned}] discarding session probe from an older master generation");
+                    return;
+                }
                 entry.last_finished = Some(Instant::now());
                 entry.consecutive_failures = if ok { 0 } else { entry.consecutive_failures + 1 };
+                entry.last_failure = failure.clone();
+                entry.verification_required = !ok;
                 entry.consecutive_failures
             };
 
             if ok {
+                // Clear a one-probe warning once a real session works again.
+                let mut guard = crate::lock_state(&state);
+                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
+                    if h.status == "Connection check failed"
+                        || h.status.contains("verifying session")
+                    {
+                        h.is_master_ready = true;
+                        h.pool_alive = 1;
+                        h.status = "Connected".into();
+                        h.last_msg = "Connected — real SSH session verified".into();
+                    }
+                }
                 return;
             }
+            let reason = failure.unwrap_or_else(|| {
+                "The server did not grant a real SSH session. Retry, then contact the server administrator if it persists.".into()
+            });
             warn!(
-                "[{host_owned}] session probe failed ({failures} in a row) —                  the master answers `ssh -O check` but will not grant a session"
+                "[{host_owned}] session probe failed ({failures} in a row): {reason}"
             );
+            // Do not leave a green Connected badge after direct evidence that
+            // the host cannot carry a session. Disable session-dependent UI
+            // controls immediately; the scheduled confirmation still runs
+            // because it keys off the pool's Ready transport, not this UI bit.
+            {
+                let mut guard = crate::lock_state(&state);
+                if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
+                    h.is_master_ready = false;
+                    h.pool_alive = 0;
+                    h.status = "Connection check failed".into();
+                    h.last_msg = format!("{reason} SSH2FA will verify once more before reconnecting.");
+                }
+            }
             if !schedule.should_rebuild(failures) {
                 return;
             }
@@ -1228,34 +1394,68 @@ fn maybe_spawn_session_probe(
             // Acting on it would mark the fresh, healthy master dead and cost a
             // needless 2FA login. One confirm probe against whatever is there
             // NOW settles it, and it only runs on the rare failure path.
-            if managers_owned.is_starting(&host_owned, 0) {
+            if !managers_owned.try_begin_start(&host_owned, 0) {
                 info!("[{host_owned}] rebuild already in flight — discarding stale probe result");
                 return;
             }
-            if session_works(&cp, &host_owned) {
+            let _probe_rebuild_guard = StartGuard {
+                managers: Arc::clone(&managers_owned),
+                host: host_owned.clone(),
+                slot: 0,
+            };
+            let current_epoch = managers_owned
+                .probes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&host_owned)
+                .map(|p| p.verification_epoch)
+                .unwrap_or(0);
+            if current_epoch != probe_epoch {
+                info!("[{host_owned}] master changed before probe confirmation — not rebuilding");
+                return;
+            }
+            if session_failure(&cp, &host_owned).is_none() {
                 info!(
                     "[{host_owned}] confirm probe succeeded — the master was replaced while                      the probe ran; not rebuilding"
                 );
-                let mut probes = managers_owned
-                    .probes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(e) = probes.get_mut(&host_owned) {
-                    e.consecutive_failures = 0;
+                {
+                    let mut probes = managers_owned
+                        .probes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Some(e) = probes.get_mut(&host_owned) {
+                        e.consecutive_failures = 0;
+                        e.last_failure = None;
+                        e.verification_required = false;
+                    }
                 }
+                let alive_count = managers_owned
+                    .with_pool(&host_owned, |p| {
+                        p.slot_status
+                            .iter()
+                            .filter(|s| **s == SlotStatus::Ready)
+                            .count() as u8
+                    })
+                    .unwrap_or(1);
+                heal_host_state(&state, &host_owned, 0, alive_count);
                 return;
             }
 
-            // Mark the slot dead; the existing heartbeat restart path rebuilds
-            // it. Going through the normal path keeps ONE rebuild mechanism.
-            warn!("[{host_owned}] master is up but unusable — marking dead for rebuild");
-            managers_owned.with_pool_mut(&host_owned, |p| {
-                p.slot_status[0] = SlotStatus::Dead;
-            });
+            // Stop the CONFIRMED-unusable master before marking it Dead. Merely
+            // changing the enum leaves its local ControlMaster socket alive;
+            // the next heartbeat then sees Dead+Alive and adopts the bad master
+            // back to Connected, completely undoing recovery.
+            warn!("[{host_owned}] master is up but unusable — stopping it for rebuild");
+            let mut condemned = managers_owned.snapshot(&host_owned);
+            a2fa_core::ssh::master::stop_slot(&mut condemned, 0);
+            condemned.last_failure = Some(reason.clone());
+            managers_owned.write_back_slot(&host_owned, 0, &condemned);
             let mut guard = crate::lock_state(&state);
             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
                 h.is_master_ready = false;
-                h.last_msg = "Connection stopped working — reconnecting".into();
+                h.pool_alive = 0;
+                h.status = "Reconnecting".into();
+                h.last_msg = format!("{reason} Reconnecting with a fresh SSH session…");
             }
         });
     if spawn.is_err() {
@@ -1322,6 +1522,64 @@ fn heal_host_state(state: &Arc<Mutex<State>>, host: &str, slot: usize, alive_cou
     }
 }
 
+/// A local ControlMaster was found, but no remote command has succeeded yet.
+/// Keep session-dependent controls disabled and the badge non-green until the
+/// bounded session probe proves the connection is usable.
+fn mark_host_verifying_session(
+    state: &Arc<Mutex<State>>,
+    host: &str,
+    slot: usize,
+    alive_count: u8,
+) {
+    let mut guard = crate::lock_state(state);
+    if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host) {
+        if !h.active {
+            return;
+        }
+        set_host_verifying_session(h, slot, alive_count);
+    }
+}
+
+fn set_host_verifying_session(
+    host: &mut a2fa_core::model::Host,
+    slot: usize,
+    alive_count: u8,
+) {
+    host.is_master_ready = false;
+    host.pool_alive = alive_count;
+    host.pool_index = slot as u8;
+    host.status = "Connecting (verifying session)".into();
+    host.last_msg = "SSH transport established — verifying a real remote session…".into();
+}
+
+/// A local mux/socket probe may heal stale UI state only when no REAL-session
+/// probe is outstanding. This is the state-machine gate that prevents a known
+/// "socket alive, sessions broken" warning from being painted green every
+/// three seconds by the cheap heartbeat.
+fn should_heal_from_local_probe(
+    slot: usize,
+    active_index: usize,
+    check_result: Option<bool>,
+    session_unverified: bool,
+) -> bool {
+    slot == active_index && check_result == Some(true) && !session_unverified
+}
+
+/// Override local-only adoption when a bounded remote session probe has
+/// already proved that the mux cannot carry usable traffic.
+fn action_with_session_evidence(
+    action: MaintenanceAction,
+    slot: usize,
+    active_index: usize,
+    session_unverified: bool,
+) -> MaintenanceAction {
+    if action == MaintenanceAction::AdoptAlive && slot == active_index && session_unverified {
+        MaintenanceAction::Restart
+    } else {
+        action
+    }
+}
+
 /// Run one heartbeat tick for a single host.
 ///
 /// This function is called from the heartbeat loop and is the actual
@@ -1383,7 +1641,18 @@ fn tick_host(
             managers.with_pool_mut(host_name, |p| p.note_slot_alive(slot));
         }
 
+        let session_unverified = managers.session_connection_unverified(host_name);
         let action = next_action(&pool, slot, true, check_result, now);
+
+        // A live local mux is not proof that the server will grant a session.
+        // Once the remote probe has failed, adopting that mux would recreate
+        // the false green Connected state; force the normal rebuild instead.
+        let action = action_with_session_evidence(
+            action,
+            slot,
+            pool.active_index,
+            session_unverified,
+        );
 
         match action {
             MaintenanceAction::Restart => {
@@ -1489,10 +1758,12 @@ fn tick_host(
                         // network-dead-but-process-alive master never does.
                         {
                             let path = managers2.snapshot(&host_owned).pool_path(slot);
-                            if a2fa_core::ssh::control::master_alive_authoritative(
-                                &path,
-                                &host_owned,
-                            ) {
+                            if !managers2.session_connection_unverified(&host_owned)
+                                && a2fa_core::ssh::control::master_alive_authoritative(
+                                    &path,
+                                    &host_owned,
+                                )
+                            {
                                 info!("[{host_owned}] hb-restart: master ALIVE on re-probe — adopting (no kill, no 2FA)");
                                 managers2.with_pool_mut(&host_owned, |p| {
                                     p.slot_status[slot] = SlotStatus::Ready;
@@ -1507,13 +1778,33 @@ fn tick_host(
                                             .count() as u8
                                     })
                                     .unwrap_or(1);
-                                heal_host_state(&state2, &host_owned, slot, alive);
+                                managers2.require_session_verification(&host_owned);
+                                mark_host_verifying_session(
+                                    &state2,
+                                    &host_owned,
+                                    slot,
+                                    alive,
+                                );
                                 return; // StartGuard drops → releases the in-flight token
                             }
                         }
 
+                        managers2.require_session_verification(&host_owned);
+
                         // Read Keychain creds IN-THREAD (may block on a prompt).
-                        let (password, secret) = load_creds(&host_owned);
+                        let (password, secret) = match load_creds(&host_owned) {
+                            Ok(creds) => creds,
+                            Err(reason) => {
+                                publish_preflight_failure(
+                                    &host_owned,
+                                    slot,
+                                    &reason,
+                                    &state2,
+                                    &managers2,
+                                );
+                                return;
+                            }
+                        };
 
                         // Restart off-lock.
                         let otp_closure = make_otp_closure(
@@ -1576,15 +1867,20 @@ fn tick_host(
                             );
                             let mut guard = crate::lock_state(&state2);
                             if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_owned) {
-                                if mark_ready {
+                                if ready && slot == reg_active_idx {
+                                    set_host_verifying_session(h, slot, alive_count);
+                                } else if mark_ready {
                                     h.is_master_ready = true;
                                     h.pool_alive = alive_count;
-                                    if ready && slot == active_index {
-                                        h.pool_index = slot as u8;
-                                    }
                                 }
-                                h.status = status.into();
-                                h.last_msg = last_msg;
+                                if !(ready && slot == reg_active_idx) {
+                                    h.status = status.into();
+                                    h.last_msg = if ready || mark_ready {
+                                        last_msg
+                                    } else {
+                                        pool_mut.last_failure.clone().unwrap_or(last_msg)
+                                    };
+                                }
                             }
                         }
                     });
@@ -1596,6 +1892,13 @@ fn tick_host(
                         "[{host_name}] heartbeat: failed to spawn hb-restart thread for slot {slot}: {e} — releasing token"
                     );
                     managers.end_start(host_name, slot);
+                    publish_preflight_failure(
+                        host_name,
+                        slot,
+                        &format!("Could not start the SSH login worker: {e}"),
+                        state,
+                        managers,
+                    );
                     continue;
                 }
             }
@@ -1630,11 +1933,11 @@ fn tick_host(
                 let mut guard = crate::lock_state(state);
                 if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
                     h.pool_alive = alive_count;
-                    if is_active_slot {
-                        h.is_master_ready = true;
-                        h.status = "Connected".into();
-                        h.last_msg = format!("Adopted live slot {slot}");
-                    }
+                }
+                drop(guard);
+                if is_active_slot {
+                    managers.require_session_verification(host_name);
+                    mark_host_verifying_session(state, host_name, slot, alive_count);
                 }
             }
 
@@ -1646,7 +1949,12 @@ fn tick_host(
                 // false while the active master is demonstrably alive —
                 // observed live (alice): the UI showed a failed host
                 // indefinitely because the healthy path wrote nothing back.
-                if slot == pool.active_index && check_result == Some(true) {
+                if should_heal_from_local_probe(
+                    slot,
+                    pool.active_index,
+                    check_result,
+                    session_unverified,
+                ) {
                     let alive_count = managers
                         .with_pool(host_name, |p| {
                             p.slot_status
@@ -1702,7 +2010,7 @@ mod tests {
             c.creds.insert(host.to_string(), ("cached-pw".into(), "cached-secret".into()));
         }
         let got = load_creds(host);
-        assert_eq!(got, ("cached-pw".to_string(), "cached-secret".to_string()));
+        assert_eq!(got, Ok(("cached-pw".to_string(), "cached-secret".to_string())));
         invalidate_creds_cache(host);
     }
 
@@ -1746,12 +2054,12 @@ mod tests {
 
     #[test]
     fn load_creds_does_not_cache_empty_results() {
-        // A host with no Keychain entry resolves to empties (no prompt for a
-        // nonexistent item) and must NOT be cached, so a later add+login retries.
+        // A host with no Keychain entry reports the specific missing field and
+        // must NOT be cached, so a later add+login retries.
         let host = "definitely-nonexistent-host-zzz3-auto2fa-test";
         invalidate_creds_cache(host);
         let got = load_creds(host);
-        assert_eq!(got, (String::new(), String::new()));
+        assert!(got.is_err(), "a nonexistent host must report missing/unreadable credentials");
         let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             !c.creds.contains_key(host),
@@ -1952,6 +2260,101 @@ mod tests {
         pool.slot_status[0] = SlotStatus::Ready;
         let action = next_action(&pool, 0, true, Some(true), Instant::now());
         assert_eq!(action, MaintenanceAction::Healthy);
+    }
+
+    #[test]
+    fn real_session_failure_blocks_local_socket_from_healing_connected() {
+        // Regression: the remote refused every real session while the local
+        // ControlMaster socket answered. The 3-second heartbeat must not erase
+        // that diagnosis just because its cheap local check passes.
+        assert!(!should_heal_from_local_probe(0, 0, Some(true), true));
+        assert!(should_heal_from_local_probe(0, 0, Some(true), false));
+    }
+
+    #[test]
+    fn real_session_failure_turns_local_adoption_into_rebuild() {
+        assert_eq!(
+            action_with_session_evidence(MaintenanceAction::AdoptAlive, 0, 0, true),
+            MaintenanceAction::Restart
+        );
+        assert_eq!(
+            action_with_session_evidence(MaintenanceAction::AdoptAlive, 0, 0, false),
+            MaintenanceAction::AdoptAlive
+        );
+        assert_eq!(
+            action_with_session_evidence(MaintenanceAction::AdoptAlive, 1, 0, true),
+            MaintenanceAction::AdoptAlive
+        );
+    }
+
+    #[test]
+    fn adopted_local_master_stays_non_green_until_remote_session_verifies() {
+        let managers = HostManagers::new();
+        managers.require_session_verification("rk");
+        assert!(managers.session_connection_unverified("rk"));
+
+        let mut st = State::with_tunnels(vec![]);
+        st.hosts.push(a2fa_core::model::Host {
+            host: "rk".into(),
+            status: "Connected".into(),
+            active: true,
+            is_master_ready: true,
+            pool_index: 0,
+            pool_alive: 1,
+            is_mounted: false,
+            last_msg: "local mux alive".into(),
+        });
+        let state = Arc::new(Mutex::new(st));
+        mark_host_verifying_session(&state, "rk", 0, 1);
+
+        let guard = crate::lock_state(&state);
+        let h = &guard.hosts[0];
+        assert!(!h.is_master_ready);
+        assert!(h.status.contains("verifying session"));
+        assert!(!should_heal_from_local_probe(
+            0,
+            0,
+            Some(true),
+            managers.session_connection_unverified("rk")
+        ));
+    }
+
+    #[test]
+    fn replacing_master_invalidates_an_in_flight_probe_generation() {
+        let managers = HostManagers::new();
+        managers.require_session_verification("rk");
+        let first_epoch = managers
+            .probes
+            .lock()
+            .unwrap()
+            .get("rk")
+            .unwrap()
+            .verification_epoch;
+
+        managers.require_session_verification("rk");
+        let second_epoch = managers
+            .probes
+            .lock()
+            .unwrap()
+            .get("rk")
+            .unwrap()
+            .verification_epoch;
+
+        assert_ne!(first_epoch, second_epoch);
+        assert!(managers.session_connection_unverified("rk"));
+    }
+
+    #[test]
+    fn stopped_unusable_master_is_restartable_not_adoptable() {
+        // stop_slot leaves Init after removing the bad socket. That exact state
+        // must enter the restart path; leaving the socket present would instead
+        // produce Dead+Some(true) and AdoptAlive the unusable master again.
+        let mut pool = fresh_pool("confirmed-unusable-host");
+        pool.slot_status[0] = SlotStatus::Init;
+        assert_eq!(
+            next_action(&pool, 0, true, None, Instant::now()),
+            MaintenanceAction::Restart
+        );
     }
 
     /// REGRESSION (alice, observed live): a failed SPARE relogin must not
@@ -2309,5 +2712,30 @@ mod tests {
             Duration::ZERO,
         );
         assert_eq!(n, 0, "inactive host must not be rebuilt");
+    }
+
+    /// REGRESSION (repeated Keychain password prompts).
+    ///
+    /// The login-path read used a 10s deadline. A first-read-after-restart
+    /// routinely needs longer than that — and when it includes a macOS
+    /// permission dialog it needs however long the user takes to notice it and
+    /// type their password. A timed-out read is never cached, and the heartbeat
+    /// retries roughly every 15s, starting a FRESH Keychain read each time. The
+    /// user saw an unending stream of password prompts; the log showed the same
+    /// host failing four times in 47 seconds.
+    ///
+    /// The deadline must therefore be generous enough for one slow read to
+    /// actually finish — finishing once is what populates the cache and ends
+    /// the storm.
+    #[test]
+    fn keychain_read_deadline_outlasts_a_human_answering_a_prompt() {
+        assert!(
+            KEYCHAIN_READ_TIMEOUT >= std::time::Duration::from_secs(30),
+            "a first read after a daemon restart can exceed 30s; a shorter \
+             deadline turns one slow read into an endless prompt loop"
+        );
+        // Still bounded — an unbounded read would wedge the slot's in-flight
+        // guard forever, which is the failure this timeout exists to prevent.
+        assert!(KEYCHAIN_READ_TIMEOUT <= std::time::Duration::from_secs(120));
     }
 }

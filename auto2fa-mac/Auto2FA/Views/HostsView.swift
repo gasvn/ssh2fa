@@ -16,13 +16,22 @@ struct HostsView: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             header
             if appState.hosts.isEmpty {
-                if appState.connectionError != nil {
-                    // Daemon unreachable/starting — DON'T show "no hosts / get
-                    // started" as if the user's hosts vanished. The error banner
-                    // above carries the detail + a Troubleshoot button.
+                if let activity = appState.connectionActivity {
                     VStack(spacing: Spacing.s) {
                         ProgressView().controlSize(.small)
-                        Text("Connecting to the background helper…")
+                        Text(activity.userMessage)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(Spacing.l)
+                } else if appState.connectionError != nil {
+                    // A real startup failure is explained by the actionable
+                    // banner above. Keep the empty state truthful without
+                    // duplicating its wording or exposing implementation detail.
+                    VStack(spacing: Spacing.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                        Text("SSH2FA isn't ready")
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -48,9 +57,8 @@ struct HostsView: View {
         .padding(Spacing.m)
     }
 
-    /// After an update the helper is a new binary, so macOS re-asks permission
-    /// for each saved credential — twice per host. Offering one deliberate pass
-    /// beats discovering that one stalled sheet at a time.
+    /// Older releases stored one Keychain item per secret. Offer one deliberate
+    /// migration pass instead of surprising the user during later connections.
     @ViewBuilder
     private var credentialWarmupBanner: some View {
         if let progress = appState.warmupProgress {
@@ -58,7 +66,7 @@ struct HostsView: View {
                 ProgressView().controlSize(.small)
                 Text(progress).font(.rowMeta)
                 Spacer()
-                Text("Choose “Always Allow” on each prompt")
+                Text("Allow access to each old Keychain item once")
                     .font(.rowMeta).foregroundStyle(.secondary)
             }
             .padding(Spacing.m)
@@ -79,7 +87,7 @@ struct HostsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Authorize saved credentials after this update")
                         .font(.rowTitle)
-                    Text("SSH2FA's background helper was updated, so macOS will ask permission to use each saved password and 2FA secret. Do it in one go now — choose “Always Allow” on each prompt. They'll then be merged into a single Keychain item, so future updates ask only once.")
+                    Text("SSH2FA needs to move older saved credentials into its new stable Keychain vault. macOS may ask permission to read the old items one final time; choose Allow. After migration, future updates will not ask again.")
                         .font(.rowMeta).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

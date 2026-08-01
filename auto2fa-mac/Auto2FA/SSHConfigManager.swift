@@ -9,6 +9,18 @@ enum SSHConfigManager {
     static let endMarker   = "# <<< SSH2FA managed (Include) <<<"
     static let includeLine = "Include ssh2fa.conf"
 
+    /// Product default: once at least one host exists, make ordinary terminal
+    /// SSH reuse work automatically. Only a deliberate Settings opt-out or an
+    /// already-completed upgrade attempt suppresses setup.
+    static func shouldEnableWarmReuseByDefault(hasHosts: Bool,
+                                                enabled: Bool,
+                                                explicitlyDisabled: Bool,
+                                                migration: Bool,
+                                                migrationCompleted: Bool) -> Bool {
+        guard hasHosts, !enabled, !explicitlyDisabled else { return false }
+        return !migration || !migrationCompleted
+    }
+
     /// Normalize line endings to LF before splitting — Swift treats "\r\n" as
     /// ONE Character grapheme, so split(separator: "\n") wouldn't break CRLF
     /// lines and marker detection would miss (→ duplicate Include). We rewrite
@@ -178,7 +190,7 @@ enum SSHConfigManager {
     /// Idempotent. Returns true iff a write happened.
     @discardableResult
     static func writeDaemonWrapper(dir: String) throws -> Bool {
-        let path = (dir as NSString).appendingPathComponent("ssh2fa-daemon.conf")
+        let path = SSHPaths.daemonWrapperFile(dir: dir)
         return try writeIfChanged(daemonWrapperContent(dir: dir), to: path, perms: 0o600)
     }
 

@@ -1,5 +1,50 @@
 import Foundation
 
+/// A normal, self-healing app-to-service transition.
+///
+/// This is deliberately separate from `AppState.connectionError`: starting or
+/// reconnecting is not a failure, must not be rendered as a red warning, and
+/// must not expose implementation terms such as "daemon" or "helper".
+enum ConnectionActivity: Equatable {
+    case starting
+    case reconnecting
+
+    var userMessage: String {
+        switch self {
+        case .starting:
+            return String(localized: "Starting SSH2FA…")
+        case .reconnecting:
+            return String(localized: "Restoring SSH connections…")
+        }
+    }
+}
+
+/// Pure lifecycle policy shared by the packaged app and regression tests.
+/// Keeping command construction and update identity here lets tests pin the
+/// non-destructive behavior without launching or killing any real process.
+enum BackgroundServicePolicy {
+    /// `-k` is intentionally absent: it sends SIGTERM, and the daemon's clean
+    /// shutdown closes every SSH ControlMaster before a replacement can adopt it.
+    static func restartLaunchctlArguments(domain: String, label: String) -> [String] {
+        ["kickstart", "\(domain)/\(label)"]
+    }
+
+    /// Stable across UI-only builds; changes when daemon code or bundle path
+    /// changes. Older/dev bundles retain the safe app-build fallback.
+    static func bundleStamp(daemonPath: String,
+                            daemonIdentity: String?,
+                            fallbackAppBuild: String) -> String {
+        let trimmed = daemonIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let identity: String
+        if let trimmed, !trimmed.isEmpty {
+            identity = trimmed
+        } else {
+            identity = "app-build:\(fallbackAppBuild)"
+        }
+        return "\(identity)@\(daemonPath)"
+    }
+}
+
 /// Pure decision logic for recovering a wedged daemon connection.
 ///
 /// Background: the app polls the daemon every 5s (`AppState.reloadAll`). A
@@ -20,7 +65,7 @@ enum ConnectionRecovery {
     /// single slow daemon op, since the polled methods are sub-millisecond.
     static let forceReconnectThreshold = 3
 
-    /// Whether the banner ("Daemon is slow to respond — retrying…") should show.
+    /// Whether a sustained reconnecting activity should be shown.
     static func shouldShowSlowBanner(failStreak: Int) -> Bool {
         failStreak >= forceReconnectThreshold
     }
@@ -38,8 +83,8 @@ enum ConnectionRecovery {
     /// outage longer than that budget left the app permanently disconnected —
     /// the streak kept climbing (4, 5, 6 …) so this never fired again, and the
     /// poll loop spun forever against a daemon that had long since come back.
-    /// Observed 2026-07-29: ~1.5 h stuck on "Reconnecting to the background
-    /// helper…" after a daemon update, fixed only by relaunching the app.
+    /// Observed 2026-07-29: ~1.5 h stuck reconnecting after an update, fixed
+    /// only by relaunching the app.
     /// Re-arming makes recovery unbounded; `BackendClient.isReconnecting`
     /// suppresses the redundant calls while an attempt is already running.
     static func shouldForceReconnect(failStreak: Int) -> Bool {

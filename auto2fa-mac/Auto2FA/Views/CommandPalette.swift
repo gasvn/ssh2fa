@@ -143,19 +143,19 @@ struct CommandPalette: View {
                   keywords: ["new", "host", "add", "ssh", "2fa"]
             ) { appState.presentAddHost() },
             .init(icon: "arrow.triangle.2.circlepath",
-                  title: "Wake recover",
-                  subtitle: "probe + rebuild dead masters, restart tunnels",
+                  title: "Restore connections",
+                  subtitle: "check hosts and restore interrupted connections",
                   keywords: ["wake", "recover", "reconnect"]
             ) {
                 Task { try? await appState.client.wakeRecover(); await appState.reloadAll() }
             },
             .init(icon: "exclamationmark.arrow.circlepath",
                   title: "Reset everything",
-                  subtitle: "nuclear — stops all tunnels + rebuilds all masters",
+                  subtitle: "stop tunnels and reconnect every host",
                   keywords: ["reset", "nuke", "panic", "restart"]
             ) { Task { await appState.resetAll() } },
             .init(icon: "doc.text.magnifyingglass",
-                  title: "Show daemon logs…",
+                  title: "Show SSH2FA logs…",
                   subtitle: "live tail with filter",
                   keywords: ["logs", "log", "daemon", "debug"]
             ) {
