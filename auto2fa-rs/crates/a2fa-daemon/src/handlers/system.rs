@@ -324,14 +324,13 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, params: &Value) -> Result<
             .collect()
     };
 
-    // 1b. `force` (set by the app on a confirmed network-IDENTITY change — a new
-    //    local IP) means every active master's TCP is dead BY DEFINITION: the old
-    //    connections were bound to the old address and cannot survive a new one.
-    //    On that path we do NOT probe with `ssh -O check`, because it is a LOCAL
-    //    control-channel query that keeps answering "Master running" for up to
-    //    ServerAliveInterval×CountMax seconds after the link silently black-holes
-    //    — the exact reason the app shows "connected" but nothing flows after a
-    //    Wi-Fi/VPN switch. Trusting it here did nothing ("0 of N masters failed").
+    // 1b. `force` is a strong HINT from the app that a settled physical network
+    //    identity change was observed. It is deliberately NOT authority to tear
+    //    down every master. NWPath can emit false/transient changes, and the old
+    //    behavior converted one noisy callback into six needless 2FA logins.
+    //    We still probe local mux liveness below, then require a real remote
+    //    session verification for every survivor. That closes the false-green
+    //    gap without destroying a connection merely because the GUI said so.
     let force = params.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // 2. Probe each active host's master. The blocking `ssh -O check` (5s) MUST
@@ -344,21 +343,23 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, params: &Value) -> Result<
     //    hosts on this connection-handler thread, starving the app's other
     //    requests. Parallel bounds the whole step at ~one probe deadline.
     let active_hosts = active_host_names(&ctx.state);
-    let probe_failed: Vec<String> = if force {
+    if force {
         log::info!(
-            "wake_recover: force=true (network identity changed) — treating all {} active master(s) as dead, skipping ssh -O check",
+            "wake_recover: confirmed network-identity hint — verifying {} active master(s), never blindly tearing them down",
             active_hosts.len()
         );
-        Vec::new()
-    } else {
-        std::thread::scope(|scope| {
+    }
+    let probe_failed: Vec<String> = std::thread::scope(|scope| {
             let handles: Vec<_> = active_hosts
                 .iter()
                 .map(|host| {
                     let idx = ctx.managers.snapshot(host).active_index; // brief lock, no I/O
                     scope.spawn(move || {
                         let path = a2fa_core::ssh::control::control_path(host, idx);
-                        let ready = a2fa_core::ssh::control::master_check(&path, host); // off-lock 5s
+                        // Cheap unix-socket probe first, bounded ssh -O check
+                        // only as a tiebreaker. This avoids condemning a live
+                        // master whose listen backlog is briefly full.
+                        let ready = a2fa_core::ssh::control::master_alive_authoritative(&path, host);
                         (host.clone(), ready)
                     })
                 })
@@ -373,11 +374,32 @@ pub fn wake_recover(ctx: &crate::dispatch::DaemonCtx, params: &Value) -> Result<
                     _ => None,
                 })
                 .collect()
-        })
-    };
-    // On the forced path every active master is condemned; otherwise only the
-    // ones the probe found dead.
-    let masters_failed = masters_to_rebuild(force, &active_hosts, &probe_failed);
+        });
+    let masters_failed = masters_to_rebuild(&probe_failed);
+
+    // A local mux response is not proof that traffic crosses the recovered
+    // network. Invalidate prior session evidence so the heartbeat immediately
+    // asks each surviving master to run a harmless remote `true`. Until that
+    // succeeds the UI must not claim a green Connected state.
+    let survivors: Vec<String> = active_hosts
+        .iter()
+        .filter(|host| !masters_failed.contains(host))
+        .cloned()
+        .collect();
+    for host in &survivors {
+        ctx.managers.require_session_verification(host);
+    }
+    {
+        let mut guard = crate::lock_state(&ctx.state);
+        for host in &survivors {
+            if let Some(h) = guard.hosts.iter_mut().find(|h| &h.host == host) {
+                h.is_master_ready = false;
+                h.pool_alive = 0;
+                h.status = "Verifying connection".into();
+                h.last_msg = "Network changed — verifying a real SSH session".into();
+            }
+        }
+    }
 
     log::info!(
         "wake_recover: {} tunnels alive at wake, {} of {} masters failed",
@@ -460,29 +482,10 @@ pub fn subscribe_events_ack() -> Value {
     json!({ "subscribed": true })
 }
 
-/// Decide which active masters `wake_recover` should rebuild.
-///
-/// On a confirmed network-identity change (`force` — the app saw the local IP
-/// change), EVERY active master is condemned: the old TCP connections were bound
-/// to the previous address and cannot carry traffic on the new one. We do NOT
-/// trust `ssh -O check` on this path (it keeps reporting "Master running" for
-/// minutes after a silent black-hole — the bug behind "shows connected but can't
-/// access"). Otherwise rebuild only the masters the probe actually found dead.
-///
-/// Pure (no I/O) so the policy is unit-tested. Rate-limit safety is unchanged:
-/// the caller still rebuilds with `reset_breakers = false`, so any host already
-/// in cooldown stays in cooldown (its `start_master` is a no-op) even when
-/// force-condemned — an oscillating network can't re-arm a fresh login storm.
-pub fn masters_to_rebuild(
-    force: bool,
-    active_hosts: &[String],
-    probe_failed: &[String],
-) -> Vec<String> {
-    if force {
-        active_hosts.to_vec()
-    } else {
-        probe_failed.to_vec()
-    }
+/// Decide which masters `wake_recover` should rebuild. Only daemon-observed
+/// local liveness failures qualify; an app hint is never destructive authority.
+pub fn masters_to_rebuild(probe_failed: &[String]) -> Vec<String> {
+    probe_failed.to_vec()
 }
 
 // ---------------------------------------------------------------------------
@@ -571,17 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn masters_to_rebuild_force_condemns_all_active_ignoring_probe() {
-        let active = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    fn masters_to_rebuild_uses_only_daemon_probe_evidence() {
         let probe_failed = vec!["b".to_string()];
-        // force=true (network identity changed): rebuild EVERY active master,
-        // ignoring the probe — `ssh -O check` lies for minutes after a switch.
-        assert_eq!(masters_to_rebuild(true, &active, &probe_failed), active);
-        // force=false: only the masters the probe actually found dead.
-        assert_eq!(
-            masters_to_rebuild(false, &active, &probe_failed),
-            vec!["b".to_string()]
-        );
+        assert_eq!(masters_to_rebuild(&probe_failed), vec!["b".to_string()]);
     }
 
     #[test]

@@ -38,6 +38,24 @@ pub const OTP_FAILURE_THRESHOLD: u32 = 5;
 /// How long to sit out when rate-limit cooldown is triggered.
 pub const OTP_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Delay automatic retries after consecutive failed SSH logins. A real
+/// network/server outage used to respawn every host about two seconds after
+/// each failure, multiplying load and OTP contention precisely while the
+/// network was least able to recover.
+pub const RECONNECT_RETRY_BACKOFF: [Duration; 5] = [
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+];
+
+pub fn reconnect_retry_delay(failure_count: u32) -> Duration {
+    let index = (failure_count.saturating_sub(1) as usize)
+        .min(RECONNECT_RETRY_BACKOFF.len() - 1);
+    RECONNECT_RETRY_BACKOFF[index]
+}
+
 /// A master that stays Ready at least this long counts as a STABLE connection
 /// (clears the flap counter). A Ready slot that dies sooner than this is a
 /// "flap" (connect-then-drop).
@@ -91,6 +109,11 @@ pub struct PoolState {
     pub consecutive_login_failures: u32,
     pub cooldown_until: Option<Instant>,
 
+    // Short exponential backoff after every failed connection attempt. This is
+    // separate from the OTP circuit-breaker cooldown: ordinary network
+    // failures need pacing from the very first failure, not only after five.
+    pub retry_not_before: Option<Instant>,
+
     // Rotation ping-pong detection
     pub last_rotate: Option<Instant>,
     pub probe_backoff_until: Option<Instant>,
@@ -120,6 +143,7 @@ impl PoolState {
             active_index: 0,
             consecutive_login_failures: 0,
             cooldown_until: None,
+            retry_not_before: None,
             last_rotate: None,
             probe_backoff_until: None,
             slot_ready_since: [None; POOL_SIZE],
@@ -135,6 +159,19 @@ impl PoolState {
         self.cooldown_until
             .map(|t| Instant::now() < t)
             .unwrap_or(false)
+    }
+
+    /// True while automatic reconnect must wait after a failed attempt.
+    pub fn in_retry_backoff(&self) -> bool {
+        self.retry_not_before
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    pub fn retry_backoff_remaining(&self) -> Duration {
+        self.retry_not_before
+            .map(|t| t.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::ZERO)
     }
 
     /// True if probe back-off is active (both slots failing → ping-pong).
@@ -226,6 +263,13 @@ impl PoolState {
     /// can't be re-driven by the heartbeat every cycle forever.
     pub fn record_login_failure(&mut self) {
         self.consecutive_login_failures += 1;
+        let delay = reconnect_retry_delay(self.consecutive_login_failures);
+        self.retry_not_before = Some(Instant::now() + delay);
+        warn!(
+            "[{}] reconnect attempt failed — waiting {}s before retry",
+            self.host,
+            delay.as_secs()
+        );
         if self.consecutive_login_failures >= OTP_FAILURE_THRESHOLD {
             self.cooldown_until = Some(Instant::now() + OTP_COOLDOWN);
             warn!(
@@ -241,6 +285,7 @@ impl PoolState {
     pub fn reset_circuit_breakers(&mut self) {
         self.consecutive_login_failures = 0;
         self.cooldown_until = None;
+        self.retry_not_before = None;
         self.probe_backoff_until = None;
         self.flap_count = 0;
         self.flap_backoff_until = None;
@@ -407,6 +452,14 @@ pub fn start_master(
         );
         return false;
     }
+    if state.in_retry_backoff() {
+        let secs = state.retry_backoff_remaining().as_secs().max(1);
+        info!(
+            "[{}] skipping start_master({index}) — retry backoff ({secs}s left)",
+            state.host
+        );
+        return false;
+    }
 
     let path = state.pool_path(index);
 
@@ -475,6 +528,7 @@ pub fn start_master(
             state.slot_status[index] = SlotStatus::Ready;
             state.consecutive_login_failures = 0;
             state.cooldown_until = None;
+            state.retry_not_before = None;
             state.last_failure = None;
             // Start the uptime clock for flap detection (connect-then-drop).
             state.mark_slot_ready(index);
@@ -680,6 +734,27 @@ mod tests {
         assert_eq!(pool.consecutive_login_failures, OTP_FAILURE_THRESHOLD);
         assert!(pool.cooldown_until.is_some(), "cooldown must be armed at threshold");
         assert!(pool.in_cooldown(), "must be in cooldown at threshold");
+    }
+
+    #[test]
+    fn reconnect_retry_delay_grows_then_caps() {
+        assert_eq!(reconnect_retry_delay(0), Duration::from_secs(5));
+        assert_eq!(reconnect_retry_delay(1), Duration::from_secs(5));
+        assert_eq!(reconnect_retry_delay(2), Duration::from_secs(15));
+        assert_eq!(reconnect_retry_delay(3), Duration::from_secs(30));
+        assert_eq!(reconnect_retry_delay(4), Duration::from_secs(60));
+        assert_eq!(reconnect_retry_delay(100), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn every_login_failure_arms_retry_backoff() {
+        let mut pool = PoolState::new("auto2fa-unittest-retry-backoff");
+        pool.record_login_failure();
+        assert!(pool.in_retry_backoff());
+        assert!(pool.retry_backoff_remaining() > Duration::from_secs(4));
+        pool.reset_circuit_breakers();
+        assert!(!pool.in_retry_backoff());
+        assert!(pool.retry_not_before.is_none());
     }
 
     #[test]

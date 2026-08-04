@@ -15,12 +15,14 @@ enum SettingsKey {
     static let welcomeShown = "auto2fa.welcomeShown"
     /// Open the mounted folder in Finder right after a successful mount.
     static let openFinderAfterMount = "auto2fa.mount.openFinder"
-    /// App build on which the user last dismissed or completed the legacy
-    /// credential migration banner. Completion is tracked separately below.
+    /// Legacy preference retained so old installations remain readable. New
+    /// builds use a session-only deferral and the verified completion marker.
     static let lastWarmedBuild = "auto2fa.credentials.lastWarmedBuild"
-    /// Set only after the daemon verifies that saved secrets live in the new
-    /// single Keychain item owned by its stable signed identity.
-    static let credentialsConsolidated = "auto2fa.credentials.consolidated"
+    /// Set only after the daemon verifies that saved secrets live in the v4
+    /// item freshly created by its stable signed identity. Do not reuse the old
+    /// `auto2fa.credentials.consolidated` key: it only proved the secrets were
+    /// combined, not that their access policy had actually been replaced.
+    static let credentialsConsolidated = "auto2fa.credentials.v4-migrated"
     static let compactRows = "auto2fa.compactRows"
     /// "" / "system" = default .command handler; else a terminal app bundle
     /// id. Empty is retained only for migration from older builds.
@@ -768,12 +770,10 @@ private struct AboutPane: View {
 
 /// Dependency-free update check against the project's GitHub Releases.
 ///
-/// Deliberately lightweight (no Sparkle, no embedded keys, no self-hosted
-/// appcast): it queries the public Releases API, compares the latest release
-/// tag to this bundle's version, and — if newer — points the user at the
-/// release page. The app never downloads or self-installs; the user stays in
-/// control of what runs (it holds SSH creds + TOTP secrets). Full Sparkle
-/// auto-update is a documented future option (see docs/RELEASE.md).
+/// Deliberately lightweight (no Sparkle or self-hosted appcast): it queries the
+/// public Releases API and compares the latest tag to this bundle's version.
+/// Installation starts only after an explicit click and verifies the project's
+/// pinned Ed25519 update signature before replacing the app.
 @MainActor
 final class UpdateChecker: ObservableObject {
     enum Result: Equatable {

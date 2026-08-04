@@ -1,23 +1,23 @@
 # Releasing SSH2FA
 
-This is the end-to-end recipe to ship a signed, notarized `SSH2FA.dmg` that
-runs on any Mac (not just the build machine).
+This is the end-to-end recipe to ship SSH2FA with a stable code-signing
+identity and a project-owned Ed25519 update signature. The normal release path
+is free and does **not** require an Apple Developer membership.
 
 ## TL;DR
 
 ```sh
-# one-time: enroll in the Apple Developer Program, create a Developer ID cert,
-# and store notarization credentials (see "Apple account setup" below).
-
 cd auto2fa-mac
-AUTO2FA_NOTARIZE=1 AUTO2FA_NOTARY_PROFILE=ssh2fa-notary ./package-app.sh
-# → dist/SSH2FA.dmg   (signed, notarized, stapled, universal)
+scripts/init-update-signing-key.sh  # one time on the release Mac
+./package-app.sh
+# → dist/SSH2FA.dmg + dist/SSH2FA.update.json
 ```
 
-Without an Apple Developer ID the script still builds a working **local**
-`.app`/DMG (signed with your Apple Development cert) — it just skips
-notarization and prints exactly why. That artifact runs on *your* machine but
-Gatekeeper will block it on others.
+The stable self-signed code certificate keeps Keychain authorization consistent
+across releases. The independent Ed25519 manifest makes in-app updates
+cryptographically verifiable without relying on Apple's paid trust chain.
+Gatekeeper still shows a one-time warning because the app is not notarized;
+Homebrew plus `xattr`, or Privacy & Security → Open Anyway, handles that.
 
 ## What `package-app.sh` does
 
@@ -27,18 +27,24 @@ Gatekeeper will block it on others.
 3. Copies `ssh2fa-daemon` into `SSH2FA.app/Contents/Resources/`; the
    LaunchAgent runs it in place from the signed bundle.
 4. Signs the embedded daemon (pinned code identifier `com.auto2fa.daemon`) then the
-   `.app`, with **hardened runtime** + the entitlements in
-   `auto2fa-mac/SSH2FA.entitlements`. Prefers a **Developer ID Application**
-   cert; falls back to **Apple Development** (local only).
+   `.app`. It prefers a **Developer ID Application** certificate when one is
+   available, otherwise uses the stable project certificate
+   **SSH2FA Code Signing**. Hardened runtime and notarization are added only for
+   Developer ID builds.
 5. Builds `dist/SSH2FA.dmg`.
 6. If `AUTO2FA_NOTARIZE=1` **and** a Developer ID cert is present: submits the
    DMG to Apple's notary service, waits, and **staples** the ticket to both the
    app and the DMG.
+7. Retrieves the Ed25519 release key from the login Keychain and emits
+   `SSH2FA.update.json`, binding the exact version, build, filename, size and
+   SHA-256 of the finished DMG. Packaging fails closed if this signature cannot
+   be created or verified.
 
-## Apple account setup (one time)
+## Optional Apple notarization
 
-The notarization step is the only thing that requires *your* Apple credentials —
-it cannot be done without them.
+Apple membership is optional. It removes the first-run Gatekeeper warning, but
+it is not needed for safe updates, stable Keychain access, or any SSH2FA
+feature. If you later choose to notarize:
 
 1. **Enroll** in the Apple Developer Program ($99/yr):
    <https://developer.apple.com/programs/>.
@@ -79,13 +85,16 @@ Silicon, skip this — the script produces an arm64-only daemon and says so.
 The app's **Check for Updates** (Settings → About) compares this build's
 version to the latest GitHub release tag. To make it work:
 
-1. Bump the version in `auto2fa-mac/SSH2FA/Resources/Info.plist`
+1. Bump the version in `auto2fa-mac/Auto2FA/Resources/Info.plist`
    (`CFBundleShortVersionString` + `CFBundleVersion`) and
    `MARKETING_VERSION` in the xcodeproj.
 2. `git tag vX.Y.Z && git push --tags`.
-3. Create a GitHub Release for that tag and attach `dist/SSH2FA.dmg`.
+3. Create a GitHub Release for that tag and attach both
+   `dist/SSH2FA.dmg` and `dist/SSH2FA.update.json`.
 
-Tags may be `vX.Y.Z` or `X.Y.Z`; the checker strips a leading `v`.
+Signed in-app updates require the release tag form `vX.Y.Z`. Pinning this exact
+tag prevents the latest-release pointer from changing between the update check
+and the download.
 
 ## Project landing page (GitHub Pages)
 
@@ -142,10 +151,17 @@ and `brew audit --cask gasvn/tap/ssh2fa`.
 
 ## In-app updates and future Sparkle support
 
-The app checks GitHub and offers a verified one-click replacement only when the
-running build has a system-trusted signing chain. The current self-signed public
-build deliberately falls back to Homebrew/DMG instructions: downloaded builds
-cannot pass strict certificate validation until releases use Developer ID.
+The app verifies `SSH2FA.update.json` against an Ed25519 public key pinned in the
+binary, then checks the downloaded DMG's exact byte count and SHA-256 before it
+mounts or copies executable content. A missing manifest, unknown key, altered
+field, replayed version, corrupted DMG, or mismatched bundle is rejected. This
+works with the free self-signed distribution and does not require Developer ID.
+
+The private key is stored as the generic-password item
+`com.ssh2fa.release.update-signing` in the release maintainer's login Keychain.
+Keep an encrypted macOS/Time Machine backup of that Keychain. Losing the key
+does not break manual updates, but it requires one manual bootstrap release to
+introduce a replacement key.
 
 If you later want Sparkle-managed updates, add the SPM package, generate an
 EdDSA key pair, host an `appcast.xml`, and sign each DMG with the Sparkle key.

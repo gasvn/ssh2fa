@@ -817,13 +817,15 @@ pub fn host_add(
     let secret = extract_secret(&otpauth_url)
         .map_err(|e| Error::BadParams(format!("invalid otpauth URL: {e}")))?;
 
-    // Check for duplicates before doing any I/O.
-    {
+    // Check for duplicates before doing any I/O. A genuinely first host writes
+    // directly into the stable store, so it needs no legacy-upgrade gate.
+    let is_first_host = {
         let guard = crate::lock_state(state);
         if guard.hosts.iter().any(|h| h.host == host_name) {
             return Err(Error::Duplicate(format!("host {host_name} already exists")));
         }
-    }
+        guard.hosts.is_empty()
+    };
 
     // Write credentials to the Keychain on a BOUNDED WORKER thread — never on
     // this connection-handler thread. macOS serializes Keychain access
@@ -860,6 +862,9 @@ pub fn host_add(
                 ));
             }
         }
+    }
+    if is_first_host {
+        crate::managers::mark_credential_storage_ready();
     }
     // The stored creds just changed — drop any cached copy so the next login
     // re-reads the new secret instead of serving a stale one.
@@ -1329,17 +1334,19 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
 
 /// Fold every host's legacy per-host Keychain items into the single vault item.
 ///
-/// WHY this is worth a dedicated method: macOS asks permission per Keychain
-/// ITEM whenever the reading binary's identity changes, and the daemon is a
-/// separately-signed helper that changes on every release. Two items per host
-/// meant twelve "Always Allow" prompts per update on a six-host install. After
-/// this runs there is ONE item, so an update costs at most one prompt.
+/// WHY this is worth a dedicated method: older releases stored two independently
+/// protected items per host. A six-host install could therefore surface twelve
+/// dialogs during a signing-identity migration. After this runs, every host is
+/// in one item owned by the daemon's stable identity, so later updates are quiet.
 ///
 /// It is deliberately explicit rather than automatic at boot: the migration
 /// itself must read all the old items, which costs the old per-item prompts one
 /// last time. That belongs behind a button the user pressed, with an
 /// explanation, not a mystery burst of dialogs at launch.
 pub fn credentials_consolidate(state: &Arc<Mutex<State>>, _params: &Value) -> Result<Value> {
+    let _upgrade_guard = crate::managers::try_begin_credential_upgrade().ok_or_else(|| {
+        Error::Internal("The one-time secure storage update is already running".into())
+    })?;
     let hosts: Vec<String> = {
         let guard = crate::lock_state(state);
         guard.hosts.iter().map(|h| h.host.clone()).collect()
@@ -1354,6 +1361,7 @@ pub fn credentials_consolidate(state: &Arc<Mutex<State>>, _params: &Value) -> Re
         std::time::Duration::from_secs(180),
         move || a2fa_core::creds::vault::migrate_to_vault(&KeychainStore, &hosts_for_worker),
     )?;
+    crate::managers::mark_credential_storage_ready();
 
     // Cached creds are still valid (same secrets, new location), but drop them
     // anyway so the next read proves the vault works.

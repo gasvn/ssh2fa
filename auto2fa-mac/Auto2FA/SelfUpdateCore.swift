@@ -35,11 +35,6 @@ enum SelfUpdateCore {
         /// The bundle exists somewhere we may not write (e.g. installed by
         /// another user, or a locked /Applications).
         case noPermission(String)
-        /// The running app is signed, but macOS does not trust its signing
-        /// chain. The public self-signed build deliberately lands here: its
-        /// downloaded replacement would fail the same strict verification, so
-        /// offering one-click update would be a button that can never succeed.
-        case untrustedSignature
     }
 
     /// Decide whether the running bundle can be replaced in place.
@@ -63,15 +58,6 @@ enum SelfUpdateCore {
         return nil
     }
 
-    /// Add the signing precondition after the location checks. Location errors
-    /// stay first because their fixes are concrete (move the app / permissions),
-    /// while an untrusted self-signed release must use the manual update path.
-    static func updateBlocker(location: Blocker?,
-                              signatureTrusted: Bool) -> Blocker? {
-        if let location { return location }
-        return signatureTrusted ? nil : .untrustedSignature
-    }
-
     // MARK: - Release assets
 
     /// The downloadable disk image of a GitHub release.
@@ -83,30 +69,57 @@ enum SelfUpdateCore {
         var size: Int64
     }
 
-    /// Pick the DMG out of a release's `assets` array.
-    ///
-    /// Prefers the exact `SSH2FA.dmg` name and otherwise takes the first `.dmg`,
-    /// so a release that also carries a zip / checksums file still resolves.
+    struct ReleasePackage: Equatable {
+        var dmg: ReleaseAsset
+        var manifestURL: URL
+    }
+
+    /// Pick the exact DMG named by the signed-manifest protocol out of a
+    /// release's `assets` array. A differently named disk image is refused so
+    /// the signed `asset` field describes the file we actually download.
     /// Assets GitHub hasn't finished receiving (`state != "uploaded"`) are
     /// skipped — downloading one yields a truncated file.
     static func pickDMG(assets: [[String: Any]]) -> ReleaseAsset? {
         let usable = assets.filter { a in
             guard let name = a["name"] as? String,
-                  name.lowercased().hasSuffix(".dmg"),
+                  name == UpdateSigningCore.dmgAssetName,
                   a["browser_download_url"] is String else { return false }
             // Absent state = older API payloads; treat as uploaded.
             let state = (a["state"] as? String) ?? "uploaded"
             return state == "uploaded"
         }
-        let chosen = usable.first { ($0["name"] as? String) == "\(appBundleName.dropLast(4)).dmg" }
-            ?? usable.first
-        guard let a = chosen,
+        guard let a = usable.first,
               let s = a["browser_download_url"] as? String,
               let url = URL(string: s) else { return nil }
         let size = (a["size"] as? NSNumber)?.int64Value ?? 0
         return ReleaseAsset(url: url,
                             sha256: normalizedSHA256(a["digest"] as? String),
                             size: size)
+    }
+
+    static func pickReleasePackage(assets: [[String: Any]]) -> ReleasePackage? {
+        guard let dmg = pickDMG(assets: assets) else { return nil }
+        let manifest = assets.first { asset in
+            (asset["name"] as? String) == UpdateSigningCore.manifestAssetName
+                && (asset["state"] as? String ?? "uploaded") == "uploaded"
+                && asset["browser_download_url"] is String
+        }
+        guard let rawURL = manifest?["browser_download_url"] as? String,
+              let manifestURL = URL(string: rawURL) else { return nil }
+        return ReleasePackage(dmg: dmg, manifestURL: manifestURL)
+    }
+
+    /// Resolve the exact release the UI advertised. Fetching `/latest` again
+    /// creates a race where a newer release can appear between the notification
+    /// and the click; pinning the tag also prevents a replay under another tag.
+    static func releaseAPIURL(advertisedVersion: String) -> URL? {
+        var version = advertisedVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if version.first?.lowercased() == "v" { version.removeFirst() }
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...4).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } })
+        else { return nil }
+        return URL(string: "https://api.github.com/repos/gasvn/ssh2fa/releases/tags/v\(version)")
     }
 
     /// Normalize GitHub's `"sha256:AB12…"` digest to bare lowercase hex.
@@ -116,7 +129,9 @@ enum SelfUpdateCore {
         guard let raw else { return nil }
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let r = s.range(of: "sha256:") { s = String(s[r.upperBound...]) }
-        guard s.count == 64, s.allSatisfy({ $0.isHexDigit }) else { return nil }
+        guard s.utf8.count == 64, s.utf8.allSatisfy({
+            (48...57).contains($0) || (97...102).contains($0)
+        }) else { return nil }
         return s
     }
 
@@ -140,16 +155,15 @@ enum SelfUpdateCore {
     /// `advertised` is the version the release *claimed*; a DMG whose bundle
     /// disagrees means the release is mislabelled and is refused.
     ///
-    /// Deliberately NOT checked: that the signing authority matches the running
-    /// app's. Pinning it would be stronger, but this project has already had to
-    /// change signing identity once (a revoked certificate), and a pinned
-    /// authority would have stranded every user with no in-app path off the
-    /// broken build. Integrity is covered by the published digest + a codesign
-    /// validity check on the staged bundle.
+    /// Authenticity and integrity are established before mounting by the
+    /// Ed25519-signed update manifest. This check adds identity and anti-replay
+    /// constraints for the app found inside that authenticated disk image.
     static func rejectStagedApp(bundleID: String,
                                 version: String,
+                                build: String,
                                 currentVersion: String,
-                                advertised: String) -> String? {
+                                advertised: String,
+                                advertisedBuild: String) -> String? {
         guard bundleID == appBundleID else {
             return "The downloaded app identifies itself as “\(bundleID)”, not SSH2FA."
         }
@@ -160,6 +174,9 @@ enum SelfUpdateCore {
         let a = UpdateCheckCore.normalizeTag(advertised)
         guard a.isEmpty || a == UpdateCheckCore.normalizeTag(version) else {
             return "The release says \(UpdateCheckCore.displayVersion(a)) but the download contains \(UpdateCheckCore.displayVersion(version))."
+        }
+        guard build == advertisedBuild else {
+            return "The signed update says build \(advertisedBuild) but the download contains build \(build)."
         }
         return nil
     }
@@ -179,14 +196,17 @@ enum SelfUpdateCore {
     /// Ordering here is load-bearing:
     ///
     /// 1. Wait for the app to exit (bounded — never wait forever).
-    /// 2. Swap the bundle FIRST, while the old daemon keeps running from the
-    ///    renamed-away directory (a rename doesn't disturb a running process).
-    /// 3. Only then SIGKILL the daemon. Never SIGTERM: the daemon treats a
+    /// 2. SIGSTOP the old daemon before its bundle moves. A running executable
+    ///    whose path changes can make macOS re-evaluate its credential access
+    ///    and display a password dialog during the update.
+    /// 3. Swap the bundle while that daemon is frozen, then SIGKILL it. Never
+    ///    SIGTERM: the daemon treats a
     ///    graceful stop as "tear down every ControlMaster", which costs the user
     ///    a fresh 2FA login on every host. SIGKILL leaves the detached masters
     ///    running and the replacement daemon adopts them. Because the swap has
     ///    already happened, launchd's KeepAlive respawn picks up the NEW binary.
-    /// 4. Delete the old bundle only after its daemon is gone.
+    /// 4. Delete the old bundle only after its daemon is gone. Any failed move
+    ///    rolls back the bundle and SIGCONT-resumes the untouched old daemon.
     ///
     /// Every failure path rolls back and relaunches something, so a failed
     /// update can never leave the user with no app.
@@ -202,6 +222,12 @@ enum SelfUpdateCore {
                            logPath: String,
                            openTool: String = "/usr/bin/open") -> String {
         let t = shQuote(target), n = shQuote(staged), o = shQuote(old)
+        let pauseDaemon = daemonPath.map {
+            "/usr/bin/pkill -STOP -f \(shQuote($0)) 2>/dev/null || true"
+        } ?? "true"
+        let resumeDaemon = daemonPath.map {
+            "/usr/bin/pkill -CONT -f \(shQuote($0)) 2>/dev/null || true"
+        } ?? "true"
         let killDaemon = daemonPath.map {
             "/usr/bin/pkill -9 -f \(shQuote($0)) 2>/dev/null || true"
         } ?? "true"
@@ -224,9 +250,13 @@ enum SelfUpdateCore {
           exit 1
         fi
         rm -rf \(o)
+        # Freeze credential access before the executable's containing bundle is
+        # renamed. Detached ControlMasters continue running independently.
+        \(pauseDaemon)
         if [ -d \(t) ]; then
           if ! mv \(t) \(o); then
             echo "could not move the old bundle aside — aborting"
+            \(resumeDaemon)
             \(openTool) \(t) 2>/dev/null || true
             exit 1
           fi
@@ -234,11 +264,13 @@ enum SelfUpdateCore {
         if ! mv \(n) \(t); then
           echo "swap failed — rolling back"
           [ -d \(o) ] && mv \(o) \(t)
+          \(resumeDaemon)
           \(openTool) \(t) 2>/dev/null || true
           exit 1
         fi
-        # SIGKILL, never SIGTERM: a graceful daemon stop tears down every
-        # ControlMaster and forces a fresh 2FA login on every host.
+        # The old daemon has remained frozen throughout the rename, so it could
+        # not ask macOS for credential access under the temporary old path.
+        # SIGKILL, never SIGTERM: a graceful stop tears down every ControlMaster.
         \(killDaemon)
         rm -rf \(o)
         /usr/bin/xattr -dr com.apple.quarantine \(t) 2>/dev/null || true

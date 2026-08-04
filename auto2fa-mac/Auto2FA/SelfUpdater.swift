@@ -49,20 +49,6 @@ final class SelfUpdater: ObservableObject {
 
     private var workDir: URL?
 
-    /// Evaluate this once per process. `codesign` validates both the sealed
-    /// contents and the certificate chain; the latter intentionally fails for
-    /// today's self-signed public build. Do not weaken the downloaded-bundle
-    /// check just to make that build self-update: this app holds SSH passwords
-    /// and TOTP seeds. Self-signed installs use the existing manual update path
-    /// until releases carry a trusted Developer ID signature.
-    private static let runningSignatureIsTrusted: Bool = {
-        let result = run("/usr/bin/codesign",
-                         ["--verify", "--deep", "--strict",
-                          Bundle.main.bundlePath],
-                         timeout: 30)
-        return result.code == 0
-    }()
-
     private init() {}
 
     /// True when this install can be replaced in place. The About pane uses it
@@ -73,13 +59,10 @@ final class SelfUpdater: ObservableObject {
         if let vals = try? Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]) {
             readOnly = vals.volumeIsReadOnly ?? false
         }
-        let location = SelfUpdateCore.blocker(
+        return SelfUpdateCore.blocker(
             bundlePath: path,
             isReadOnlyVolume: readOnly,
             isWritable: FileManager.default.isWritableFile(atPath:))
-        return SelfUpdateCore.updateBlocker(
-            location: location,
-            signatureTrusted: runningSignatureIsTrusted)
     }
 
     /// Download `version` and install it, then quit and relaunch.
@@ -125,20 +108,36 @@ final class SelfUpdater: ObservableObject {
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
         workDir = work
 
-        // 1. Resolve the DMG for the latest release.
-        let asset = try await Self.fetchDMGAsset()
+        // 1. Resolve the exact release the UI advertised and authenticate its
+        // signed manifest BEFORE downloading executable content.
+        let package = try await Self.fetchReleasePackage(advertised: advertised)
+        let manifestData = try await Self.fetchManifest(package.manifestURL)
+        let manifest: UpdateSigningCore.Manifest
+        switch UpdateSigningCore.decodeManifest(manifestData) {
+        case .success(let decoded): manifest = decoded
+        case .failure:
+            throw UpdateError(text: String(localized: "This update doesn't have a valid SSH2FA signature, so it wasn't installed."))
+        }
+        guard manifest.validationProblem(
+            advertisedVersion: advertised,
+            trustedKeys: UpdateSigningCore.trustedPublicKeys) == nil else {
+            throw UpdateError(text: String(localized: "This update doesn't have a valid SSH2FA signature, so it wasn't installed."))
+        }
 
         // 2. Download it, streaming progress into the UI.
-        phase = .downloading(received: 0, total: asset.size)
+        phase = .downloading(received: 0, total: manifest.size)
         let dmg = work.appendingPathComponent("SSH2FA.dmg")
-        try await download(asset: asset, to: dmg)
+        try await download(asset: package.dmg, to: dmg)
 
-        // 3. Integrity: the published SHA-256 is what catches a truncated or
-        //    corrupted download before it is installed as a broken bundle.
+        // 3. Integrity comes from the project-signed manifest, independent of
+        // Apple's paid trust chain. GitHub's own digest remains a second check.
         phase = .verifying
         let actual = try Self.sha256(of: dmg)
-        guard SelfUpdateCore.digestOK(expected: asset.sha256, actual: actual) else {
-            throw UpdateError(text: String(localized: "The download didn't match the checksum GitHub published — it may have been corrupted in transit. Try again."))
+        let attributes = try fm.attributesOfItem(atPath: dmg.path)
+        let actualSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        guard manifest.digestMatches(actual, actualSize: actualSize),
+              SelfUpdateCore.digestOK(expected: package.dmg.sha256, actual: actual) else {
+            throw UpdateError(text: String(localized: "The download didn't match SSH2FA's signed checksum, so it wasn't installed. Try again."))
         }
 
         // 4. Mount, vet, and copy the new bundle NEXT TO the current one, so the
@@ -156,7 +155,8 @@ final class SelfUpdater: ObservableObject {
         defer { Self.detach(mnt) }
 
         let staged = mnt.appendingPathComponent(SelfUpdateCore.appBundleName)
-        try Self.vet(staged: staged, advertised: advertised)
+        try Self.vet(staged: staged, advertised: advertised,
+                     advertisedBuild: manifest.build)
 
         let target = Bundle.main.bundleURL
         let stamp = UUID().uuidString.prefix(8)
@@ -207,10 +207,14 @@ final class SelfUpdater: ObservableObject {
 
     // MARK: - Steps
 
-    /// The latest release's DMG asset.
-    private static func fetchDMGAsset() async throws -> SelfUpdateCore.ReleaseAsset {
-        var req = URLRequest(url: URL(string:
-            "https://api.github.com/repos/gasvn/ssh2fa/releases/latest")!)
+    /// The exact tagged release the UI offered, including its DMG and signed
+    /// manifest. Unsigned legacy releases are deliberately not self-installable.
+    private static func fetchReleasePackage(advertised: String) async throws
+        -> SelfUpdateCore.ReleasePackage {
+        guard let apiURL = SelfUpdateCore.releaseAPIURL(advertisedVersion: advertised) else {
+            throw UpdateError(text: String(localized: "SSH2FA couldn't identify that release safely."))
+        }
+        var req = URLRequest(url: apiURL)
         req.timeoutInterval = 20
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -220,10 +224,21 @@ final class SelfUpdater: ObservableObject {
         }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let assets = obj["assets"] as? [[String: Any]],
-              let asset = SelfUpdateCore.pickDMG(assets: assets) else {
-            throw UpdateError(text: String(localized: "That release doesn't publish a downloadable app — update manually this time."))
+              let package = SelfUpdateCore.pickReleasePackage(assets: assets) else {
+            throw UpdateError(text: String(localized: "That release doesn't include a signed SSH2FA update — update manually this time."))
         }
-        return asset
+        return package
+    }
+
+    private static func fetchManifest(_ url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200, data.count <= 64 * 1024 else {
+            throw UpdateError(text: String(localized: "SSH2FA couldn't verify this update's signature."))
+        }
+        return data
     }
 
     /// Download with live progress. Uses a download task (not `data(for:)`) so
@@ -260,7 +275,9 @@ final class SelfUpdater: ObservableObject {
     }
 
     /// Refuse anything that isn't a valid, newer SSH2FA before it replaces us.
-    private static func vet(staged: URL, advertised: String) throws {
+    private static func vet(staged: URL,
+                            advertised: String,
+                            advertisedBuild: String) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: staged.path) else {
             throw UpdateError(text: String(localized: "The disk image didn't contain SSH2FA."))
@@ -268,22 +285,15 @@ final class SelfUpdater: ObservableObject {
         guard let info = NSDictionary(contentsOf:
                 staged.appendingPathComponent("Contents/Info.plist")),
               let bid = info["CFBundleIdentifier"] as? String,
-              let ver = info["CFBundleShortVersionString"] as? String else {
+              let ver = info["CFBundleShortVersionString"] as? String,
+              let build = info["CFBundleVersion"] as? String else {
             throw UpdateError(text: String(localized: "The downloaded app is missing its version information."))
         }
         if let why = SelfUpdateCore.rejectStagedApp(
-            bundleID: bid, version: ver,
+            bundleID: bid, version: ver, build: build,
             currentVersion: UpdateChecker.currentVersion,
-            advertised: advertised) {
+            advertised: advertised, advertisedBuild: advertisedBuild) {
             throw UpdateError(text: why)
-        }
-        // A bundle that fails signature validation would be killed on launch by
-        // macOS anyway — better to refuse it now, while the working app is still
-        // installed, than to leave the user with a build that won't start.
-        let cs = run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged.path],
-                     timeout: 120)
-        guard cs.code == 0 else {
-            throw UpdateError(text: String(localized: "The downloaded app failed macOS's signature check, so it wasn't installed."))
         }
     }
 
@@ -352,8 +362,6 @@ final class SelfUpdater: ObservableObject {
             return String(localized: "macOS is running SSH2FA from a temporary read-only copy. Move the app to your Applications folder and open it from there, then updates install with one click.")
         case .noPermission(let dir):
             return String(localized: "SSH2FA doesn't have permission to update itself in \(dir) — it may have been installed by another user.")
-        case .untrustedSignature:
-            return String(localized: "This SSH2FA build uses a local signing certificate, so macOS won't allow a verified one-click update yet. Update with Homebrew or download the new version below.")
         }
     }
 }

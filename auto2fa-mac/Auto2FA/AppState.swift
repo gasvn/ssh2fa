@@ -1273,80 +1273,54 @@ final class AppState: ObservableObject {
 
     // MARK: - Post-update credential authorization
 
-    /// Set while the warm-up pass runs; drives the banner + progress label.
-    @Published var warmupProgress: String?
-    /// Set when a warm-up finishes, so the UI can report the outcome.
-    @Published var warmupSummary: String?
+    /// Drives the deliberate, one-time security-upgrade sheet. Routine startup,
+    /// reconnect, and update paths never present this UI themselves.
+    @Published private(set) var credentialUpgradeStatus: CredentialUpgradeStatus = .idle
+    /// "Not now" is session-only. Hiding the explanation for an entire build
+    /// allowed a later background reconnect to surface an unexplained macOS
+    /// authorization dialog.
+    @Published private var credentialUpgradeDeferredForSession = false
 
     /// Should we offer the post-update "authorize saved credentials" pass?
     var shouldOfferCredentialWarmup: Bool {
         CredentialWarmup.shouldOffer(
             hostCount: hosts.count,
-            currentBuild: UpdateChecker.currentBuild,
-            lastWarmedBuild: UserDefaults.standard.string(forKey: SettingsKey.lastWarmedBuild),
-            consolidated: credentialsAreConsolidated)
+            consolidated: credentialsAreConsolidated,
+            deferredForSession: credentialUpgradeDeferredForSession)
     }
 
     /// True once the saved secrets are in one Keychain item.
     ///
     /// Set only after the daemon successfully verifies the consolidated vault.
-    /// Do not infer this from `lastWarmedBuild`: older versions recorded that
-    /// value even after a temporary one-read authorization, which is the bug
-    /// that made the dialog return forever.
+    /// A dismissed explanation is deliberately not treated as completion.
     private var credentialsAreConsolidated: Bool {
         UserDefaults.standard.bool(forKey: SettingsKey.credentialsConsolidated)
     }
 
-    /// Read every host's old stored credentials once, sequentially, so the
-    /// one-time stable-vault migration happens as one understood batch instead
-    /// of interrupting later logins.
-    ///
-    /// SEQUENTIAL on purpose: macOS serializes Keychain access process-wide, and
-    /// concurrent reads would stack prompts on top of each other. Uses
-    /// `host_credentials` (metadata only) — it touches the same Keychain items
-    /// as a login without ever pulling a secret into the app.
+    /// Run one daemon-owned migration operation. The old implementation first
+    /// read every host separately and then called consolidation, exposing
+    /// per-host implementation detail and giving background reconnects room to
+    /// interleave more authorization dialogs. The daemon now owns the whole
+    /// serialized pass; no secret is returned to the app.
     func runCredentialWarmup() async {
-        let names = hosts.map { $0.host }
-        guard !names.isEmpty else { return }
-        var failed: [String] = []
-        for (i, name) in names.enumerated() {
-            warmupProgress = CredentialWarmup.progressLabel(host: name, index: i, total: names.count)
-            do {
-                _ = try await client.hostCredentials(name)
-            } catch {
-                failed.append(name)
-            }
-        }
-        // Now that every item has been authorized once, collapse them into a
-        // SINGLE Keychain item. That is what stops the next update from asking
-        // once per saved secret — the prompt count comes from the number of
-        // items, not from the signature.
-        var consolidated = 0
-        var consolidationSucceeded = false
-        if failed.isEmpty {
-            warmupProgress = String(localized: "Consolidating into a single Keychain item…")
-            if let report = try? await client.consolidateCredentials() {
-                consolidated = report.migrated
-                consolidationSucceeded = true
-                UserDefaults.standard.set(true, forKey: SettingsKey.credentialsConsolidated)
-            }
-        }
-        warmupProgress = nil
-        warmupSummary = CredentialWarmup.summary(total: names.count, failed: failed,
-                                                 consolidated: consolidated,
-                                                 consolidationSucceeded: consolidationSucceeded)
-        // Only mark the build done when everything succeeded — otherwise the
-        // offer stands so the user gets another chance at the ones they denied.
-        if failed.isEmpty && consolidationSucceeded {
-            UserDefaults.standard.set(UpdateChecker.currentBuild,
-                                      forKey: SettingsKey.lastWarmedBuild)
+        let hostCount = hosts.count
+        guard hostCount > 0, !credentialUpgradeStatus.isRunning else { return }
+        credentialUpgradeStatus = .running
+        do {
+            _ = try await client.consolidateCredentials()
+            UserDefaults.standard.set(true, forKey: SettingsKey.credentialsConsolidated)
+            credentialUpgradeStatus = .succeeded(hostCount: hostCount)
+        } catch {
+            NSLog("[SSH2FA] one-time credential upgrade failed: \(error.localizedDescription)")
+            credentialUpgradeStatus = .failed(message: CredentialWarmup.failureMessage())
         }
     }
 
-    /// Dismiss the offer for this build without running it.
-    func skipCredentialWarmup() {
-        UserDefaults.standard.set(UpdateChecker.currentBuild, forKey: SettingsKey.lastWarmedBuild)
-        objectWillChange.send()
+    /// Defer without creating a persistent "done" marker. The explanation
+    /// returns on the next launch until the verified migration succeeds.
+    func deferCredentialUpgrade() {
+        credentialUpgradeDeferredForSession = true
+        credentialUpgradeStatus = .idle
     }
 
     /// Deregister a host: daemon-side removal (master stopped, Keychain entries
@@ -1613,10 +1587,17 @@ final class AppState: ObservableObject {
     @discardableResult
     func addHost(host: String, password: String, otpauthURL: String,
                  autoConnect: Bool) async -> String? {
+        let wasFirstHost = hosts.isEmpty
         do {
             _ = try await client.addHost(host: host, password: password,
                                          otpauthURL: otpauthURL,
                                          autoConnect: autoConnect)
+            // A fresh install writes its first credential directly into the
+            // stable daemon-owned store. It has no legacy data to upgrade and
+            // must never see the post-update migration banner.
+            if wasFirstHost {
+                UserDefaults.standard.set(true, forKey: SettingsKey.credentialsConsolidated)
+            }
             await reloadAll()
             WarmReuseConsent.enableByDefaultIfNeeded(currentAliases: hosts.map { $0.host })
             return nil

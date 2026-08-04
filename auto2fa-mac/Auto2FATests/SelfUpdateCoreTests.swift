@@ -7,22 +7,6 @@ import XCTest
 /// off the internet, so the interesting tests are the refusals: the wrong app,
 /// an older build, a corrupted download, an install location we can't write.
 final class SelfUpdateCoreTests: XCTestCase {
-    func testUntrustedSignatureFallsBackToManualUpdate() {
-        XCTAssertEqual(
-            SelfUpdateCore.updateBlocker(location: nil, signatureTrusted: false),
-            .untrustedSignature)
-        XCTAssertNil(
-            SelfUpdateCore.updateBlocker(location: nil, signatureTrusted: true))
-    }
-
-    func testLocationProblemTakesPriorityOverSignatureProblem() {
-        XCTAssertEqual(
-            SelfUpdateCore.updateBlocker(location: .readOnlyLocation,
-                                          signatureTrusted: false),
-            .readOnlyLocation)
-    }
-
-
     // MARK: - Where can we self-update?
 
     func testNormalApplicationsInstallCanSelfUpdate() {
@@ -101,11 +85,44 @@ final class SelfUpdateCoreTests: XCTestCase {
         XCTAssertEqual(got?.sha256, d)
     }
 
-    func testFallsBackToAnyDMGWhenTheNameDiffers() {
-        let got = SelfUpdateCore.pickDMG(assets: [
+    func testSignedReleaseRequiresBothDMGAndManifest() {
+        let assets: [[String: Any]] = [
+            ["name": "SSH2FA.dmg", "browser_download_url": "https://example.test/app.dmg",
+             "state": "uploaded", "size": 12],
+            ["name": "SSH2FA.update.json", "browser_download_url": "https://example.test/update.json",
+             "state": "uploaded"]
+        ]
+        let package = SelfUpdateCore.pickReleasePackage(assets: assets)
+        XCTAssertEqual(package?.dmg.url.absoluteString, "https://example.test/app.dmg")
+        XCTAssertEqual(package?.manifestURL.absoluteString, "https://example.test/update.json")
+        XCTAssertNil(SelfUpdateCore.pickReleasePackage(assets: [assets[0]]))
+    }
+
+    func testIncompleteManifestAssetIsRejected() {
+        let assets: [[String: Any]] = [
+            ["name": "SSH2FA.dmg", "browser_download_url": "https://example.test/app.dmg"],
+            ["name": "SSH2FA.update.json", "browser_download_url": "https://example.test/update.json",
+             "state": "new"]
+        ]
+        XCTAssertNil(SelfUpdateCore.pickReleasePackage(assets: assets))
+    }
+
+    func testReleaseAPIIsPinnedToAdvertisedTag() {
+        XCTAssertEqual(
+            SelfUpdateCore.releaseAPIURL(advertisedVersion: "v1.5.12")?.absoluteString,
+            "https://api.github.com/repos/gasvn/ssh2fa/releases/tags/v1.5.12")
+        XCTAssertEqual(
+            SelfUpdateCore.releaseAPIURL(advertisedVersion: "1.5.12")?.absoluteString,
+            "https://api.github.com/repos/gasvn/ssh2fa/releases/tags/v1.5.12")
+        XCTAssertNil(SelfUpdateCore.releaseAPIURL(advertisedVersion: "../latest"))
+        XCTAssertNil(SelfUpdateCore.releaseAPIURL(advertisedVersion: "1.5.12-beta"))
+        XCTAssertNil(SelfUpdateCore.releaseAPIURL(advertisedVersion: "1.５.12"))
+    }
+
+    func testRefusesADMGWhoseNameIsNotCoveredByTheManifestProtocol() {
+        XCTAssertNil(SelfUpdateCore.pickDMG(assets: [
             asset("SSH2FA-1.6.0-universal.dmg", "https://x/u.dmg"),
-        ])
-        XCTAssertEqual(got?.url.absoluteString, "https://x/u.dmg")
+        ]))
     }
 
     /// An asset GitHub is still receiving downloads as a truncated file.
@@ -157,14 +174,16 @@ final class SelfUpdateCoreTests: XCTestCase {
 
     func testAcceptsAGenuineNewerBuild() {
         XCTAssertNil(SelfUpdateCore.rejectStagedApp(
-            bundleID: "com.ssh2fa.app", version: "1.6.0",
-            currentVersion: "1.5.3", advertised: "v1.6.0"))
+            bundleID: "com.ssh2fa.app", version: "1.6.0", build: "170",
+            currentVersion: "1.5.3", advertised: "v1.6.0",
+            advertisedBuild: "170"))
     }
 
     func testRefusesADifferentApp() {
         let why = SelfUpdateCore.rejectStagedApp(
-            bundleID: "com.evil.thing", version: "9.9.9",
-            currentVersion: "1.5.3", advertised: "9.9.9")
+            bundleID: "com.evil.thing", version: "9.9.9", build: "999",
+            currentVersion: "1.5.3", advertised: "9.9.9",
+            advertisedBuild: "999")
         XCTAssertNotNil(why)
         XCTAssertTrue(why!.contains("com.evil.thing"))
     }
@@ -173,19 +192,31 @@ final class SelfUpdateCoreTests: XCTestCase {
     /// installed silently over a newer build.
     func testRefusesADowngradeOrTheSameVersion() {
         XCTAssertNotNil(SelfUpdateCore.rejectStagedApp(
-            bundleID: "com.ssh2fa.app", version: "1.4.0",
-            currentVersion: "1.5.3", advertised: "1.4.0"))
+            bundleID: "com.ssh2fa.app", version: "1.4.0", build: "140",
+            currentVersion: "1.5.3", advertised: "1.4.0",
+            advertisedBuild: "140"))
         XCTAssertNotNil(SelfUpdateCore.rejectStagedApp(
-            bundleID: "com.ssh2fa.app", version: "1.5.3",
-            currentVersion: "1.5.3", advertised: "1.5.3"))
+            bundleID: "com.ssh2fa.app", version: "1.5.3", build: "153",
+            currentVersion: "1.5.3", advertised: "1.5.3",
+            advertisedBuild: "153"))
     }
 
     /// The release tag and the bundle inside the DMG must agree — a mismatch
     /// means the release was cut from the wrong build.
     func testRefusesWhenTheDMGDoesNotMatchTheAdvertisedVersion() {
         XCTAssertNotNil(SelfUpdateCore.rejectStagedApp(
-            bundleID: "com.ssh2fa.app", version: "1.6.0",
-            currentVersion: "1.5.3", advertised: "1.7.0"))
+            bundleID: "com.ssh2fa.app", version: "1.6.0", build: "160",
+            currentVersion: "1.5.3", advertised: "1.7.0",
+            advertisedBuild: "170"))
+    }
+
+    func testRefusesWhenTheDMGBuildDoesNotMatchSignedManifest() {
+        let why = SelfUpdateCore.rejectStagedApp(
+            bundleID: "com.ssh2fa.app", version: "1.6.0", build: "169",
+            currentVersion: "1.5.3", advertised: "1.6.0",
+            advertisedBuild: "170")
+        XCTAssertNotNil(why)
+        XCTAssertTrue(why!.contains("build 170"))
     }
 
     // MARK: - Shell quoting
@@ -232,24 +263,34 @@ final class SelfUpdateCoreTests: XCTestCase {
         XCTAssertTrue(script().contains("-gt 300"))
     }
 
-    /// THE load-bearing ordering. The daemon is killed only AFTER the new bundle
-    /// is in place, so launchd's KeepAlive respawn execs the NEW binary; and the
-    /// old bundle is deleted only AFTER its daemon is gone, so we never rm a
-    /// running executable out from under itself.
-    func testDaemonIsKilledAfterTheSwapAndBeforeTheOldBundleIsDeleted() {
+    /// THE load-bearing ordering. Freeze the daemon before moving its executable
+    /// (otherwise macOS may re-authorize credential access under the temporary
+    /// path), install the new bundle, then kill the frozen daemon so launchd
+    /// respawns the new one. Only then may the old bundle be deleted.
+    func testDaemonIsPausedBeforeTheMoveAndKilledAfterTheSwap() {
         let s = script()
         // `.backwards` for the purge: the script also clears any STALE
         // `.old-` left by a previous failed attempt, before the swap.
-        guard let swap = s.range(of: "mv '/Applications/SSH2FA.app.new-ab12' '/Applications/SSH2FA.app'"),
+        guard let pause = s.range(of: "pkill -STOP"),
+              let moveOld = s.range(of: "mv '/Applications/SSH2FA.app' '/Applications/SSH2FA.app.old-ab12'"),
+              let swap = s.range(of: "mv '/Applications/SSH2FA.app.new-ab12' '/Applications/SSH2FA.app'"),
               let kill = s.range(of: "pkill -9"),
               let purge = s.range(of: "rm -rf '/Applications/SSH2FA.app.old-ab12'",
                                   options: .backwards) else {
             return XCTFail("script is missing the swap / kill / cleanup steps")
         }
+        XCTAssertTrue(pause.lowerBound < moveOld.lowerBound,
+                      "freeze credential access before the running executable moves")
         XCTAssertTrue(swap.lowerBound < kill.lowerBound,
                       "kill the daemon only after the new bundle is in place")
         XCTAssertTrue(kill.lowerBound < purge.lowerBound,
                       "the old bundle must outlive the daemon running from it")
+    }
+
+    func testFailedSwapResumesTheFrozenOldDaemon() {
+        let s = script()
+        XCTAssertGreaterThanOrEqual(s.components(separatedBy: "pkill -CONT").count - 1, 2,
+                                    "both bundle-move failures must resume the old daemon")
     }
 
     /// A graceful daemon stop tears down every ControlMaster and costs a fresh
@@ -261,6 +302,7 @@ final class SelfUpdateCoreTests: XCTestCase {
             .split(separator: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
             .joined(separator: "\n")
+        XCTAssertTrue(commands.contains("pkill -STOP"))
         XCTAssertTrue(commands.contains("pkill -9"))
         for forbidden in ["pkill -TERM", "pkill -15", "kill -TERM", "kill -15",
                           "bootout", "kickstart"] {

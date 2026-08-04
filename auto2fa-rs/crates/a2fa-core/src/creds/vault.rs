@@ -37,7 +37,13 @@ use crate::error::{Error, Result};
 use super::{otpauth_acct, password_acct, SecretStore};
 
 /// Keychain account holding every host's credentials under the stable daemon
-/// identity introduced in v1.5.10.
+/// identity used by v1.5.12 and later.
+///
+/// v2 proved that "already consolidated" is not the same thing as "owned by
+/// the current stable identity": an item created before the signing fix could
+/// survive every later consolidation unchanged, then prompt only when a network
+/// outage caused the first real credential read. A NEW account is deliberate —
+/// creation, rather than an in-place update, is what installs the new ACL.
 ///
 /// It cannot collide with a per-host legacy item because those always carry a
 /// `.password` / `.otpauth` SUFFIX (`password_acct` / `otpauth_acct`), and this
@@ -45,7 +51,18 @@ use super::{otpauth_acct, password_acct, SecretStore};
 /// an illegal host name — `is_safe_host_name` permits a leading underscore, so
 /// `__ssh2fa_vault__` is in fact a perfectly legal host name. The suffix is the
 /// whole guarantee; `vault_account_cannot_collide_with_a_host_entry` pins it.
-pub const VAULT_ACCOUNT: &str = "__ssh2fa_vault_v2__";
+pub const VAULT_ACCOUNT: &str = "__ssh2fa_vault_v4__";
+
+/// Consolidated item used immediately before the stable-identity migration.
+/// It may already contain every host and still carry an old access policy, so
+/// seeing it must never count as completion for the v4 migration. The v3 item
+/// is intentionally retired because a pre-fix Rust test harness could create
+/// or update it with the test binary in its Keychain access policy.
+pub const PREVIOUS_VAULT_ACCOUNT: &str = "__ssh2fa_vault_v3__";
+
+/// Stable-identity migration attempted before Cargo test processes were fully
+/// isolated from the login Keychain.
+pub const OLDER_VAULT_ACCOUNT: &str = "__ssh2fa_vault_v2__";
 
 /// Consolidated item written by v1.5.4-v1.5.9.  It is intentionally retained
 /// after migration: deleting an ACL-stale item can raise another authorization
@@ -118,10 +135,18 @@ fn load_vault_unlocked<S: SecretStore>(store: &S) -> Result<Vault> {
         return decode_vault(&raw);
     }
 
-    let Some(legacy_raw) = store
-        .get(LEGACY_VAULT_ACCOUNT)?
-        .filter(|r| !r.trim().is_empty())
-    else {
+    let mut legacy_raw = None;
+    for account in [
+        PREVIOUS_VAULT_ACCOUNT,
+        OLDER_VAULT_ACCOUNT,
+        LEGACY_VAULT_ACCOUNT,
+    ] {
+        if let Some(raw) = store.get(account)?.filter(|r| !r.trim().is_empty()) {
+            legacy_raw = Some(raw);
+            break;
+        }
+    }
+    let Some(legacy_raw) = legacy_raw else {
         return Ok(Vault::default());
     };
     let vault = decode_vault(&legacy_raw)?;
@@ -146,7 +171,7 @@ fn load_vault_unlocked<S: SecretStore>(store: &S) -> Result<Vault> {
         }
     }
     log::info!(
-        "[vault] moved credentials to the stable daemon-owned Keychain item; old item retained"
+        "[vault] moved credentials to the v4 stable-identity item; old item retained"
     );
     Ok(vault)
 }
@@ -351,19 +376,43 @@ mod tests {
     }
 
     #[test]
-    fn old_consolidated_vault_is_copied_to_a_fresh_account() {
+    fn previous_consolidated_vault_is_copied_to_a_fresh_account() {
         let s = FakeStore::default();
         let old = vault_with("k6", "pw-old");
-        s.set(LEGACY_VAULT_ACCOUNT, &serde_json::to_string(&old).unwrap())
+        s.set(PREVIOUS_VAULT_ACCOUNT, &serde_json::to_string(&old).unwrap())
             .unwrap();
 
         assert_eq!(load_vault(&s).unwrap(), old);
         let copied = s.get(VAULT_ACCOUNT).unwrap().expect("new vault must exist");
         assert_eq!(decode_vault(&copied).unwrap(), old);
         assert!(
-            s.get(LEGACY_VAULT_ACCOUNT).unwrap().is_some(),
+            s.get(PREVIOUS_VAULT_ACCOUNT).unwrap().is_some(),
             "the old item must be retained so migration cannot cause a second authorization prompt"
         );
+    }
+
+    #[test]
+    fn v2_consolidated_vault_is_still_migrated_when_v3_is_absent() {
+        let s = FakeStore::default();
+        let old = vault_with("k6", "pw-v2");
+        s.set(OLDER_VAULT_ACCOUNT, &serde_json::to_string(&old).unwrap())
+            .unwrap();
+
+        assert_eq!(load_vault(&s).unwrap(), old);
+        let copied = s.get(VAULT_ACCOUNT).unwrap().expect("v4 vault must exist");
+        assert_eq!(decode_vault(&copied).unwrap(), old);
+    }
+
+    #[test]
+    fn oldest_consolidated_vault_is_still_migrated_when_newer_items_are_absent() {
+        let s = FakeStore::default();
+        let old = vault_with("k6", "pw-v1");
+        s.set(LEGACY_VAULT_ACCOUNT, &serde_json::to_string(&old).unwrap())
+            .unwrap();
+
+        assert_eq!(load_vault(&s).unwrap(), old);
+        let copied = s.get(VAULT_ACCOUNT).unwrap().expect("v4 vault must exist");
+        assert_eq!(decode_vault(&copied).unwrap(), old);
     }
 
     #[test]
@@ -397,6 +446,8 @@ mod tests {
         for host in [
             "k6",
             VAULT_ACCOUNT,
+            PREVIOUS_VAULT_ACCOUNT,
+            OLDER_VAULT_ACCOUNT,
             LEGACY_VAULT_ACCOUNT,
             "_underscore",
         ] {

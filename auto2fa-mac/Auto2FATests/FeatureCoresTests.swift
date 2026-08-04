@@ -44,6 +44,30 @@ final class FeatureCoresTests: XCTestCase {
                 daemonPath: "/daemon", daemonIdentity: "  ", fallbackAppBuild: "161"))
     }
 
+    func testLaunchctlPIDParserIgnoresUnrelatedNumericFields() {
+        let output = """
+        gui/501/com.ssh2fa.daemon = {
+            runs = 14
+            pid = 16283
+            forks = 17
+        }
+        """
+        XCTAssertEqual(BackgroundServicePolicy.servicePID(fromLaunchctlPrint: output), 16283)
+        XCTAssertNil(BackgroundServicePolicy.servicePID(fromLaunchctlPrint: "state = waiting"))
+    }
+
+    func testRunningDaemonMovedIntoBackupForcesRestartEvenWhenCodeIsUnchanged() {
+        let expected = "/Applications/SSH2FA.app/Contents/Resources/ssh2fa-daemon"
+        XCTAssertFalse(BackgroundServicePolicy.runtimePathNeedsRestart(
+            expectedPath: expected, actualPath: expected))
+        XCTAssertTrue(BackgroundServicePolicy.runtimePathNeedsRestart(
+            expectedPath: expected,
+            actualPath: "/private/tmp/SSH2FA.app.old/Contents/Resources/ssh2fa-daemon"))
+        XCTAssertFalse(BackgroundServicePolicy.runtimePathNeedsRestart(
+            expectedPath: expected, actualPath: nil),
+            "an unavailable diagnostic must not churn a healthy service every launch")
+    }
+
     // MARK: - ClipboardExpiry
 
     /// The wipe must happen when our copy is still the clipboard's contents.
@@ -106,81 +130,71 @@ final class FeatureCoresTests: XCTestCase {
 
     // MARK: - CredentialWarmup
 
-    /// Offered once per build until the one-time stable-vault migration succeeds.
-    func testWarmupOfferedOncePerBuild() {
-        XCTAssertTrue(CredentialWarmup.shouldOffer(hostCount: 3, currentBuild: "120",
-                                                   lastWarmedBuild: "110"),
-                      "a new build must re-offer")
-        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 3, currentBuild: "120",
-                                                    lastWarmedBuild: "120"),
-                       "the same build must never nag twice")
-    }
-
-    /// A fresh install has nothing recorded — it still needs the pass.
-    func testWarmupOfferedWhenNothingRecordedYet() {
-        XCTAssertTrue(CredentialWarmup.shouldOffer(hostCount: 1, currentBuild: "120",
-                                                   lastWarmedBuild: nil))
-    }
-
     /// A verified stable vault needs neither a banner nor a background probe.
     func testConsolidatedInstallsNeedNoWarmup() {
-        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 6, currentBuild: "154",
-                                                    lastWarmedBuild: "153", consolidated: true))
+        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 6, consolidated: true,
+                                                    deferredForSession: false))
     }
 
     /// An install still holding two items per host DOES need the up-front
     /// explanation — that is a dozen dialogs, not one.
     func testUnconsolidatedInstallsStillGetTheBanner() {
-        XCTAssertTrue(CredentialWarmup.shouldOffer(hostCount: 6, currentBuild: "154",
-                                                   lastWarmedBuild: "153", consolidated: false))
+        XCTAssertTrue(CredentialWarmup.shouldOffer(hostCount: 6, consolidated: false,
+                                                   deferredForSession: false))
     }
 
-    /// A dismissed banner may not nag twice in one build.
-    func testWarmupDoesNotRunTwiceForTheSameBuild() {
-        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 6, currentBuild: "154",
-                                                    lastWarmedBuild: "154", consolidated: false))
+    /// "Not now" is quiet for this session without falsely recording success.
+    func testWarmupDeferralIsSessionScoped() {
+        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 6, consolidated: false,
+                                                    deferredForSession: true))
+        XCTAssertTrue(CredentialWarmup.shouldOffer(hostCount: 6, consolidated: false,
+                                                   deferredForSession: false))
     }
 
     func testWarmupNotOfferedWithoutHosts() {
-        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 0, currentBuild: "120",
-                                                    lastWarmedBuild: nil))
+        XCTAssertFalse(CredentialWarmup.shouldOffer(hostCount: 0, consolidated: false,
+                                                    deferredForSession: false))
     }
 
-    func testWarmupProgressLabelIsOneBased() {
-        XCTAssertEqual(CredentialWarmup.progressLabel(host: "k6", index: 0, total: 6),
-                       "Authorizing k6 (1 of 6)…")
-        XCTAssertEqual(CredentialWarmup.progressLabel(host: "b8", index: 5, total: 6),
-                       "Authorizing b8 (6 of 6)…")
+    func testWarmupSuccessExplainsTheUserBenefitWithoutInternals() {
+        let message = CredentialWarmup.successMessage(hostCount: 6)
+        XCTAssertTrue(message.contains("should not ask for your Mac password again"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("keychain"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("daemon"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("vault"))
     }
 
-    /// A partial failure must name the hosts that need another try — the fix is
-    /// per host, so "some failed" would be useless.
-    func testWarmupSummaryNamesFailedHosts() {
-        let s = CredentialWarmup.summary(total: 6, failed: ["k8", "b8"])
-        XCTAssertTrue(s.contains("k8"))
-        XCTAssertTrue(s.contains("b8"))
-        XCTAssertTrue(s.contains("4 of 6"))
-        XCTAssertTrue(s.contains("final migration pass"))
+    func testWarmupFailureReassuresThatNothingWasLost() {
+        let message = CredentialWarmup.failureMessage()
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("migrating"))
+        XCTAssertTrue(message.contains("Nothing was lost"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("keychain"))
     }
 
-    /// The summary must say what changed for NEXT time — that is the whole
-    /// user-visible payoff of consolidation.
-    func testWarmupSummaryMentionsConsolidation() {
-        let s = CredentialWarmup.summary(total: 6, failed: [], consolidated: 6)
-        XCTAssertTrue(s.contains("stable Keychain vault"))
-        XCTAssertTrue(s.contains("future updates"))
+    func testMigrationAuthorizationExplainsTheMacPasswordPromptBeforeItAppears() {
+        let message = CredentialWarmup.migrationAuthorizationExplanation()
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("migrate"))
+        XCTAssertTrue(message.contains("not an SSH login"))
+        XCTAssertTrue(message.contains("goes only to macOS"))
+        XCTAssertTrue(message.contains("SSH2FA never receives it"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("keychain"))
+        XCTAssertFalse(message.localizedCaseInsensitiveContains("daemon"))
     }
 
-    func testWarmupSummaryReportsAnUnverifiedVault() {
-        let s = CredentialWarmup.summary(total: 6, failed: [], consolidated: 0,
-                                         consolidationSucceeded: false)
-        XCTAssertTrue(s.contains("could not be verified"))
-    }
+    func testWarmupReadyMarkerIsWrittenOnlyAfterVerifiedCompletion() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent(CredentialWarmup.readyMarkerName)
 
-    func testWarmupSummarySuccessAndEmptyCases() {
-        XCTAssertTrue(CredentialWarmup.summary(total: 3, failed: []).contains("All 3 hosts"))
-        XCTAssertTrue(CredentialWarmup.summary(total: 1, failed: []).contains("All 1 host"))
-        XCTAssertEqual(CredentialWarmup.summary(total: 0, failed: []),
-                       "No saved credentials to authorize.")
+        XCTAssertFalse(CredentialWarmup.writeReadyMarkerIfNeeded(
+            consolidated: false, markerURL: marker))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        XCTAssertTrue(CredentialWarmup.writeReadyMarkerIfNeeded(
+            consolidated: true, markerURL: marker))
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "ready\n")
+        let attrs = try FileManager.default.attributesOfItem(atPath: marker.path)
+        XCTAssertEqual(attrs[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
     }
 }

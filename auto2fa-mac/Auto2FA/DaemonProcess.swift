@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Darwin
 
 /// Manages the lifecycle of the **Rust** `ssh2fa-daemon` process.
 ///
@@ -325,6 +326,13 @@ final class DaemonProcess {
         let uid = getuid()
         let domain = "gui/\(uid)"
         let target = "\(domain)/\(label)"
+        let runtimePath = DaemonProcess.runningServiceExecutablePath(target)
+        let runtimePathChanged = BackgroundServicePolicy.runtimePathNeedsRestart(
+            expectedPath: daemonPath, actualPath: runtimePath)
+        if runtimePathChanged {
+            NSLog("[SSH2FA] running service path is stale (%@); expected %@ — restarting before credential access",
+                  runtimePath ?? "unknown", daemonPath)
+        }
         func bootstrapWithRetry() -> Bool {
             for attempt in 0..<6 {
                 if DaemonProcess.runLaunchctl(["bootstrap", domain, plistPath]) == 0 { return true }
@@ -357,7 +365,7 @@ final class DaemonProcess {
             }
             return loaded
         }
-        if daemonWasUpdated {
+        if daemonWasUpdated || runtimePathChanged {
             // `kickstart -k` kills the running instance with SIGTERM, which the
             // daemon handles as a GRACEFUL shutdown: teardown_all closes every
             // ControlMaster. So every app update dropped all warm connections
@@ -387,8 +395,15 @@ final class DaemonProcess {
     /// Best-effort and bounded: it targets ONLY the daemon binary inside the
     /// installed app bundle, and does nothing if that is not running.
     nonisolated static func killDaemonPreservingMasters() {
-        // The LaunchAgent points directly at the daemon inside this bundle, so
-        // that path is exactly the running process's argv[0].
+        let target = "gui/\(getuid())/com.ssh2fa.daemon"
+        if let pid = runningServicePID(target), Darwin.kill(pid, SIGKILL) == 0 {
+            NSLog("[SSH2FA] SIGKILLed daemon PID %d (masters preserved for adoption)", pid)
+            return
+        }
+
+        // Fallback for a loaded job whose PID could not be parsed. `-f` uses
+        // argv[0], which normally remains the original absolute bundle path
+        // even if that bundle has just been renamed.
         guard let path = DaemonProcess.bundledDaemonURL()?.path else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -402,6 +417,39 @@ final class DaemonProcess {
         } catch {
             NSLog("[SSH2FA] could not SIGKILL daemon: %@", error.localizedDescription)
         }
+    }
+
+    /// The service PID and its current vnode path are different facts: launchd
+    /// keeps the configured `/Applications/...` path after a running app bundle
+    /// is renamed, while `proc_pidpath` reveals the executable now living in an
+    /// `.old`/backup directory. Detect that state before it reaches Keychain.
+    nonisolated private static func runningServicePID(_ target: String) -> Int32? {
+        let p = Process()
+        let pipe = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = ["print", target]
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return nil }
+            return BackgroundServicePolicy.servicePID(fromLaunchctlPrint: output)
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func runningServiceExecutablePath(_ target: String) -> String? {
+        guard let pid = runningServicePID(target) else { return nil }
+        // PROC_PIDPATHINFO_MAXSIZE is a C macro unavailable to Swift
+        // (`4 * MAXPATHLEN` on macOS). Keep the platform value explicit.
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(cString: buffer)
     }
 
     /// Fully tear down the install: unload + remove the LaunchAgent (the daemon

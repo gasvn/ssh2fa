@@ -33,6 +33,11 @@ struct Auto2FAApp: App {
                 installPreferenceSync()
             }
             .task {
+                // Existing users who already completed the one-time security
+                // upgrade must be recognized BEFORE a newly-installed daemon
+                // starts its automatic reconnect loop. Otherwise the daemon can
+                // race this UI and surface a legacy authorization dialog first.
+                CredentialWarmup.ensureDaemonReadyMarkerIfNeeded()
                 // Spawn daemon first (or detect existing one), THEN run
                 // AppState.bootstrap. Doing this serially in a single
                 // .task avoids the race where ContentView's own .task
@@ -151,7 +156,7 @@ struct Auto2FAApp: App {
     /// SSH masters die silently on network switch too, not just sleep.
     private func installNetworkMonitor() {
         guard networkMonitor == nil else { return }
-        let mon = NetworkMonitor {
+        let mon = NetworkMonitor { force in
             // Respect the same setting that gates wake recovery.
             let recover = UserDefaults.standard
                 .object(forKey: SettingsKey.autoRecoverOnWake) as? Bool ?? true
@@ -162,11 +167,10 @@ struct Auto2FAApp: App {
                 // coalesced (daemon- or client-side). Claiming "Probing
                 // tunnels…" for a no-op was misleading.
                 //
-                // force: true — a NetworkMonitor fire means the local network
-                // identity changed (new IP), so every master's old TCP is dead
-                // by definition. Rebuild them instead of trusting `ssh -O check`,
-                // which keeps reporting "alive" for minutes after a switch.
-                let ran = (try? await appState.client.wakeRecover(force: true)) ?? false
+                // Only a settled, concrete physical-IP/interface change is a
+                // strong recovery hint. Status/VPN-route blips use force=false
+                // so healthy masters are probed and preserved.
+                let ran = (try? await appState.client.wakeRecover(force: force)) ?? false
                 if ran {
                     appState.notchPresenter.show(
                         systemImage: "network",

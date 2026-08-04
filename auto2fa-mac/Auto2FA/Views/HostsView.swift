@@ -3,6 +3,7 @@ import SwiftUI
 struct HostsView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage(SettingsKey.onboardingDismissed) private var onboardingDismissed = false
+    @State private var showingCredentialUpgrade = false
 
     private var onboardingActive: Bool {
         !onboardingDismissed && OnboardingChecklist.shouldShow(
@@ -55,46 +56,29 @@ struct HostsView: View {
             }
         }
         .padding(Spacing.m)
+        .sheet(isPresented: $showingCredentialUpgrade) {
+            CredentialUpgradeSheet()
+                .environmentObject(appState)
+        }
     }
 
-    /// Older releases stored one Keychain item per secret. Offer one deliberate
-    /// migration pass instead of surprising the user during later connections.
+    /// A calm, single-purpose entry point. The sheet explains the one-time
+    /// system interaction before anything happens; routine connection rows stay
+    /// free of storage implementation details.
     @ViewBuilder
     private var credentialWarmupBanner: some View {
-        if let progress = appState.warmupProgress {
+        if appState.shouldOfferCredentialWarmup {
             HStack(spacing: Spacing.s) {
-                ProgressView().controlSize(.small)
-                Text(progress).font(.rowMeta)
-                Spacer()
-                Text("Allow access to each old Keychain item once")
-                    .font(.rowMeta).foregroundStyle(.secondary)
-            }
-            .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
-        } else if let summary = appState.warmupSummary {
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text(summary).font(.rowMeta).fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                Button("Dismiss") { appState.warmupSummary = nil }
-                    .buttonStyle(.glass)
-            }
-            .padding(Spacing.m)
-            .glassCard(cornerRadius: Radius.control)
-        } else if appState.shouldOfferCredentialWarmup {
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "key.horizontal.fill").foregroundStyle(.tint)
+                Image(systemName: "checkmark.shield.fill").foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Authorize saved credentials after this update")
+                    Text("Migrate saved logins")
                         .font(.rowTitle)
-                    Text("SSH2FA needs to move older saved credentials into its new stable Keychain vault. macOS may ask permission to read the old items one final time; choose Allow. After migration, future updates will not ask again.")
+                    Text("An older version saved each login separately. Review the one-time migration so future launches, reconnects, and updates stay automatic without Mac password prompts.")
                         .font(.rowMeta).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: Spacing.s)
-                Button("Authorize now") { Task { await appState.runCredentialWarmup() } }
-                    .buttonStyle(.glass)
-                Button("Later") { appState.skipCredentialWarmup() }
+                Button("Review migration") { showingCredentialUpgrade = true }
                     .buttonStyle(.glass)
             }
             .padding(Spacing.m)

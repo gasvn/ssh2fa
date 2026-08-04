@@ -9,6 +9,7 @@
 #      entitlements), preferring a Developer ID Application cert
 #   5. build dist/SSH2FA.dmg
 #   6. (optional) notarize + staple the app and the dmg
+#   7. sign an independent Ed25519 update manifest (no Apple membership needed)
 #
 # Identity selection (same policy as auto2fa-rs/build-release.sh):
 #   AUTO2FA_SIGN_ID   override the signing identity
@@ -227,6 +228,33 @@ if [ "${AUTO2FA_NOTARIZE:-0}" = "1" ]; then
 else
   echo "NOTE: notarization off (AUTO2FA_NOTARIZE=1 to enable). DMG runs locally;"
   echo "      Gatekeeper will block it on other Macs until notarized."
+fi
+
+# ── Step 7: project-signed update manifest ───────────────────────────────────
+# Apple notarization is optional, but update authenticity is not. The release
+# private key lives only in the build user's login Keychain; the app pins the
+# corresponding public key and refuses an unsigned or altered DMG.
+echo "→ signing update manifest (Ed25519)"
+UPDATE_SIGNER="$DD/update-signer"
+xcrun swiftc -O -module-cache-path "$DD/update-signer-module-cache" \
+  "$(pwd)/Auto2FA/UpdateSigningCore.swift" \
+  "$(pwd)/scripts/update-signer.swift" \
+  -o "$UPDATE_SIGNER"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGE_APP/Contents/Info.plist")"
+BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STAGE_APP/Contents/Info.plist")"
+UPDATE_MANIFEST="$DIST/SSH2FA.update.json"
+if ! "$UPDATE_SIGNER" sign-manifest "$DMG" "$VERSION" "$BUILD_NUMBER" "$UPDATE_MANIFEST"; then
+  if [ "${AUTO2FA_ALLOW_UNSIGNED_UPDATE:-0}" = "1" ]; then
+    echo "  WARNING: update manifest is unsigned (local testing override)." >&2
+  else
+    echo "ERROR: refusing to package a release without its Ed25519 update signature." >&2
+    echo "       Run the release signer 'initialize' command once, or set" >&2
+    echo "       AUTO2FA_ALLOW_UNSIGNED_UPDATE=1 for a local-only test build." >&2
+    exit 1
+  fi
+else
+  "$UPDATE_SIGNER" verify-manifest "$UPDATE_MANIFEST" "$DMG" "$VERSION"
+  echo "  → $UPDATE_MANIFEST"
 fi
 
 echo ""; echo "dist/:"; ls -lh "$DIST/" | grep -v '^total'

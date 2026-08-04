@@ -43,6 +43,29 @@ enum BackgroundServicePolicy {
         }
         return "\(identity)@\(daemonPath)"
     }
+
+    /// Parse the stable `pid = N` field from `launchctl print`. Kept here so
+    /// path self-healing can be regression-tested without touching launchd.
+    static func servicePID(fromLaunchctlPrint output: String) -> Int32? {
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("pid = ") else { continue }
+            return Int32(trimmed.dropFirst("pid = ".count))
+        }
+        return nil
+    }
+
+    /// A LaunchAgent definition can still say `/Applications/SSH2FA.app` while
+    /// its already-running executable has been renamed into an update backup.
+    /// That mismatch is unsafe for protected-storage access and must force a
+    /// non-graceful restart even when the daemon's code hash did not change.
+    static func runtimePathNeedsRestart(expectedPath: String,
+                                        actualPath: String?) -> Bool {
+        guard let actualPath, !actualPath.isEmpty else { return false }
+        let expected = (expectedPath as NSString).standardizingPath
+        let actual = (actualPath as NSString).standardizingPath
+        return expected != actual
+    }
 }
 
 /// Pure decision logic for recovering a wedged daemon connection.

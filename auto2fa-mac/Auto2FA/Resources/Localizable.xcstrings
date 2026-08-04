@@ -3585,6 +3585,16 @@
         }
       }
     },
+    "That release doesn't include a signed SSH2FA update — update manually this time.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该版本没有包含经过 SSH2FA 签名的更新 —— 这次请手动更新。"
+          }
+        }
+      }
+    },
     "The SSH account has expired. Ask the server administrator to renew it before retrying.": {
       "localizations": {
         "zh-Hans": {
@@ -3631,6 +3641,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "下载内容与 GitHub 公布的校验和不一致 —— 可能在传输中损坏了。请重试。"
+          }
+        }
+      }
+    },
+    "The download didn't match SSH2FA's signed checksum, so it wasn't installed. Try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载内容与 SSH2FA 签名的校验和不一致，因此没有安装。请重试。"
           }
         }
       }
@@ -3756,12 +3776,12 @@
         }
       }
     },
-    "This SSH2FA build uses a local signing certificate, so macOS won't allow a verified one-click update yet. Update with Homebrew or download the new version below.": {
+    "This update doesn't have a valid SSH2FA signature, so it wasn't installed.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前 SSH2FA 使用本地签名证书，macOS 暂时不允许经过验证的一键更新。请使用 Homebrew 更新，或在下方下载新版本。"
+            "value": "此更新没有有效的 SSH2FA 签名，因此没有安装。"
           }
         }
       }
@@ -3812,6 +3832,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "SSH2FA 无法恢复后台连接。请退出并重新打开 SSH2FA；如果问题仍然存在，请使用“故障排查”。"
+          }
+        }
+      }
+    },
+    "SSH2FA couldn't identify that release safely.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 无法安全识别该版本。"
+          }
+        }
+      }
+    },
+    "SSH2FA couldn't verify this update's signature.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 无法验证此更新的签名。"
           }
         }
       }
@@ -4524,6 +4564,406 @@
           "stringUnit": {
             "state": "translated",
             "value": "⚠︎ iCloud 云盘不可用 —— 请在系统设置中开启以进行同步。"
+          }
+        }
+      }
+    },
+    "Approve any macOS confirmation that appears, then keep this window open until setup completes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请批准出现的 macOS 确认，然后保持此窗口打开，直到设置完成。"
+          }
+        }
+      }
+    },
+    "Automatic connections are ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动连接已就绪"
+          }
+        }
+      }
+    },
+    "Complete this once so future launches, reconnects, and updates don't ask for your Mac password again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只需完成一次，以后启动、重连和更新都不会再要求输入 Mac 密码。"
+          }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "Current SSH connections keep running while the update finishes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新期间，当前 SSH 连接会继续运行。"
+          }
+        }
+      }
+    },
+    "Designed to prevent future password prompts": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "避免以后再次弹出密码提示"
+          }
+        }
+      }
+    },
+    "Finish a one-time security update": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成一次性安全更新"
+          }
+        }
+      }
+    },
+    "Finish update": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成更新"
+          }
+        }
+      }
+    },
+    "Finishing securely…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安全完成…"
+          }
+        }
+      }
+    },
+    "Not now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不"
+          }
+        }
+      }
+    },
+    "Older installations may show more than one macOS confirmation because each saved login was protected separately. Approve each one; this is the final time.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "较早的版本会分别保护每个已保存登录，因此 macOS 可能显示多次确认。请逐一批准；这是最后一次。"
+          }
+        }
+      }
+    },
+    "One-time security update": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一次性安全更新"
+          }
+        }
+      }
+    },
+    "Securing saved logins": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保护已保存的登录信息"
+          }
+        }
+      }
+    },
+    "Setup complete": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置完成"
+          }
+        }
+      }
+    },
+    "Setup wasn't completed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置尚未完成"
+          }
+        }
+      }
+    },
+    "SSH2FA couldn't finish the security update. No saved login was lost. Approve the macOS confirmation and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 未能完成安全更新。已保存的登录信息没有丢失。请批准 macOS 确认后重试。"
+          }
+        }
+      }
+    },
+    "SSH2FA improved how saved logins are protected. Finish this update once, and normal connections will stay automatic and quiet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 改进了已保存登录信息的保护方式。完成这一次更新后，日常连接会保持自动且安静。"
+          }
+        }
+      }
+    },
+    "This can take a minute on older installations": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "较早的安装可能需要一分钟"
+          }
+        }
+      }
+    },
+    "Try again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "You can try again now or continue using SSH2FA and finish after the next launch.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你可以现在重试，也可以继续使用 SSH2FA，并在下次启动后完成。"
+          }
+        }
+      }
+    },
+    "You do not need to enter an SSH password or a 2FA code again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需再次输入 SSH 密码或 2FA 验证码。"
+          }
+        }
+      }
+    },
+    "Your saved login is ready. Future launches, reconnects, and updates should not ask for your Mac password again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的登录信息已就绪。以后启动、重连和更新都不应再要求输入 Mac 密码。"
+          }
+        }
+      }
+    },
+    "Your saved logins are ready. Future launches, reconnects, and updates should not ask for your Mac password again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的登录信息已就绪。以后启动、重连和更新都不应再要求输入 Mac 密码。"
+          }
+        }
+      }
+    },
+    "Your saved logins are unchanged": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的登录信息未发生变化"
+          }
+        }
+      }
+    },
+    "Your SSH password and 2FA secret stay protected on this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 密码和 2FA 密钥会安全保存在这台 Mac 上。"
+          }
+        }
+      }
+    },
+    "An older version saved each login separately. Review the one-time migration so future launches, reconnects, and updates stay automatic without Mac password prompts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旧版本会分别保存每个登录信息。请先查看这次一次性迁移；完成后，启动、重连和更新会保持自动进行，不再弹出 Mac 密码提示。"
+          }
+        }
+      }
+    },
+    "Approve each macOS confirmation that appears, then keep this migration window open until it completes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请逐一批准出现的 macOS 确认，并保持迁移窗口打开直到完成。"
+          }
+        }
+      }
+    },
+    "Current SSH connections keep running while the migration finishes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "迁移期间，当前 SSH 连接会继续运行。"
+          }
+        }
+      }
+    },
+    "If you have several saved logins, macOS may show more than one confirmation because the old items were protected separately. Approve each one; this is the final migration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果保存了多个登录信息，由于旧项目是分别保护的，macOS 可能显示多次确认。请逐一批准；这是最后一次迁移。"
+          }
+        }
+      }
+    },
+    "Migrate saved logins": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "迁移已保存的登录信息"
+          }
+        }
+      }
+    },
+    "Migrating saved logins": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在迁移已保存的登录信息"
+          }
+        }
+      }
+    },
+    "Migration in progress…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在迁移…"
+          }
+        }
+      }
+    },
+    "Moving old saved logins into the new protected format": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在将旧登录信息迁移到新的安全格式"
+          }
+        }
+      }
+    },
+    "Older SSH2FA versions saved each login separately. This migration moves them into the new protected format so future updates stay quiet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旧版 SSH2FA 会分别保存每个登录信息。这次迁移会将它们移到新的安全格式中，让以后的更新不再弹出密码提示。"
+          }
+        }
+      }
+    },
+    "One-time migration from an older SSH2FA version": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来自旧版 SSH2FA 的一次性迁移"
+          }
+        }
+      }
+    },
+    "Review migration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看迁移说明"
+          }
+        }
+      }
+    },
+    "SSH2FA couldn't finish migrating your saved logins. Nothing was lost. Approve the macOS migration confirmation and try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH2FA 未能完成已保存登录信息的迁移。没有任何数据丢失。请批准 macOS 的迁移确认后重试。"
+          }
+        }
+      }
+    },
+    "Start migration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始迁移"
+          }
+        }
+      }
+    },
+    "The macOS password dialog that may appear next is authorizing SSH2FA to read and migrate logins saved by older versions. It is not an SSH login. Your Mac password goes only to macOS; SSH2FA never receives it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接下来可能出现的 macOS 密码框，是在授权 SSH2FA 读取并迁移旧版本保存的登录信息，并不是在登录 SSH 服务器。你的 Mac 密码只会交给 macOS，SSH2FA 无法看到。"
+          }
+        }
+      }
+    },
+    "Why macOS may ask for your password": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为什么 macOS 可能要求输入密码"
           }
         }
       }

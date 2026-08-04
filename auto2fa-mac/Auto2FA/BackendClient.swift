@@ -643,12 +643,12 @@ actor BackendClient {
     /// `false` when coalesced (client-side guards or the daemon's own
     /// in-flight/debounce guard). Callers use this to avoid toasting
     /// activity that didn't happen (one wake fires BOTH Mac monitors).
-    /// `force == true` is sent on a confirmed network-IDENTITY change (the local
-    /// IP changed). The daemon then rebuilds ALL active masters instead of
-    /// trusting `ssh -O check`, which keeps reporting "Master running" for
-    /// minutes after a switch silently kills the TCP. Coalescing still applies
-    /// (rate-limit safety); the shortened master keepalive is the backstop for
-    /// any coalesced-out call.
+    /// `force == true` is sent only after a confirmed physical network-identity
+    /// change (for example, the local IPv4 address changed). It is a hint to
+    /// invalidate prior remote-session evidence, not permission to destroy every
+    /// master: the daemon probes each mux, rebuilds only observed failures, and
+    /// requires a real remote command before survivors become Connected again.
+    /// Coalescing still applies as rate-limit protection.
     @discardableResult
     func wakeRecover(force: Bool = false) async throws -> Bool {
         // Coalesce: if a wake_recover is already in flight, or one completed

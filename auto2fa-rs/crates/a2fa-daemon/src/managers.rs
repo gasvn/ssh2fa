@@ -45,6 +45,11 @@
 //! manual activation starts fresh, matching Python behaviour).
 
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -52,8 +57,124 @@ use log::{info, warn};
 
 use a2fa_core::engine::State;
 use a2fa_core::ssh::master::{start_master, stop_all, PoolState, SlotStatus, POOL_SIZE};
+use a2fa_core::sys::run_cmd_bounded;
 
 use crate::workers::{make_otp_closure, OtpRegistry};
+
+/// A deliberate credential migration owns Keychain access as one user-visible
+/// operation. Automatic heartbeat reconnects must not interleave fresh reads
+/// and create extra, unexplained macOS authorization dialogs.
+static CREDENTIAL_UPGRADE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static CREDENTIAL_STORAGE_READY: OnceLock<AtomicBool> = OnceLock::new();
+
+const CREDENTIAL_READY_MARKER: &str = "credential-storage-ready-v3";
+
+fn credential_ready_marker_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    PathBuf::from(home).join(".ssh2fa").join(CREDENTIAL_READY_MARKER)
+}
+
+fn readiness_from_existing_state(marker_exists: bool, app_default: Option<&[u8]>) -> bool {
+    marker_exists
+        || app_default
+            .map(|v| {
+                let value = String::from_utf8_lossy(v);
+                matches!(value.trim(), "1" | "true" | "YES")
+            })
+            .unwrap_or(false)
+}
+
+fn initial_credential_storage_ready() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    let marker = credential_ready_marker_path();
+    if marker.is_file() {
+        return true;
+    }
+
+    // Bridge installs that completed the v4 stable-identity migration in the
+    // app but have not yet written the daemon marker. Never read the older
+    // `credentials.consolidated` preference here: it only proved the secrets
+    // shared one item and caused delayed, unexplained prompts after reconnect.
+    // The command is bounded because cfprefsd can be
+    // unhealthy during login; on uncertainty we choose "wait for the explicit
+    // upgrade" rather than surprise the user with credential prompts.
+    let defaults = run_cmd_bounded(
+        "/usr/bin/defaults",
+        &[
+            "read",
+            "com.ssh2fa.app",
+            "auto2fa.credentials.v4-migrated",
+        ],
+        Duration::from_secs(2),
+    );
+    let ready = readiness_from_existing_state(
+        false,
+        defaults
+            .as_ref()
+            .filter(|out| out.status.success())
+            .map(|out| out.stdout.as_slice()),
+    );
+    if ready {
+        let _ = persist_credential_storage_ready_marker();
+    }
+    ready
+}
+
+fn credential_storage_ready_flag() -> &'static AtomicBool {
+    CREDENTIAL_STORAGE_READY
+        .get_or_init(|| AtomicBool::new(initial_credential_storage_ready()))
+}
+
+fn credential_storage_ready() -> bool {
+    credential_storage_ready_flag().load(Ordering::Acquire)
+}
+
+fn persist_credential_storage_ready_marker() -> std::io::Result<()> {
+    let path = credential_ready_marker_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(b"ready\n")?;
+    file.sync_all()
+}
+
+/// Record verified completion in daemon-owned state before automatic reconnects
+/// resume. Failure to persist is non-fatal for this process, but is logged so a
+/// future launch can fall back to the app's completion preference.
+pub fn mark_credential_storage_ready() {
+    credential_storage_ready_flag().store(true, Ordering::Release);
+    if let Err(e) = persist_credential_storage_ready_marker() {
+        warn!("could not persist secure-storage completion marker: {e}");
+    }
+}
+
+pub struct CredentialUpgradeGuard;
+
+impl Drop for CredentialUpgradeGuard {
+    fn drop(&mut self) {
+        CREDENTIAL_UPGRADE_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+pub fn try_begin_credential_upgrade() -> Option<CredentialUpgradeGuard> {
+    CREDENTIAL_UPGRADE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| CredentialUpgradeGuard)
+}
+
+fn credential_upgrade_in_progress() -> bool {
+    CREDENTIAL_UPGRADE_IN_PROGRESS.load(Ordering::Acquire)
+}
 
 /// Process-lifetime cache of resolved `(password, secret)` per host.
 ///
@@ -154,6 +275,14 @@ fn load_creds(host: &str) -> std::result::Result<(String, String), String> {
         if let Some(creds) = cache.creds.get(host) {
             return Ok(creds.clone());
         }
+    }
+    if credential_upgrade_in_progress() {
+        return Err("One-time secure storage update is still in progress".into());
+    }
+    if !credential_storage_ready() {
+        return Err(
+            "Finish the one-time security update in SSH2FA before reconnecting".into(),
+        );
     }
     // Capture the epoch BEFORE the read so a concurrent invalidation (re-key)
     // that lands during the read is detected at insert time.
@@ -328,6 +457,9 @@ pub fn next_action(
         return MaintenanceAction::Skip;
     }
     if pool.in_cooldown() {
+        return MaintenanceAction::Skip;
+    }
+    if pool.in_retry_backoff() {
         return MaintenanceAction::Skip;
     }
 
@@ -541,6 +673,7 @@ impl HostManagers {
             active_index: p.active_index,
             consecutive_login_failures: p.consecutive_login_failures,
             cooldown_until: p.cooldown_until,
+            retry_not_before: p.retry_not_before,
             last_rotate: p.last_rotate,
             probe_backoff_until: p.probe_backoff_until,
             slot_ready_since: p.slot_ready_since,
@@ -578,6 +711,7 @@ impl HostManagers {
                     active_index: p.active_index,
                     consecutive_login_failures: p.consecutive_login_failures,
                     cooldown_until: p.cooldown_until,
+                    retry_not_before: p.retry_not_before,
                     last_rotate: p.last_rotate,
                     probe_backoff_until: p.probe_backoff_until,
                     slot_ready_since: p.slot_ready_since,
@@ -621,6 +755,7 @@ impl HostManagers {
             dst.slot_ready_since = src.slot_ready_since;
             dst.consecutive_login_failures = src.consecutive_login_failures;
             dst.cooldown_until = src.cooldown_until;
+            dst.retry_not_before = src.retry_not_before;
             dst.last_rotate = src.last_rotate;
             dst.probe_backoff_until = src.probe_backoff_until;
             dst.active_index = src.active_index;
@@ -644,6 +779,7 @@ impl HostManagers {
             }
             dst.consecutive_login_failures = src.consecutive_login_failures;
             dst.cooldown_until = src.cooldown_until;
+            dst.retry_not_before = src.retry_not_before;
             dst.last_failure = src.last_failure.clone();
         });
     }
@@ -725,6 +861,19 @@ pub fn boot_autostart(
             managers.require_session_verification(&host_name);
             mark_host_verifying_session(state, &host_name, idx, 1);
             info!("[{host_name}] boot: adopted live master slot {idx} — verifying remote session");
+            continue;
+        }
+
+        if !credential_storage_ready() {
+            let mut guard = crate::lock_state(state);
+            if let Some(host) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+                host.is_master_ready = false;
+                host.pool_alive = 0;
+                host.status = "Action required".into();
+                host.last_msg =
+                    "Finish the one-time security update to resume automatic connections".into();
+            }
+            info!("[{host_name}] boot auto-start: waiting for one-time security update");
             continue;
         }
 
@@ -811,13 +960,15 @@ pub fn spawn_managed_start(
             let mut pool = managers.snapshot(&host_name);
 
             // 2. Build the OTP closure (no locks held).
-            let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
+            let otp_closure = make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
             managers.require_session_verification(&host_name);
 
             info!("[{host_name}] managed-start worker: slot {slot}");
 
             // 3. Run start_master — blocking ssh pty, no locks held.
-            let ready = start_master(&mut pool, slot, &password, otp_closure);
+            let ready = registry.with_login_permit(&host_name, || {
+                start_master(&mut pool, slot, &password, otp_closure)
+            });
 
             // 4. Write ONLY this worker's slot back to the persistent registry.
             managers.write_back_slot(&host_name, slot, &pool);
@@ -982,9 +1133,11 @@ pub fn spawn_master_rebuild(
 
             // --- Phase 2: start slot 0 fresh (off-lock) ---
             let mut pool = managers.snapshot(&host_name);
-            let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
+            let otp_closure = make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
             info!("[{host_name}] master-rebuild: starting slot 0");
-            let ready = start_master(&mut pool, 0, &password, otp_closure);
+            let ready = registry.with_login_permit(&host_name, || {
+                start_master(&mut pool, 0, &password, otp_closure)
+            });
             // Per-slot write-back: a concurrent slot-1 worker's result must not
             // be clobbered by this snapshot.
             managers.write_back_slot(&host_name, 0, &pool);
@@ -1593,6 +1746,25 @@ fn tick_host(
 ) {
     let now = Instant::now();
 
+    // Preserve existing masters and let the single user-initiated migration
+    // own credential access. A later heartbeat handles any connection change;
+    // piling automatic login workers behind SecurityAgent is what produced the
+    // old burst of password dialogs.
+    if credential_upgrade_in_progress() {
+        return;
+    }
+    if !credential_storage_ready() {
+        let mut guard = crate::lock_state(state);
+        if let Some(host) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+            host.is_master_ready = false;
+            host.pool_alive = 0;
+            host.status = "Action required".into();
+            host.last_msg = "Finish the one-time security update to resume automatic connections"
+                .into();
+        }
+        return;
+    }
+
     // Snapshot the pool (brief lock).
     let pool = managers.snapshot(host_name);
 
@@ -1606,6 +1778,19 @@ fn tick_host(
         let mut guard = crate::lock_state(state);
         if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
             h.status = format!("Cooldown ({secs}s)");
+        }
+        return;
+    }
+    if pool.in_retry_backoff() {
+        let secs = pool.retry_backoff_remaining().as_secs().max(1);
+        let mut guard = crate::lock_state(state);
+        if let Some(h) = guard.hosts.iter_mut().find(|h| h.host == host_name) {
+            h.is_master_ready = false;
+            h.pool_alive = 0;
+            h.status = format!("Retrying in {secs}s");
+            h.last_msg = pool.last_failure.clone().unwrap_or_else(|| {
+                "Waiting before the next automatic SSH reconnect attempt".into()
+            });
         }
         return;
     }
@@ -1813,7 +1998,9 @@ fn tick_host(
                             Arc::clone(&registry2),
                         );
                         let mut pool_mut = managers2.snapshot(&host_owned);
-                        let ready = start_master(&mut pool_mut, slot, &password, otp_closure);
+                        let ready = registry2.with_login_permit(&host_owned, || {
+                            start_master(&mut pool_mut, slot, &password, otp_closure)
+                        });
                         // Per-slot write-back — never clobber the other slot /
                         // rotation state from this (stale) snapshot.
                         managers2.write_back_slot(&host_owned, slot, &pool_mut);
@@ -1992,6 +2179,42 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn credential_upgrade_excludes_new_keychain_reads_but_keeps_cached_reconnects_working() {
+        let host = "credential-upgrade-gate-test-host";
+        let upgrade = try_begin_credential_upgrade().expect("first upgrade must claim the gate");
+        assert!(try_begin_credential_upgrade().is_none());
+
+        {
+            let mut c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
+            c.creds.insert(host.into(), ("cached-pw".into(), "cached-secret".into()));
+        }
+        assert_eq!(
+            load_creds(host),
+            Ok(("cached-pw".to_string(), "cached-secret".to_string())),
+            "an existing connection may reuse memory without touching secure storage"
+        );
+
+        invalidate_creds_cache(host);
+        assert!(
+            load_creds(host)
+                .unwrap_err()
+                .contains("secure storage update is still in progress"),
+            "an uncached background read must wait instead of adding another prompt"
+        );
+        drop(upgrade);
+        assert!(try_begin_credential_upgrade().is_some());
+    }
+
+    #[test]
+    fn credential_readiness_accepts_marker_or_verified_app_preference() {
+        assert!(readiness_from_existing_state(true, None));
+        assert!(readiness_from_existing_state(false, Some(b"1\n")));
+        assert!(readiness_from_existing_state(false, Some(b"true\n")));
+        assert!(!readiness_from_existing_state(false, Some(b"0\n")));
+        assert!(!readiness_from_existing_state(false, None));
+    }
+
+    #[test]
     fn creds_complete_requires_both_fields() {
         assert!(creds_complete(&("pw".into(), "secret".into())));
         assert!(!creds_complete(&("".into(), "secret".into())));
@@ -2053,13 +2276,16 @@ mod tests {
     }
 
     #[test]
-    fn load_creds_does_not_cache_empty_results() {
-        // A host with no Keychain entry reports the specific missing field and
-        // must NOT be cached, so a later add+login retries.
+    fn cargo_test_credential_read_is_blocked_and_not_cached() {
+        // This test used to reach the developer's real login Keychain and put
+        // the test harness cdhash in a production credential item's ACL.
         let host = "definitely-nonexistent-host-zzz3-auto2fa-test";
         invalidate_creds_cache(host);
         let got = load_creds(host);
-        assert!(got.is_err(), "a nonexistent host must report missing/unreadable credentials");
+        assert!(
+            got.unwrap_err().contains("Cargo-built binaries"),
+            "the Cargo executable-path guard must reject the read before macOS Security is called"
+        );
         let c = creds_cache().lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             !c.creds.contains_key(host),
@@ -2203,6 +2429,15 @@ mod tests {
         pool.cooldown_until = Some(Instant::now() + Duration::from_secs(60));
         // host is active but in cooldown
         let action = next_action(&pool, 0, true, None, Instant::now());
+        assert_eq!(action, MaintenanceAction::Skip);
+    }
+
+    #[test]
+    fn next_action_in_retry_backoff_gives_skip() {
+        let mut pool = fresh_pool("k6");
+        pool.slot_status[0] = SlotStatus::Failed;
+        pool.retry_not_before = Some(Instant::now() + Duration::from_secs(15));
+        let action = next_action(&pool, 0, true, Some(false), Instant::now());
         assert_eq!(action, MaintenanceAction::Skip);
     }
 
@@ -2568,14 +2803,19 @@ mod tests {
             "boot_autostart must return promptly (no creds/ssh on the caller)"
         );
 
-        // Active hosts were moved to "Connecting"; inactive host untouched.
+        // Active hosts were scheduled. The isolated test worker may already
+        // have failed its intentionally blocked credential read by the time we
+        // observe it; both states prove the caller itself returned promptly.
         let guard = state.lock().unwrap();
         let active = guard
             .hosts
             .iter()
             .find(|h| h.host == "a2fa-test-active1")
             .unwrap();
-        assert_eq!(active.status, "Connecting");
+        assert!(
+            matches!(active.status.as_str(), "Connecting" | "Failed"),
+            "active host should be scheduled without a caller-thread credential read"
+        );
         let idle = guard
             .hosts
             .iter()

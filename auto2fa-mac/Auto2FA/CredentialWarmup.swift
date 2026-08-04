@@ -1,5 +1,21 @@
 import Foundation
 
+/// User-facing state for the one-time secure-storage upgrade.
+///
+/// Keep implementation terms such as Keychain, helper, daemon, ACL, and vault
+/// out of this state. Those details are useful in logs, not in product UI.
+enum CredentialUpgradeStatus: Equatable {
+    case idle
+    case running
+    case succeeded(hostCount: Int)
+    case failed(message: String)
+
+    var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
+}
+
 /// Decides when to offer the post-update "authorize saved credentials" pass.
 ///
 /// # Why this exists
@@ -18,51 +34,72 @@ import Foundation
 ///
 /// Foundation-only + injectable inputs, so it unit-tests headlessly.
 enum CredentialWarmup {
+    static let readyMarkerName = "credential-storage-ready-v3"
+    private static let consolidatedDefaultsKey = "auto2fa.credentials.v4-migrated"
+
+    /// Bridge users who already completed the stable-store migration before
+    /// the daemon learned to gate background credential reads. Called before a
+    /// post-update daemon is installed, so the daemon never has to guess and
+    /// never races the explanatory UI.
+    static func ensureDaemonReadyMarkerIfNeeded() {
+        let consolidated = UserDefaults.standard.bool(forKey: consolidatedDefaultsKey)
+        let marker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".ssh2fa", isDirectory: true)
+            .appendingPathComponent(readyMarkerName)
+        _ = writeReadyMarkerIfNeeded(consolidated: consolidated, markerURL: marker)
+    }
+
+    /// Testable filesystem core. The marker carries no secret; permissions are
+    /// still owner-only so another local account cannot alter connection policy.
+    @discardableResult
+    static func writeReadyMarkerIfNeeded(consolidated: Bool, markerURL: URL) -> Bool {
+        guard consolidated else { return false }
+        do {
+            try FileManager.default.createDirectory(
+                at: markerURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try Data("ready\n".utf8).write(to: markerURL, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: markerURL.path)
+            return true
+        } catch {
+            NSLog("[SSH2FA] could not persist secure-storage completion marker: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// Whether to offer the warm-up pass.
     ///
     /// - `hostCount`: nothing to authorize with no hosts.
-    /// - `currentBuild` / `lastWarmedBuild`: the helper changes with the app
-    ///   build, so a build the user already warmed must never re-prompt.
-    ///   A nil `lastWarmedBuild` means a fresh install or a pre-feature upgrade.
-    ///
-    /// Deliberately keyed on the BUILD, not the marketing version: two builds of
-    /// the same version are still two distinct binaries to macOS.
     /// - `consolidated`: the saved secrets already live in the verified stable
     ///   vault. No authorization probe or banner is needed after that.
+    /// - `deferredForSession`: "Not now" hides the offer only until the next app
+    ///   launch. Persisting that dismissal for a whole build caused a later SSH
+    ///   reconnect to surprise the user with the very prompt this UI explains.
     static func shouldOffer(hostCount: Int,
-                            currentBuild: String,
-                            lastWarmedBuild: String?,
-                            consolidated: Bool = false) -> Bool {
+                            consolidated: Bool,
+                            deferredForSession: Bool) -> Bool {
         guard hostCount > 0 else { return false }
-        guard !currentBuild.isEmpty else { return false }
         guard !consolidated else { return false }
-        return currentBuild != lastWarmedBuild
+        return !deferredForSession
     }
 
-    /// Progress label for the pass, e.g. "Authorizing k6 (2 of 6)…".
-    static func progressLabel(host: String, index: Int, total: Int) -> String {
-        String(localized: "Authorizing \(host) (\(index + 1) of \(total))…")
-    }
-
-    /// Outcome summary. `failed` lists old entries whose one-time read was
-    /// denied or timed out, so the user knows exactly which migration to retry.
-    /// `consolidated` = how many hosts were folded into the single Keychain
-    /// item on this run. Reported because it completes the one-time migration.
-    static func summary(total: Int, failed: [String], consolidated: Int = 0,
-                        consolidationSucceeded: Bool = true) -> String {
-        if total == 0 { return String(localized: "No saved credentials to authorize.") }
-        if failed.isEmpty {
-            // Two keys rather than one with an interpolated "s": a translator
-            // needs the whole phrase, and plural rules differ per language.
-            let base = total == 1
-                ? String(localized: "All 1 host authorized")
-                : String(localized: "All \(total) hosts authorized")
-            if consolidationSucceeded {
-                return String(localized: "\(base), and moved into SSH2FA's stable Keychain vault — macOS won't ask again on future updates.")
-            }
-            return String(localized: "\(base), but the new Keychain vault could not be verified. Try the migration again before relying on saved logins.")
+    static func successMessage(hostCount: Int) -> String {
+        if hostCount == 1 {
+            return String(localized: "Your saved login is ready. Future launches, reconnects, and updates should not ask for your Mac password again.")
         }
-        let names = failed.joined(separator: ", ")
-        return String(localized: "\(total - failed.count) of \(total) read. Could not read: \(names). Try again and allow SSH2FA to read each old Keychain item; this is the final migration pass.")
+        return String(localized: "Your saved logins are ready. Future launches, reconnects, and updates should not ask for your Mac password again.")
+    }
+
+    /// Shown immediately before and while macOS may present its own protected
+    /// storage authorization panel. Apple owns that system panel's title and
+    /// wording, so our UI must make the reason unambiguous before it appears.
+    static func migrationAuthorizationExplanation() -> String {
+        String(localized: "The macOS password dialog that may appear next is authorizing SSH2FA to read and migrate logins saved by older versions. It is not an SSH login. Your Mac password goes only to macOS; SSH2FA never receives it.")
+    }
+
+    static func failureMessage() -> String {
+        String(localized: "SSH2FA couldn't finish migrating your saved logins. Nothing was lost. Approve the macOS migration confirmation and try again.")
     }
 }

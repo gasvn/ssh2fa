@@ -12,17 +12,38 @@ import Network
 /// quiet period.
 @MainActor
 final class NetworkMonitor {
+    struct Snapshot: Equatable {
+        let statusKey: String
+        let primary: String
+        let addresses: [String]
+        let routesOverOtherInterface: Bool
+
+        var isSatisfied: Bool { statusKey == "satisfied" }
+        var hasPhysicalIdentity: Bool {
+            isSatisfied && primary != "other" && primary != "lo" && !addresses.isEmpty
+        }
+        var physicalIdentity: String { "\(primary)|\(addresses.joined(separator: ","))" }
+    }
+
+    enum RecoveryDecision: Equatable {
+        case none
+        case probe
+        case force
+    }
+
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.ssh2fa.networkmonitor")
-    private var lastInterfaceSignature: String = ""
+    private var lastObservedSnapshot: Snapshot?
+    private var lastStableSnapshot: Snapshot?
+    private var sawUnavailableSinceStable = false
     private var pendingFireTask: Task<Void, Never>?
-    private let onChange: () -> Void
+    private let onChange: (_ force: Bool) -> Void
 
     /// Coalesce window — wait this long after the last path update before
     /// actually firing onChange.
     private let debounce: TimeInterval = 3.0
 
-    init(onChange: @escaping () -> Void) {
+    init(onChange: @escaping (_ force: Bool) -> Void) {
         self.onChange = onChange
     }
 
@@ -46,6 +67,29 @@ final class NetworkMonitor {
         "\(statusKey)|\(primary)|\(addresses.joined(separator: ","))"
     }
 
+    /// Decide how aggressively a settled path change should be handled.
+    ///
+    /// `force` is intentionally narrow: both the old and new paths must have a
+    /// concrete physical identity and that identity must differ. A temporary
+    /// NWPath status/VPN-route notification is only a request to probe. The old
+    /// implementation sent `force=true` for *every* signature change, so a
+    /// transient `.unsatisfied` notification tore down every healthy master.
+    nonisolated static func recoveryDecision(previousStable: Snapshot?,
+                                              current: Snapshot,
+                                              sawUnavailable: Bool) -> RecoveryDecision {
+        guard current.isSatisfied, let previousStable else { return .none }
+        if previousStable.hasPhysicalIdentity,
+           current.hasPhysicalIdentity,
+           previousStable.physicalIdentity != current.physicalIdentity {
+            return .force
+        }
+        if sawUnavailable
+            || previousStable.routesOverOtherInterface != current.routesOverOtherInterface {
+            return .probe
+        }
+        return .none
+    }
+
     /// IPv4 addresses of the REAL connectivity interfaces in this path (Wi-Fi /
     /// Ethernet / cellular). Switching between two Wi-Fi networks keeps the
     /// interface type "wifi" but changes en0's IP, so the IP is what makes the
@@ -54,8 +98,18 @@ final class NetworkMonitor {
     /// over-firing is now cheap anyway: the daemon only force-rebuilds masters
     /// whose connection is genuinely dead.
     nonisolated static func physicalIPv4Addresses(path: NWPath) -> [String] {
+        let primaryType: NWInterface.InterfaceType?
+        if path.usesInterfaceType(.wifi) { primaryType = .wifi }
+        else if path.usesInterfaceType(.wiredEthernet) { primaryType = .wiredEthernet }
+        else if path.usesInterfaceType(.cellular) { primaryType = .cellular }
+        else { primaryType = nil }
+        guard let primaryType else { return [] }
+
+        // `availableInterfaces` includes interfaces that are present but are
+        // not carrying this path. Including all of them made an unrelated
+        // Ethernet/bridge address churn look like the active network changed.
         let names = Set(path.availableInterfaces
-            .filter { $0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular }
+            .filter { $0.type == primaryType }
             .map { $0.name })
         guard !names.isEmpty else { return [] }
 
@@ -73,41 +127,86 @@ final class NetworkMonitor {
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let r = getnameinfo(addr, socklen_t(addr.pointee.sa_len),
                                 &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
-            if r == 0 { out.append("\(name)=\(String(cString: host))") }
+            if r == 0 {
+                let ip = String(cString: host)
+                // A self-assigned link-local address is a settling artifact,
+                // not a usable network identity. Never force-rebuild on it.
+                if !ip.hasPrefix("169.254.") && ip != "0.0.0.0" {
+                    out.append("\(name)=\(ip)")
+                }
+            }
         }
         return out.sorted()
     }
 
-    private func handle(path: NWPath) {
-        // Signature = path status + primary interface TYPE + the IPv4 addresses
-        // of the real connectivity interfaces. The address component is what
-        // catches a Wi-Fi→Wi-Fi switch (same type/status, different IP) that the
-        // old type-only signature missed — the reason ssh masters stayed dead
-        // with no recovery fired.
+    nonisolated static func snapshot(path: NWPath) -> Snapshot {
         let primary: String
         if path.usesInterfaceType(.wifi) { primary = "wifi" }
         else if path.usesInterfaceType(.wiredEthernet) { primary = "eth" }
         else if path.usesInterfaceType(.cellular) { primary = "cell" }
         else if path.usesInterfaceType(.loopback) { primary = "lo" }
         else { primary = "other" }
-        let signature = Self.makeSignature(statusKey: "\(path.status)", primary: primary,
-                                           addresses: Self.physicalIPv4Addresses(path: path))
-        guard signature != lastInterfaceSignature else { return }
-        let prev = lastInterfaceSignature
-        lastInterfaceSignature = signature
-        NSLog("[SSH2FA] network change: \(prev) → \(signature)")
-        guard !prev.isEmpty else { return }
+        return Snapshot(
+            statusKey: "\(path.status)",
+            primary: primary,
+            addresses: physicalIPv4Addresses(path: path),
+            // VPN/route changes can invalidate traffic without changing the
+            // physical address. They merit a probe, never a blind teardown.
+            routesOverOtherInterface: path.usesInterfaceType(.other)
+        )
+    }
+
+    private func handle(path: NWPath) {
+        let snapshot = Self.snapshot(path: path)
+        guard snapshot != lastObservedSnapshot else { return }
+        let previous = lastObservedSnapshot
+        lastObservedSnapshot = snapshot
+        NSLog("[SSH2FA] network change: \(String(describing: previous)) → \(snapshot)")
+
+        // Establish the first trustworthy baseline without reconnecting.
+        guard previous != nil else {
+            if snapshot.hasPhysicalIdentity { lastStableSnapshot = snapshot }
+            return
+        }
+        if !snapshot.isSatisfied { sawUnavailableSinceStable = true }
 
         // Debounce: rapid changes (e.g. interface dropping then coming back
         // when switching Wi-Fi) collapse into one fire.
         pendingFireTask?.cancel()
-        pendingFireTask = Task { [weak self] in
+        pendingFireTask = Task { [weak self, path] in
             try? await Task.sleep(nanoseconds: UInt64((self?.debounce ?? 3.0) * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                NSLog("[SSH2FA] network change settled — firing recovery")
-                self?.onChange()
-            }
+            self?.settle(path: path)
+        }
+    }
+
+    private func settle(path: NWPath) {
+        // Re-sample getifaddrs after the quiet period. A callback captured while
+        // DHCP was between addresses must not become a forced identity change.
+        let current = Self.snapshot(path: path)
+        guard current == lastObservedSnapshot else {
+            handle(path: path)
+            return
+        }
+        guard current.isSatisfied else { return } // wait for the up transition
+
+        let decision = Self.recoveryDecision(
+            previousStable: lastStableSnapshot,
+            current: current,
+            sawUnavailable: sawUnavailableSinceStable
+        )
+        if current.hasPhysicalIdentity { lastStableSnapshot = current }
+        sawUnavailableSinceStable = false
+
+        switch decision {
+        case .none:
+            return
+        case .probe:
+            NSLog("[SSH2FA] network change settled — probing existing connections")
+            onChange(false)
+        case .force:
+            NSLog("[SSH2FA] physical network identity changed — requesting verified recovery")
+            onChange(true)
         }
     }
 }

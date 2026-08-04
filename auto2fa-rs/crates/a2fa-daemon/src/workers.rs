@@ -24,7 +24,7 @@
 //! On completion it re-locks State and writes the result back.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::{info, warn};
@@ -44,6 +44,50 @@ use a2fa_core::totp::totp_now;
 #[derive(Default)]
 pub struct OtpRegistry {
     groups: Mutex<HashMap<String, Arc<Mutex<OtpGroupState>>>>,
+    login_gate: LoginGate,
+}
+
+/// Bound expensive ssh+pty authentication attempts across the whole daemon.
+/// Per-secret OTP locks prevent code replay, but previously six different
+/// workers could still connect, prompt, and time out concurrently during an
+/// outage. Two permits retain useful parallelism without creating a reconnect
+/// storm that makes an already-degraded network/server worse.
+const MAX_CONCURRENT_MASTER_LOGINS: usize = 2;
+
+#[derive(Default)]
+struct LoginGate {
+    active: Mutex<usize>,
+    available: Condvar,
+}
+
+struct LoginPermit<'a> {
+    gate: &'a LoginGate,
+}
+
+impl LoginGate {
+    fn acquire(&self) -> LoginPermit<'_> {
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        while *active >= MAX_CONCURRENT_MASTER_LOGINS {
+            active = self
+                .available
+                .wait(active)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        *active += 1;
+        LoginPermit { gate: self }
+    }
+}
+
+impl Drop for LoginPermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .gate
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *active = active.saturating_sub(1);
+        self.gate.available.notify_one();
+    }
 }
 
 /// State shared within one OTP secret group.
@@ -88,6 +132,15 @@ impl OtpRegistry {
                 }))
             })
             .clone()
+    }
+
+    /// Run one blocking master-login attempt under the daemon-wide concurrency
+    /// cap. Credentials must be loaded before entering so a Keychain prompt
+    /// never occupies a scarce network-login permit.
+    pub fn with_login_permit<R>(&self, host: &str, f: impl FnOnce() -> R) -> R {
+        let _permit = self.login_gate.acquire();
+        info!("[{host}] acquired master-login permit");
+        f()
     }
 }
 
@@ -197,10 +250,12 @@ pub fn spawn_host_start(
             // symlink persists on disk so subsequent control checks still work.
             let mut pool = PoolState::new(&host_name);
 
-            let otp_closure = make_otp_closure(secret, host_name.clone(), registry);
+            let otp_closure = make_otp_closure(secret, host_name.clone(), Arc::clone(&registry));
 
             info!("[{host_name}] host-start worker: spawning master slot {slot}");
-            let ready = start_master(&mut pool, slot, &password, otp_closure);
+            let ready = registry.with_login_permit(&host_name, || {
+                start_master(&mut pool, slot, &password, otp_closure)
+            });
 
             // Write result back to State (fast, no I/O).
             let mut guard = crate::lock_state(&state);
@@ -545,6 +600,40 @@ mod tests {
         let g1 = reg.get_group("SECRET_A");
         let g2 = reg.get_group("SECRET_B");
         assert!(!Arc::ptr_eq(&g1, &g2));
+    }
+
+    #[test]
+    fn master_login_gate_caps_fleet_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Barrier;
+
+        let registry = OtpRegistry::new();
+        let barrier = Arc::new(Barrier::new(7));
+        let inside = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..6)
+            .map(|i| {
+                let registry = Arc::clone(&registry);
+                let barrier = Arc::clone(&barrier);
+                let inside = Arc::clone(&inside);
+                let maximum = Arc::clone(&maximum);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    registry.with_login_permit(&format!("h{i}"), || {
+                        let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(15));
+                        inside.fetch_sub(1, Ordering::SeqCst);
+                    });
+                })
+            })
+            .collect();
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(maximum.load(Ordering::SeqCst) <= MAX_CONCURRENT_MASTER_LOGINS);
+        assert_eq!(maximum.load(Ordering::SeqCst), MAX_CONCURRENT_MASTER_LOGINS);
     }
 
     #[test]
