@@ -42,9 +42,10 @@ use views::{
     hosts::render_hosts,
     logs::render_logs,
     sheets::{
-        render_add_host, render_confirm_delete, render_help, render_new_tunnel,
-        render_node_picker, AddHostSheet, ConfirmDeleteSheet, NewTunnelSheet,
-        NodePickerSheet, SqueueJob,
+        render_add_host, render_confirm_delete, render_help, render_host_detail,
+        render_new_tunnel, render_node_picker, render_tunnel_edit, AddHostSheet,
+        ConfirmDeleteSheet, DeleteTarget, HostDetailSheet, NewTunnelSheet, NodePickerSheet,
+        SqueueJob, TunnelEditSheet,
     },
     tunnels::render_tunnels,
 };
@@ -56,9 +57,26 @@ use views::{
 #[derive(Default)]
 struct Sheets {
     add_host: Option<AddHostSheet>,
+    host_detail: Option<HostDetailSheet>,
     new_tunnel: Option<NewTunnelSheet>,
+    tunnel_edit: Option<TunnelEditSheet>,
     node_picker: Option<NodePickerSheet>,
     confirm_delete: Option<ConfirmDeleteSheet>,
+}
+
+/// Result of a long-running action, delivered back to the UI thread.
+///
+/// "Test login" runs a REAL ssh login, which the daemon bounds at 60 s. Doing
+/// that inline froze the whole TUI for up to a minute with no key handling and
+/// no explanation — the one place where a blocking RPC is long enough to look
+/// like a hang rather than a pause. It runs on a worker thread instead and
+/// sends its verdict here; the UI keeps redrawing and stays quittable.
+enum SheetResult {
+    TestLogin {
+        host: String,
+        ok: bool,
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +193,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         });
     }
 
+    // Results of long-running sheet actions, posted back from worker threads.
+    let (results_tx, results_rx): (mpsc::Sender<SheetResult>, Receiver<SheetResult>) =
+        mpsc::channel();
+
     // Render the loaded state.
     terminal.draw(|f| render_frame(f, &app, &sheets))?;
 
@@ -190,10 +212,17 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
         let got_daemon_event = flags.any();
         flags.apply(&mut app);
 
+        // Apply any finished long-running action.
+        let mut got_result = false;
+        while let Ok(res) = results_rx.try_recv() {
+            got_result = true;
+            apply_sheet_result(res, &mut sheets);
+        }
+
         // Poll for crossterm key/resize events (250 ms timeout).
         // This is the sole render-triggering mechanism — no busy loop.
         let got_key = event::poll(Duration::from_millis(250))?;
-        let mut needs_redraw = got_daemon_event;
+        let mut needs_redraw = got_daemon_event || got_result;
 
         if got_key {
             // poll() guarantees exactly ONE event is buffered. Read it once and
@@ -203,7 +232,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<(
             match event::read()? {
                 Event::Key(key) => {
                     needs_redraw = true;
-                    handle_key(key, &mut app, &mut sheets);
+                    handle_key(key, &mut app, &mut sheets, &results_tx);
                 }
                 Event::Resize(_, _) => {
                     needs_redraw = true;
@@ -254,6 +283,7 @@ fn handle_key(
     key: event::KeyEvent,
     app: &mut AppModel,
     sheets: &mut Sheets,
+    results: &mpsc::Sender<SheetResult>,
 ) {
     // Ctrl+C — handle BEFORE the modal matches: the sheet branches match
     // KeyCode::Char without checking modifiers, so Ctrl+C used to insert a
@@ -264,10 +294,9 @@ fn handle_key(
             InputMode::Normal => app.should_quit = true,
             InputMode::Filter => app.cancel_filter(),
             InputMode::Sheet(_) => {
-                sheets.add_host = None;
-                sheets.new_tunnel = None;
-                sheets.node_picker = None;
-                sheets.confirm_delete = None;
+                // Clear EVERY sheet — a new one added here and forgotten would
+                // survive the cancel and reappear over the next modal.
+                *sheets = Sheets::default();
                 app.input_mode = InputMode::Normal;
             }
         }
@@ -458,21 +487,177 @@ fn handle_key(
             return;
         }
 
+        InputMode::Sheet(SheetKind::HostDetail) => {
+            if let Some(ref mut sh) = sheets.host_detail {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        sheets.host_detail = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    // Show the live code. Read on demand, never on open: the
+                    // daemon has to read the stored secret to derive it, and
+                    // doing that for every host you merely LOOK at is what
+                    // caused the credential-prompt storms on macOS.
+                    KeyCode::Char('c') => {
+                        sh.error.clear();
+                        match client::rpc("host_totp", serde_json::json!({ "host": sh.host })) {
+                            Ok(v) => {
+                                sh.code = v["code"].as_str().unwrap_or_default().to_string();
+                                sh.code_seconds_left =
+                                    v["seconds_remaining"].as_u64().unwrap_or(0) as u32;
+                            }
+                            Err(e) => sh.error = format!("no code: {e}"),
+                        }
+                    }
+                    // Test the STORED credentials — sending neither secret is
+                    // what makes the daemon test what it has, so the TUI never
+                    // handles them.
+                    KeyCode::Char('t') if sh.busy.is_empty() => {
+                        sh.busy = "testing login… (this runs a real ssh login)".into();
+                        sh.test_result.clear();
+                        sh.error.clear();
+                        // Off the UI thread — see SheetResult. Guarded on an
+                        // empty `busy` so holding `t` cannot stack logins and
+                        // trip the server's failed-attempt rate limiting.
+                        let host = sh.host.clone();
+                        let tx = results.clone();
+                        std::thread::spawn(move || {
+                            let msg = match client::rpc(
+                                "host_test_credentials",
+                                serde_json::json!({ "host": host }),
+                            ) {
+                                Ok(v) => {
+                                    let ok = v["ok"].as_bool().unwrap_or(false);
+                                    let reason =
+                                        v["reason"].as_str().unwrap_or_default().to_string();
+                                    SheetResult::TestLogin {
+                                        host,
+                                        ok,
+                                        message: if ok {
+                                            "login succeeded with the stored credentials".into()
+                                        } else if reason.is_empty() {
+                                            "login failed".into()
+                                        } else {
+                                            reason
+                                        },
+                                    }
+                                }
+                                Err(e) => SheetResult::TestLogin {
+                                    host,
+                                    ok: false,
+                                    message: format!("test could not run: {e}"),
+                                },
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                    // Capital D, not d: this deletes credentials, so it must
+                    // not share a key with the tunnel-pane delete.
+                    KeyCode::Char('D') => {
+                        sheets.confirm_delete = Some(ConfirmDeleteSheet::for_host(&sh.host));
+                        app.input_mode = InputMode::Sheet(SheetKind::ConfirmDelete);
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        InputMode::Sheet(SheetKind::TunnelEdit) => {
+            if let Some(ref mut sh) = sheets.tunnel_edit {
+                match key.code {
+                    KeyCode::Esc => {
+                        sheets.tunnel_edit = None;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Tab | KeyCode::Down => {
+                        sh.field = (sh.field + 1) % TunnelEditSheet::FIELD_COUNT;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        sh.field = (sh.field + TunnelEditSheet::FIELD_COUNT - 1)
+                            % TunnelEditSheet::FIELD_COUNT;
+                    }
+                    KeyCode::Char(' ') if sh.field == 3 => {
+                        sh.auto_start = !sh.auto_start;
+                    }
+                    KeyCode::Enter => {
+                        if let Some((name, local, remote, auto)) = sh.validate() {
+                            app.status_msg = apply_tunnel_edit(sh, name, local, remote, auto);
+                            sheets.tunnel_edit = None;
+                            app.input_mode = InputMode::Normal;
+                            refresh_tunnels(app);
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(buf) = sh.focused_buf() {
+                            buf.pop();
+                        }
+                        sh.error.clear();
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(buf) = sh.focused_buf() {
+                            buf.push(c);
+                            sh.error.clear();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         InputMode::Sheet(SheetKind::ConfirmDelete) => {
             if let Some(ref sh) = sheets.confirm_delete {
                 match key.code {
                     KeyCode::Char('y') => {
                         let name = sh.name.clone();
-                        match client::rpc(
-                            "tunnel_remove",
-                            serde_json::json!({ "name": name }),
-                        ) {
-                            Ok(_) => {
-                                app.status_msg = format!("deleted {name}");
-                                refresh_tunnels(app);
+                        match sh.target {
+                            DeleteTarget::Tunnel => {
+                                match client::rpc(
+                                    "tunnel_remove",
+                                    serde_json::json!({ "name": name }),
+                                ) {
+                                    Ok(_) => {
+                                        app.status_msg = format!("deleted {name}");
+                                        refresh_tunnels(app);
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = format!("delete failed: {e}");
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                app.status_msg = format!("delete failed: {e}");
+                            DeleteTarget::Host => {
+                                match client::rpc(
+                                    "host_remove",
+                                    serde_json::json!({ "host": name }),
+                                ) {
+                                    Ok(v) => {
+                                        // The daemon reports separately whether the
+                                        // credentials could be deleted; a host can be
+                                        // removed while its Keychain/vault entry
+                                        // survives, and saying "removed" flatly would
+                                        // hide a secret still sitting on disk.
+                                        let creds_gone = v["credentials_deleted"]
+                                            .as_bool()
+                                            .unwrap_or(true);
+                                        app.status_msg = if creds_gone {
+                                            format!("removed {name} and its credentials")
+                                        } else {
+                                            format!(
+                                                "removed {name}, but its saved credentials \
+                                                 could NOT be deleted — remove them manually"
+                                            )
+                                        };
+                                        refresh_hosts(app);
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = format!("remove failed: {e}");
+                                    }
+                                }
+                                // The detail sheet is about a host that may no
+                                // longer exist — close it rather than leave stale
+                                // credentials on screen.
+                                sheets.host_detail = None;
                             }
                         }
                         sheets.confirm_delete = None;
@@ -672,6 +857,14 @@ fn handle_key(
             sheets.add_host = Some(AddHostSheet::new());
             app.input_mode = InputMode::Sheet(SheetKind::AddHost);
         }
+        // Enter on a HOST opens its details. On a tunnel, Enter already means
+        // "pick a compute node" (handled above), so the panes stay distinct.
+        KeyCode::Enter if app.focus == Pane::Hosts => {
+            open_host_detail(app, sheets);
+        }
+        KeyCode::Char('e') if app.focus == Pane::Tunnels => {
+            open_tunnel_edit(app, sheets);
+        }
 
         _ => {}
     }
@@ -700,6 +893,127 @@ fn pick_jump_for_tunnel(app: &AppModel, name: &str) -> Option<String> {
         return Some(h.host.clone());
     }
     t.active_jump.clone()
+}
+
+/// Fold a finished worker result into the sheet that asked for it.
+///
+/// The sheet may have been closed, or reopened on a DIFFERENT host, while the
+/// login was running — matching on the host name is what stops a slow result
+/// from landing on the wrong one.
+fn apply_sheet_result(res: SheetResult, sheets: &mut Sheets) {
+    match res {
+        SheetResult::TestLogin { host, ok, message } => {
+            if let Some(sh) = sheets.host_detail.as_mut().filter(|s| s.host == host) {
+                sh.busy.clear();
+                sh.test_ok = ok;
+                sh.test_result = message;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host-detail helpers
+// ---------------------------------------------------------------------------
+
+/// Open the host-detail sheet for the focused host and load what is stored.
+fn open_host_detail(app: &mut AppModel, sheets: &mut Sheets) {
+    let Some(h) = app.selected_host() else { return };
+    let mut sh = HostDetailSheet::new(&h.host);
+    load_host_credentials(&mut sh);
+    sheets.host_detail = Some(sh);
+    app.input_mode = InputMode::Sheet(SheetKind::HostDetail);
+}
+
+/// Fill the sheet from `host_credentials` — metadata only, never the secrets.
+fn load_host_credentials(sh: &mut HostDetailSheet) {
+    match client::rpc("host_credentials", serde_json::json!({ "host": sh.host })) {
+        Ok(v) => {
+            sh.loaded = true;
+            sh.error.clear();
+            sh.has_password = v["has_password"].as_bool().unwrap_or(false);
+            sh.password_length = v["password_length"].as_u64().unwrap_or(0) as usize;
+            sh.has_otp_secret = v["has_otp_secret"].as_bool().unwrap_or(false);
+            sh.auto_connect = v["auto_connect"].as_bool().unwrap_or(false);
+            sh.otp_error = v["otp_error"].as_str().unwrap_or_default().to_string();
+            // Describe the secret the way the macOS view does: issuer/account
+            // first, then any non-default TOTP parameters worth knowing about.
+            let otp = &v["otp"];
+            let mut parts: Vec<String> = Vec::new();
+            for k in ["issuer", "account"] {
+                if let Some(s) = otp[k].as_str().filter(|s| !s.is_empty()) {
+                    parts.push(s.to_string());
+                }
+            }
+            let mut summary = parts.join(" · ");
+            let algo = otp["algorithm"].as_str().unwrap_or("SHA1");
+            let digits = otp["digits"].as_u64().unwrap_or(6);
+            let period = otp["period"].as_u64().unwrap_or(30);
+            if algo != "SHA1" || digits != 6 || period != 30 {
+                let extra = format!("{algo}/{digits}/{period}s");
+                summary = if summary.is_empty() {
+                    extra
+                } else {
+                    format!("{summary} ({extra})")
+                };
+            }
+            sh.otp_summary = summary;
+        }
+        Err(e) => {
+            sh.loaded = true;
+            sh.error = format!("could not read stored credentials: {e}");
+        }
+    }
+}
+
+/// Open the tunnel-edit sheet for the focused tunnel.
+fn open_tunnel_edit(app: &mut AppModel, sheets: &mut Sheets) {
+    let Some(t) = app.selected_tunnel() else { return };
+    sheets.tunnel_edit = Some(TunnelEditSheet::new(
+        &t.name,
+        t.local_port,
+        t.remote_port,
+        t.auto_start,
+    ));
+    app.input_mode = InputMode::Sheet(SheetKind::TunnelEdit);
+}
+
+/// Apply an edited tunnel: rename, ports, auto-start. Returns a status line.
+///
+/// Each change is a separate daemon call, so they are applied in an order that
+/// cannot strand the others: RENAME LAST. The port/auto-start calls address
+/// the tunnel by its current name, and renaming first would make every one of
+/// them miss.
+fn apply_tunnel_edit(sh: &TunnelEditSheet, name: String, local: u16, remote: u16, auto: bool) -> String {
+    let target = sh.original_name.clone();
+
+    if let Err(e) = client::rpc(
+        "tunnel_set_ports",
+        serde_json::json!({ "name": target, "local_port": local, "remote_port": remote }),
+    ) {
+        return format!("ports unchanged: {e}");
+    }
+    if auto != sh.auto_start {
+        // NOTE: the daemon names this flag `value`, not `auto_start`; sending
+        // the wrong key would be read as "absent" and silently default to
+        // false, i.e. the toggle would appear to work and change nothing.
+        if let Err(e) = client::rpc(
+            "tunnel_set_autostart",
+            serde_json::json!({ "name": target, "value": auto }),
+        ) {
+            return format!("ports saved, auto-start unchanged: {e}");
+        }
+    }
+    if name != target {
+        if let Err(e) = client::rpc(
+            "tunnel_rename",
+            serde_json::json!({ "old": target, "new": name }),
+        ) {
+            return format!("saved, but rename failed: {e}");
+        }
+        return format!("Saved and renamed to {name}");
+    }
+    format!("Saved {target}")
 }
 
 /// Open the squeue-backed node picker for the focused tunnel.
@@ -924,9 +1238,19 @@ fn render_frame(
                 render_add_host(f, sh);
             }
         }
+        InputMode::Sheet(SheetKind::HostDetail) => {
+            if let Some(ref sh) = sheets.host_detail {
+                render_host_detail(f, sh);
+            }
+        }
         InputMode::Sheet(SheetKind::NewTunnel) => {
             if let Some(ref sh) = sheets.new_tunnel {
                 render_new_tunnel(f, sh);
+            }
+        }
+        InputMode::Sheet(SheetKind::TunnelEdit) => {
+            if let Some(ref sh) = sheets.tunnel_edit {
+                render_tunnel_edit(f, sh);
             }
         }
         InputMode::Sheet(SheetKind::NodePicker) => {

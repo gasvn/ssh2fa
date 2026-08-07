@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -470,21 +470,57 @@ fn truncate(s: &str, max: usize) -> String {
 /// State for the delete-tunnel confirm modal.
 #[derive(Debug, Clone, Default)]
 pub struct ConfirmDeleteSheet {
-    /// The tunnel name to delete.
+    /// The tunnel or host name to delete.
     pub name: String,
+    /// What `name` refers to. Removing a HOST also deletes its stored
+    /// credentials, so the two cases must not share one vague prompt.
+    pub target: DeleteTarget,
+}
+
+/// What a confirm-delete sheet is about to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeleteTarget {
+    #[default]
+    Tunnel,
+    Host,
 }
 
 impl ConfirmDeleteSheet {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
+            target: DeleteTarget::Tunnel,
+        }
+    }
+
+    pub fn for_host(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            target: DeleteTarget::Host,
+        }
+    }
+
+    /// The question to put to the user. A host removal says what else goes
+    /// with it — the credentials are deleted too, and that is not recoverable
+    /// from inside this app.
+    pub fn question(&self) -> String {
+        match self.target {
+            DeleteTarget::Tunnel => format!("Delete tunnel '{}'?", self.name),
+            DeleteTarget::Host => format!(
+                "Remove host '{}' AND its saved password + 2FA secret?",
+                self.name
+            ),
         }
     }
 }
 
 /// Render the confirm-delete modal.
 pub fn render_confirm_delete(f: &mut Frame, sheet: &ConfirmDeleteSheet) {
-    let area = centered_rect(60, 7, f.area());
+    // Wide enough, and tall enough to WRAP, because the host question is long
+    // by design: it has to say that the saved password and 2FA secret go too.
+    // At the old 60x7 that sentence was cut off mid-phrase ("… password + 2FA")
+    // — losing the warning entirely while still looking like a complete prompt.
+    let area = centered_rect(72, 9, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -504,20 +540,366 @@ pub fn render_confirm_delete(f: &mut Frame, sheet: &ConfirmDeleteSheet) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // question
+            Constraint::Length(3), // question (wraps)
             Constraint::Length(1), // spacer
             Constraint::Length(1), // hint
         ])
         .split(inner);
 
-    let q = Paragraph::new(format!("Delete tunnel '{}'?", sheet.name))
-        .alignment(Alignment::Center);
+    let q = Paragraph::new(sheet.question())
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
     f.render_widget(q, chunks[1]);
 
     let hint = Paragraph::new("y: yes    n / Esc / q: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Host detail sheet — what the macOS "Password & setup" view shows
+// ---------------------------------------------------------------------------
+
+/// What the daemon has stored for one host, plus its live 2FA code.
+///
+/// Deliberately mirrors `host_credentials`: never the password or the secret
+/// itself, only whether they exist and what the secret describes. The one
+/// value that IS shown is the current TOTP code, which is what you would read
+/// off an authenticator anyway and which expires in seconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostDetailSheet {
+    pub host: String,
+    /// None until the first `host_credentials` reply lands.
+    pub loaded: bool,
+    pub has_password: bool,
+    pub password_length: usize,
+    pub has_otp_secret: bool,
+    /// Human summary of the stored secret ("Duo · alice", "SHA1/6/30s").
+    pub otp_summary: String,
+    /// Set when a secret IS stored but no longer parses — a broken credential,
+    /// which is a different problem from having none.
+    pub otp_error: String,
+    pub auto_connect: bool,
+    /// Live code + seconds left, from `host_totp`.
+    pub code: String,
+    pub code_seconds_left: u32,
+    /// Result of the last "test login", shown until something else replaces it.
+    pub test_result: String,
+    pub test_ok: bool,
+    /// Set while a blocking RPC is in flight so the UI can say so.
+    pub busy: String,
+    pub error: String,
+}
+
+impl HostDetailSheet {
+    pub fn new(host: &str) -> Self {
+        Self {
+            host: host.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// What is stored for the password, as its own row.
+    ///
+    /// Password and 2FA get SEPARATE rows rather than one combined summary:
+    /// combined, a realistic account name ("alice@login.example.edu") pushed
+    /// the line past the modal's width and the terminal silently truncated the
+    /// account — losing exactly the part that identifies which 2FA account is
+    /// stored. Caught by the render test, which is the only thing that sees a
+    /// width overflow.
+    pub fn password_line(&self) -> String {
+        if !self.loaded {
+            return "loading…".into();
+        }
+        if self.has_password {
+            format!("password ({} chars)", self.password_length)
+        } else {
+            "NO password saved".into()
+        }
+    }
+
+    /// What is stored for 2FA, as its own row.
+    pub fn otp_line(&self) -> String {
+        if !self.loaded {
+            return "loading…".into();
+        }
+        if !self.otp_error.is_empty() {
+            return format!("UNREADABLE — {}", self.otp_error);
+        }
+        if !self.has_otp_secret {
+            // Not a fault — a password-only host is supported.
+            return "none (password-only host)".into();
+        }
+        if self.otp_summary.is_empty() {
+            "stored".into()
+        } else {
+            self.otp_summary.clone()
+        }
+    }
+}
+
+/// Render the host-detail modal.
+pub fn render_host_detail(f: &mut Frame, sheet: &HostDetailSheet) {
+    let area = centered_rect(80, 16, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!("Host — {}", sheet.host))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // password
+            Constraint::Length(1), // 2FA secret
+            Constraint::Length(1), // auto-connect
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // 2FA code
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // test-login result
+            Constraint::Length(1), // busy / error
+            Constraint::Min(1),    // spacer
+            Constraint::Length(1), // hint
+        ])
+        .split(inner);
+
+    let label = |s: &'static str| Span::styled(s, Style::default().fg(Color::DarkGray));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            label("password: "),
+            Span::raw(sheet.password_line()),
+        ])),
+        chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            label("2FA:      "),
+            Span::raw(sheet.otp_line()),
+        ])),
+        chunks[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            label("startup:  "),
+            Span::raw(if sheet.auto_connect {
+                "connects automatically"
+            } else {
+                "manual"
+            }),
+        ])),
+        chunks[2],
+    );
+
+    // The live code, grouped like an authenticator (832 194) with the window
+    // countdown next to it.
+    let code_line = if !sheet.code.is_empty() {
+        let grouped = if sheet.code.len() == 6 {
+            format!("{} {}", &sheet.code[..3], &sheet.code[3..])
+        } else {
+            sheet.code.clone()
+        };
+        Line::from(vec![
+            Span::styled("2FA code: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                grouped,
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   {}s left", sheet.code_seconds_left),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    } else if sheet.has_otp_secret {
+        Line::from(Span::styled(
+            "2FA code: press c to show",
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "2FA code: none — this host signs in with a password only",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    f.render_widget(Paragraph::new(code_line), chunks[4]);
+
+    if !sheet.test_result.is_empty() {
+        let color = if sheet.test_ok { Color::Green } else { Color::Red };
+        f.render_widget(
+            Paragraph::new(sheet.test_result.as_str()).style(Style::default().fg(color)),
+            chunks[6],
+        );
+    }
+    if !sheet.busy.is_empty() {
+        f.render_widget(
+            Paragraph::new(sheet.busy.as_str()).style(Style::default().fg(Color::Yellow)),
+            chunks[7],
+        );
+    } else if !sheet.error.is_empty() {
+        f.render_widget(
+            Paragraph::new(sheet.error.as_str()).style(Style::default().fg(Color::Red)),
+            chunks[7],
+        );
+    }
+
+    let hint = Paragraph::new("c: show 2FA code   t: test login   D: remove host   Esc: close")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[9]);
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel edit sheet
+// ---------------------------------------------------------------------------
+
+/// Edit an existing tunnel's ports and auto-start flag.
+///
+/// Separate from [`NewTunnelSheet`] because the fields differ: creating takes a
+/// name and one port, editing takes both ports and the startup flag but must
+/// NOT let the name change silently (renaming is a distinct daemon call that
+/// moves state, so it gets its own field and is applied only when it differs).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TunnelEditSheet {
+    /// The name as it exists on the daemon — the RPC target.
+    pub original_name: String,
+    pub name_buf: String,
+    pub local_buf: String,
+    pub remote_buf: String,
+    pub auto_start: bool,
+    /// 0 = name, 1 = local port, 2 = remote port, 3 = auto-start toggle.
+    pub field: usize,
+    pub error: String,
+}
+
+impl TunnelEditSheet {
+    pub const FIELD_COUNT: usize = 4;
+
+    pub fn new(name: &str, local_port: u16, remote_port: u16, auto_start: bool) -> Self {
+        Self {
+            original_name: name.to_string(),
+            name_buf: name.to_string(),
+            local_buf: local_port.to_string(),
+            remote_buf: remote_port.to_string(),
+            auto_start,
+            field: 0,
+            error: String::new(),
+        }
+    }
+
+    /// Mutable buffer of the focused text field (the toggle has none).
+    pub fn focused_buf(&mut self) -> Option<&mut String> {
+        match self.field {
+            0 => Some(&mut self.name_buf),
+            1 => Some(&mut self.local_buf),
+            2 => Some(&mut self.remote_buf),
+            _ => None,
+        }
+    }
+
+    /// Parse the edited fields, or set `self.error` and return `None`.
+    ///
+    /// Ports are validated the same way `NewTunnelSheet` validates its one
+    /// port: a forward below 1024 needs privileges the daemon does not have.
+    pub fn validate(&mut self) -> Option<(String, u16, u16, bool)> {
+        let name = self.name_buf.trim().to_string();
+        if name.is_empty() {
+            self.error = "Name cannot be empty.".into();
+            self.field = 0;
+            return None;
+        }
+        let local = match self.local_buf.trim().parse::<u16>() {
+            Ok(p) if p >= 1024 => p,
+            Ok(_) => {
+                self.error = "Local port must be ≥ 1024.".into();
+                self.field = 1;
+                return None;
+            }
+            Err(_) => {
+                self.error = "Local port must be a number.".into();
+                self.field = 1;
+                return None;
+            }
+        };
+        let remote = match self.remote_buf.trim().parse::<u16>() {
+            Ok(p) if p > 0 => p,
+            _ => {
+                self.error = "Remote port must be a number (1-65535).".into();
+                self.field = 2;
+                return None;
+            }
+        };
+        Some((name, local, remote, self.auto_start))
+    }
+}
+
+/// Render the tunnel-edit modal.
+pub fn render_tunnel_edit(f: &mut Frame, sheet: &TunnelEditSheet) {
+    let area = centered_rect(60, 15, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!("Edit tunnel — {}", sheet.original_name))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // name
+            Constraint::Length(3), // local port
+            Constraint::Length(3), // remote port
+            Constraint::Length(1), // auto-start
+            Constraint::Length(1), // error
+            Constraint::Length(1), // hint
+        ])
+        .split(inner);
+
+    render_input_field(f, chunks[0], "Name", &sheet.name_buf, sheet.field == 0);
+    render_input_field(f, chunks[1], "Local port", &sheet.local_buf, sheet.field == 1);
+    render_input_field(f, chunks[2], "Remote port", &sheet.remote_buf, sheet.field == 2);
+
+    let toggle_style = if sheet.field == 3 {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    f.render_widget(
+        Paragraph::new(format!(
+            "  Start automatically: [{}]  (Space toggles)",
+            if sheet.auto_start { "x" } else { " " }
+        ))
+        .style(toggle_style),
+        chunks[3],
+    );
+
+    if !sheet.error.is_empty() {
+        f.render_widget(
+            Paragraph::new(sheet.error.as_str()).style(Style::default().fg(Color::Red)),
+            chunks[4],
+        );
+    }
+
+    let hint = Paragraph::new("Tab: next field   Enter: save   Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[5]);
 }
 
 // ---------------------------------------------------------------------------
@@ -539,13 +921,20 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
         ("", "Tunnels"),
         ("Space", "Start / stop the selected tunnel"),
         ("Enter", "Pick a compute node"),
+        ("e", "Edit ports / auto-start"),
         ("y", "Copy URL to clipboard"),
         ("d", "Delete the selected tunnel"),
         ("s / x", "Start / stop (explicit aliases)"),
         ("", "Hosts"),
         ("Space", "Start / stop the selected host"),
+        ("Enter", "Details: credentials, 2FA code, test login"),
+        ("a", "Add a host"),
         ("m", "Mount / unmount remote filesystem"),
         ("r", "Rotate connection pool"),
+        ("", "Host details (Enter)"),
+        ("c", "Show the current 2FA code"),
+        ("t", "Test login with the stored credentials"),
+        ("D", "Remove the host and its credentials"),
     ]
 }
 
@@ -743,5 +1132,295 @@ mod tests {
         sh.field = 99;
         sh.focused_buf().push('!');
         assert_eq!(sh.host_buf, "k9!");
+    }
+
+    // ---- HostDetailSheet -------------------------------------------------
+
+    /// A host with no 2FA secret is a SUPPORTED setup, not a fault, and the
+    /// summary must not read like one — that wording is what tells someone
+    /// whether to go looking for a problem.
+    #[test]
+    fn host_detail_describes_a_password_only_host_neutrally() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.has_password = true;
+        sh.password_length = 12;
+        sh.has_otp_secret = false;
+        assert_eq!(sh.password_line(), "password (12 chars)");
+        let otp = sh.otp_line();
+        assert!(otp.contains("password-only"), "{otp}");
+        assert!(!otp.to_lowercase().contains("missing"), "{otp}");
+        assert!(!otp.to_lowercase().contains("no 2fa secret found"), "{otp}");
+    }
+
+    /// A stored-but-unparseable secret is a DIFFERENT problem from having
+    /// none: one needs repair, the other is fine. They must never render the
+    /// same, or a corrupt secret looks like a deliberate password-only host.
+    #[test]
+    fn host_detail_separates_a_broken_secret_from_a_missing_one() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.has_password = true;
+        sh.has_otp_secret = true;
+        sh.otp_error = "invalid base32".into();
+        let broken = sh.otp_line();
+        assert!(broken.contains("UNREADABLE"), "{broken}");
+
+        let mut none = HostDetailSheet::new("k6");
+        none.loaded = true;
+        none.has_password = true;
+        none.has_otp_secret = false;
+        assert_ne!(broken, none.otp_line());
+    }
+
+    #[test]
+    fn host_detail_says_loading_until_the_first_reply() {
+        let sh = HostDetailSheet::new("k6");
+        assert_eq!(sh.password_line(), "loading…");
+        assert_eq!(sh.otp_line(), "loading…");
+    }
+
+    /// A missing password is never a valid state and must be visible as such.
+    #[test]
+    fn host_detail_flags_a_missing_password() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.has_password = false;
+        sh.has_otp_secret = true;
+        assert!(sh.password_line().contains("NO password"));
+    }
+
+    // ---- TunnelEditSheet -------------------------------------------------
+
+    #[test]
+    fn tunnel_edit_seeds_from_the_existing_tunnel() {
+        let sh = TunnelEditSheet::new("claw", 3002, 3001, true);
+        assert_eq!(sh.original_name, "claw");
+        assert_eq!(sh.name_buf, "claw");
+        assert_eq!(sh.local_buf, "3002");
+        assert_eq!(sh.remote_buf, "3001");
+        assert!(sh.auto_start);
+    }
+
+    #[test]
+    fn tunnel_edit_validates_and_returns_the_edited_values() {
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.name_buf = "claw2".into();
+        sh.local_buf = "3005".into();
+        sh.remote_buf = "8080".into();
+        sh.auto_start = true;
+        assert_eq!(
+            sh.validate(),
+            Some(("claw2".to_string(), 3005, 8080, true))
+        );
+    }
+
+    /// A local forward below 1024 needs privileges the daemon does not have,
+    /// so it must be refused here rather than failing later at bind time.
+    #[test]
+    fn tunnel_edit_rejects_a_privileged_local_port() {
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.local_buf = "80".into();
+        assert_eq!(sh.validate(), None);
+        assert!(sh.error.contains("1024"), "{}", sh.error);
+        assert_eq!(sh.field, 1, "focus must move to the offending field");
+    }
+
+    #[test]
+    fn tunnel_edit_rejects_junk_and_empty_fields() {
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.name_buf = "  ".into();
+        assert_eq!(sh.validate(), None);
+        assert_eq!(sh.field, 0);
+
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.local_buf = "abc".into();
+        assert_eq!(sh.validate(), None);
+        assert_eq!(sh.field, 1);
+
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.remote_buf = "0".into();
+        assert_eq!(sh.validate(), None);
+        assert_eq!(sh.field, 2);
+    }
+
+    /// The toggle row has no text buffer; typing while it is focused must be a
+    /// no-op rather than leaking characters into whichever field was last.
+    #[test]
+    fn tunnel_edit_toggle_field_has_no_text_buffer() {
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.field = 3;
+        assert!(sh.focused_buf().is_none());
+        assert_eq!(sh.local_buf, "3002", "the ports must be untouched");
+    }
+
+    #[test]
+    fn tunnel_edit_focused_buf_routes_by_field() {
+        let mut sh = TunnelEditSheet::new("t", 1024, 1025, false);
+        for (field, expected) in [(0usize, "t!"), (1, "1024!"), (2, "1025!")] {
+            sh.field = field;
+            sh.focused_buf().unwrap().push('!');
+            let got = match field {
+                0 => &sh.name_buf,
+                1 => &sh.local_buf,
+                _ => &sh.remote_buf,
+            };
+            assert_eq!(got, expected);
+        }
+    }
+
+    // ---- ConfirmDeleteSheet ----------------------------------------------
+
+    /// Removing a HOST also deletes its saved password and 2FA secret. That is
+    /// not recoverable from inside the app, so the prompt must say so instead
+    /// of reusing the tunnel wording.
+    #[test]
+    fn confirming_a_host_removal_warns_about_the_credentials() {
+        let host = ConfirmDeleteSheet::for_host("k6");
+        assert_eq!(host.target, DeleteTarget::Host);
+        let q = host.question();
+        assert!(q.contains("k6"), "{q}");
+        assert!(q.contains("2FA secret"), "must name what else goes: {q}");
+
+        let tunnel = ConfirmDeleteSheet::new("claw");
+        assert_eq!(tunnel.target, DeleteTarget::Tunnel);
+        assert!(tunnel.question().contains("Delete tunnel"));
+        assert!(!tunnel.question().contains("2FA"));
+    }
+
+    // ---- Rendering -------------------------------------------------------
+    //
+    // A TUI cannot be driven by hand in CI, and a sheet that panics or paints
+    // nothing looks identical to one that was never opened. These render into
+    // an in-memory terminal and assert on the actual glyphs, which is the only
+    // way to catch a layout that overflows its box or a field that silently
+    // stops being drawn.
+
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Render one sheet into an 80x24 buffer and return its text, one line per
+    /// row, with trailing padding trimmed.
+    fn draw(f: impl FnOnce(&mut Frame)) -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|frame| f(frame)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            let mut line = String::new();
+            for x in 0..buf.area.width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn host_detail_renders_its_state_and_actions() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.has_password = true;
+        sh.password_length = 16;
+        sh.has_otp_secret = true;
+        sh.otp_summary = "alice@login.example.edu".into();
+        sh.auto_connect = true;
+        sh.code = "217746".into();
+        sh.code_seconds_left = 12;
+        let out = draw(|f| render_host_detail(f, &sh));
+
+        assert!(out.contains("Host — k6"), "{out}");
+        assert!(out.contains("password (16 chars)"), "{out}");
+        // The full account name must survive — truncating it loses exactly the
+        // part that says WHICH 2FA account is stored.
+        assert!(out.contains("alice@login.example.edu"), "{out}");
+        assert!(out.contains("connects automatically"), "{out}");
+        // Grouped like an authenticator, with the window countdown.
+        assert!(out.contains("217 746"), "code must be grouped: {out}");
+        assert!(out.contains("12s left"), "{out}");
+        // Every action the sheet accepts must be discoverable on screen.
+        for key in ["c:", "t:", "D:"] {
+            assert!(out.contains(key), "missing {key} in hint: {out}");
+        }
+    }
+
+    /// The password-only case must render as a plain statement, not as an
+    /// error, and must not invite the user to press a key that cannot work.
+    #[test]
+    fn host_detail_renders_a_password_only_host_without_alarm() {
+        let mut sh = HostDetailSheet::new("plain");
+        sh.loaded = true;
+        sh.has_password = true;
+        sh.password_length = 8;
+        sh.has_otp_secret = false;
+        let out = draw(|f| render_host_detail(f, &sh));
+        assert!(out.contains("password only"), "{out}");
+        assert!(!out.contains("press c to show"), "no code to offer: {out}");
+    }
+
+    #[test]
+    fn host_detail_renders_a_failed_test_login() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.has_password = true;
+        sh.test_ok = false;
+        sh.test_result = "The server rejected the password.".into();
+        let out = draw(|f| render_host_detail(f, &sh));
+        assert!(out.contains("rejected the password"), "{out}");
+    }
+
+    /// While a login runs the sheet must SAY so — the RPC is a real ssh login
+    /// and can take tens of seconds.
+    #[test]
+    fn host_detail_shows_that_a_test_is_running() {
+        let mut sh = HostDetailSheet::new("k6");
+        sh.loaded = true;
+        sh.busy = "testing login…".into();
+        let out = draw(|f| render_host_detail(f, &sh));
+        assert!(out.contains("testing login"), "{out}");
+    }
+
+    #[test]
+    fn tunnel_edit_renders_every_field_and_the_toggle() {
+        let sh = TunnelEditSheet::new("claw", 3002, 3001, true);
+        let out = draw(|f| render_tunnel_edit(f, &sh));
+        assert!(out.contains("Edit tunnel — claw"), "{out}");
+        assert!(out.contains("Name: claw"), "{out}");
+        assert!(out.contains("Local port: 3002"), "{out}");
+        assert!(out.contains("Remote port: 3001"), "{out}");
+        assert!(out.contains("Start automatically: [x]"), "{out}");
+
+        let off = TunnelEditSheet::new("claw", 3002, 3001, false);
+        let out = draw(|f| render_tunnel_edit(f, &off));
+        assert!(out.contains("Start automatically: [ ]"), "{out}");
+    }
+
+    #[test]
+    fn tunnel_edit_renders_a_validation_error() {
+        let mut sh = TunnelEditSheet::new("claw", 3002, 3001, false);
+        sh.local_buf = "80".into();
+        assert!(sh.validate().is_none());
+        let out = draw(|f| render_tunnel_edit(f, &sh));
+        assert!(out.contains("1024"), "the error must be visible: {out}");
+    }
+
+    #[test]
+    fn confirm_delete_renders_the_host_warning() {
+        let sh = ConfirmDeleteSheet::for_host("k6");
+        let out = draw(|f| render_confirm_delete(f, &sh));
+        assert!(out.contains("k6"), "{out}");
+        assert!(out.contains("2FA secret"), "{out}");
+        assert!(out.contains("y: yes"), "{out}");
+    }
+
+    /// The help modal is the only discovery surface for these keys, so every
+    /// binding the sheets implement must appear in it.
+    #[test]
+    fn help_lists_the_new_bindings() {
+        let keys: Vec<&str> = help_lines().iter().map(|(k, _)| *k).collect();
+        for k in ["Enter", "e", "a", "c", "t", "D"] {
+            assert!(keys.contains(&k), "help is missing {k:?}: {keys:?}");
+        }
     }
 }

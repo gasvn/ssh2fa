@@ -37,7 +37,12 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SheetKind {
     AddHost,
+    /// Stored credentials, live 2FA code, test login, remove — the TUI's
+    /// equivalent of the macOS "Password & setup" view.
+    HostDetail,
     NewTunnel,
+    /// Edit an existing tunnel's ports / auto-start.
+    TunnelEdit,
     NodePicker,
     ConfirmDelete,
     Help,
