@@ -71,7 +71,12 @@ systemctl --user enable "$UNIT" >/dev/null
 # new daemon adopts them (see the unit file for why).
 if systemctl --user is-active --quiet "$UNIT"; then
   echo "→ restarting (masters preserved)"
-  systemctl --user kill -s SIGKILL "$UNIT" 2>/dev/null || true
+  # --kill-whom=main is required: with KillMode=process systemd refuses the
+  # auxiliary-process signal and prints
+  #   "Failed to send signal SIGKILL to auxiliary processes: Invalid argument"
+  # even though the main process was killed — an alarming message for a step
+  # that actually worked.
+  systemctl --user kill -s SIGKILL --kill-whom=main "$UNIT" 2>/dev/null || true
   sleep 1
 fi
 systemctl --user restart "$UNIT"

@@ -88,6 +88,21 @@ fn initial_credential_storage_ready() -> bool {
     if cfg!(test) {
         return true;
     }
+    // The gate exists solely to hold automatic reconnects back until the macOS
+    // Keychain consolidation (v4 stable identity) has run, so a user is never
+    // ambushed by a burst of authorization dialogs. NO OTHER PLATFORM HAS THAT
+    // MIGRATION: there are no legacy per-host items with stale ACLs, and no
+    // code-signing identity whose rotation invalidates them.
+    //
+    // Leaving the gate armed off macOS was a hard blocker rather than a
+    // cosmetic wart. The fallback below shells out to `/usr/bin/defaults`,
+    // which does not exist on Linux, so readiness could never be established
+    // and EVERY connection failed with "Finish the one-time security update"
+    // — advice pointing at a macOS app the user does not have, describing a
+    // migration that does not apply. Found by using the Linux build for real.
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
     let marker = credential_ready_marker_path();
     if marker.is_file() {
         return true;
@@ -2220,6 +2235,28 @@ mod tests {
         assert!(readiness_from_existing_state(false, Some(b"true\n")));
         assert!(!readiness_from_existing_state(false, Some(b"0\n")));
         assert!(!readiness_from_existing_state(false, None));
+    }
+
+    /// REGRESSION: the readiness gate guards a macOS-only Keychain migration,
+    /// and its fallback shells out to `/usr/bin/defaults`. Off macOS that can
+    /// never succeed, so the gate stayed closed and EVERY connection failed
+    /// with "Finish the one-time security update" — pointing at an app the
+    /// user does not have, for a migration that does not apply. A non-macOS
+    /// build must consider its credential storage ready from the start.
+    ///
+    /// `cfg!(test)` also short-circuits this, so assert on the platform rule
+    /// itself rather than calling the function.
+    #[test]
+    fn the_credential_migration_gate_is_macos_only() {
+        assert_eq!(
+            !cfg!(target_os = "macos"),
+            cfg!(any(target_os = "linux", target_os = "freebsd", windows)),
+            "non-macOS builds must bypass the macOS-only migration gate"
+        );
+        // And the marker path stays HOME-relative on every platform, so a
+        // macOS build still finds the marker the app wrote.
+        let p = credential_ready_marker_path();
+        assert!(p.ends_with(".ssh2fa/credential-storage-ready-v3"), "{p:?}");
     }
 
     /// Only the password is mandatory. A host added WITHOUT 2FA legitimately
