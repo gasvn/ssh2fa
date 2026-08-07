@@ -16,11 +16,11 @@
 //! rejected by `package-app.sh`, because their cdhash-based requirement changes
 //! on every build.
 
-use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 
+use super::guard::ensure_enabled;
 use super::SecretStore;
 
 /// The Keychain service name used for all SSH2FA credentials.
@@ -39,40 +39,10 @@ fn keychain_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Cargo-built test and development binaries must never touch the developer's
-/// real login Keychain by accident.
-///
-/// `cfg(test)` is not sufficient here: a2fa-core is compiled as an ordinary
-/// dependency of the a2fa-daemon test harness, so its own `cfg(test)` is false.
-/// Inspecting the executable path protects unit tests, integration tests, and
-/// casual `cargo run` sessions. A developer can still opt in deliberately.
-fn is_cargo_build_executable(path: &Path) -> bool {
-    let path = path.to_string_lossy().replace('\\', "/");
-    path.contains("/target/debug/") || path.contains("/target/release/")
-}
-
-fn ensure_enabled() -> Result<()> {
-    if std::env::var_os("SSH2FA_DISABLE_KEYCHAIN").is_some() {
-        return Err(Error::Internal(
-            "Keychain access is disabled for this isolated test daemon".into(),
-        ));
-    }
-    if std::env::var_os("SSH2FA_ALLOW_DEVELOPMENT_KEYCHAIN").is_none()
-        && std::env::current_exe()
-            .ok()
-            .as_deref()
-            .is_some_and(is_cargo_build_executable)
-    {
-        return Err(Error::Internal(
-            "Keychain access is disabled for Cargo-built binaries; set \
-             SSH2FA_ALLOW_DEVELOPMENT_KEYCHAIN=1 only for an intentional manual test"
-                .into(),
-        ));
-    }
-    Ok(())
-}
-
 /// A `SecretStore` backed by the macOS Security framework.
+///
+/// The Cargo-binary safety rail lives in [`super::guard`] so every platform's
+/// backend shares one implementation.
 pub struct KeychainStore;
 
 impl SecretStore for KeychainStore {
@@ -113,20 +83,6 @@ impl SecretStore for KeychainStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cargo_test_and_run_paths_require_explicit_keychain_opt_in() {
-        assert!(is_cargo_build_executable(Path::new(
-            "/repo/target/debug/deps/a2fa_daemon-012cad784be543bf"
-        )));
-        assert!(is_cargo_build_executable(Path::new(
-            "/repo/target/release/ssh2fa-daemon"
-        )));
-        assert!(!is_cargo_build_executable(Path::new(
-            "/Applications/SSH2FA.app/Contents/Resources/ssh2fa-daemon"
-        )));
-        assert!(!is_cargo_build_executable(Path::new("/usr/local/bin/a2fa")));
-    }
 
     #[test]
     fn this_cargo_test_process_is_blocked_before_keychain_access() {

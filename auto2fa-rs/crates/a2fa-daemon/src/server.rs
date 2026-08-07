@@ -123,15 +123,33 @@ pub fn lock_path() -> PathBuf {
 /// That is the source of the "it keeps asking for my Keychain password"
 /// complaint that survived every fix on the app side.
 ///
-/// A test daemon must therefore declare both an isolated config directory and
-/// `SSH2FA_DISABLE_KEYCHAIN=1`. Failing loudly at startup is deliberate: an
+/// A test daemon must therefore declare an isolated config directory AND an
+/// isolated credential store. Failing loudly at startup is deliberate: an
 /// alternate socket/config path alone does not create an alternate Keychain.
+///
+/// There are two ways to satisfy the credential half:
+///
+/// * `SSH2FA_DISABLE_KEYCHAIN=1` — no credential access at all. The only option
+///   on macOS, where the login Keychain is process-wide and cannot be redirected.
+/// * `SSH2FA_VAULT=file` — the file vault, which lives INSIDE the config
+///   directory this function has already proven is not the real one. Nothing
+///   the user owns is reachable, so the daemon can hold real (test) credentials
+///   and a login can actually be exercised end to end.
 fn guard_test_isolation(sock: &std::path::Path) -> Result<()> {
     let overridden = std::env::var("AUTO2FA_SOCK").is_ok();
     let cfg = a2fa_core::config::config_dir();
     let real = resolve_home().join(".ssh");
     let keychain_disabled = std::env::var_os("SSH2FA_DISABLE_KEYCHAIN").is_some();
-    validate_test_isolation(sock, overridden, &cfg, &real, keychain_disabled)
+    // The file vault is `config_dir()/credentials.json` — isolated exactly when
+    // the config dir is, which is checked separately below.
+    let vault_is_file = std::env::var("SSH2FA_VAULT").ok().as_deref() == Some("file");
+    validate_test_isolation(
+        sock,
+        overridden,
+        &cfg,
+        &real,
+        keychain_disabled || vault_is_file,
+    )
 }
 
 /// Pure half of `guard_test_isolation`, kept separate so the safety invariant
@@ -160,10 +178,12 @@ fn validate_test_isolation(
     }
     if !keychain_disabled {
         let msg = format!(
-            "refusing to start: AUTO2FA_SOCK is set (socket {}) but \
-             SSH2FA_DISABLE_KEYCHAIN=1 is missing. A test/dev daemon would still \
-             access the user's REAL login Keychain even with an isolated config \
-             directory.",
+            "refusing to start: AUTO2FA_SOCK is set (socket {}) but neither \
+             SSH2FA_DISABLE_KEYCHAIN=1 nor SSH2FA_VAULT=file is set. A test/dev \
+             daemon would still access the user's REAL system credential store \
+             even with an isolated config directory. Use SSH2FA_DISABLE_KEYCHAIN=1 \
+             for no credentials at all, or SSH2FA_VAULT=file to keep them in the \
+             isolated config directory.",
             sock.display()
         );
         log::error!("{msg}");
@@ -253,7 +273,7 @@ pub fn run() -> Result<()> {
         let spawn_res = std::thread::Builder::new()
             .name("creds-migrate".into())
             .spawn(move || {
-                let kc = a2fa_core::creds::keychain::KeychainStore;
+                let kc = a2fa_core::creds::platform_store();
                 let r = a2fa_core::creds::migrate::prepare_migration(&kc, &passwords_for_migrate)
                     .map_err(|e| e.to_string());
                 let _ = tx.send(r);
@@ -781,5 +801,39 @@ mod tests {
             true,
         )
         .is_ok());
+    }
+
+    /// The rejection must name BOTH ways to satisfy the credential half.
+    /// Naming only `SSH2FA_DISABLE_KEYCHAIN=1` sent anyone trying to exercise a
+    /// real login in an isolated daemon down a dead end — that setting turns
+    /// off the very thing they were testing.
+    #[test]
+    fn the_isolation_rejection_offers_the_file_vault_as_well() {
+        let real = PathBuf::from("/home/example/.ssh");
+        let temp = PathBuf::from("/tmp/ssh2fa-test-config");
+        let err = validate_test_isolation(Path::new("/tmp/test.sock"), true, &temp, &real, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SSH2FA_DISABLE_KEYCHAIN=1"), "{err}");
+        assert!(err.contains("SSH2FA_VAULT=file"), "{err}");
+    }
+
+    /// An isolated FILE vault is sufficient isolation on its own: it lives in
+    /// the config directory the guard has already proven is not the real one,
+    /// so nothing the user owns is reachable.
+    #[test]
+    fn an_isolated_file_vault_satisfies_the_credential_guard() {
+        let real = PathBuf::from("/home/example/.ssh");
+        let temp = PathBuf::from("/tmp/ssh2fa-test-config");
+        // `keychain_disabled=false` + file vault → the caller passes true.
+        assert!(
+            validate_test_isolation(Path::new("/tmp/test.sock"), true, &temp, &real, true).is_ok()
+        );
+        // …but it must NOT rescue an unisolated CONFIG directory: the vault
+        // would then sit in the user's real ~/.ssh.
+        let err = validate_test_isolation(Path::new("/tmp/test.sock"), true, &real, &real, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REAL one"), "{err}");
     }
 }

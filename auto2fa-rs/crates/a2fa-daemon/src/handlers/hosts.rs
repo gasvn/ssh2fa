@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use a2fa_core::config::{load_meta, passwords_path, update_meta, HostMeta};
-use a2fa_core::creds::keychain::KeychainStore;
+use a2fa_core::creds::platform_store;
 use a2fa_core::creds::{delete_credentials, get_otpauth, get_password, store_credentials};
 use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
@@ -111,7 +111,7 @@ pub fn host_toggle_with_registry(
     let (password_opt, otpauth_opt) = if currently_active {
         (None, None) // deactivation needs no creds — skip the Keychain entirely
     } else {
-        let ks = KeychainStore;
+        let ks = platform_store();
         (
             get_password(&ks, &host_name).ok().flatten(),
             get_otpauth(&ks, &host_name).ok().flatten(),
@@ -310,13 +310,75 @@ impl Drop for MountInFlightGuard {
     }
 }
 
+/// Locate the `sshfs` binary, or explain how to install it for this platform.
+///
+/// Bounded — `which` is instant, but never block. Under launchd the daemon's
+/// PATH is the plist's minimal system set, which does NOT include
+/// /usr/local/bin or /opt/homebrew/bin: `which sshfs` fails there even with
+/// sshfs installed (mount was dead in production), so the well-known install
+/// prefixes are also probed by absolute path.
+///
+/// Resolved LAZILY, at the point of mounting. It used to run at the top of
+/// `host_mount_toggle`, which made UNMOUNTING impossible on a machine without
+/// sshfs — unmounting needs only `fusermount`/`umount`, and a user whose sshfs
+/// was uninstalled (or who is on a box that never had it) was left with a mount
+/// they could not remove and a message telling them to install a mounting tool.
+fn locate_sshfs() -> Result<String> {
+    let which_ok = run_cmd_bounded("which", &["sshfs"], std::time::Duration::from_secs(5))
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if which_ok {
+        return Ok("sshfs".into());
+    }
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["/usr/local/bin/sshfs", "/opt/homebrew/bin/sshfs"]
+    } else {
+        &["/usr/bin/sshfs", "/usr/local/bin/sshfs"]
+    };
+    if let Some(p) = candidates.iter().find(|p| std::path::Path::new(p).is_file()) {
+        return Ok((*p).to_string());
+    }
+    Err(Error::Internal(if cfg!(target_os = "macos") {
+        "sshfs not installed — install macFUSE + sshfs to use this feature".into()
+    } else {
+        "sshfs not installed — install it (Debian/Ubuntu: sudo apt install sshfs) \
+         to use this feature"
+            .into()
+    }))
+}
+
+/// Unmount a FUSE filesystem with the tool this platform gives an unprivileged
+/// user, falling back through the alternatives until one reports success.
+///
+/// Returns `true` if a command succeeded. Bounded on every attempt: a wedged
+/// mount whose server is gone is exactly when these can block.
+fn force_unmount(mount_point: &str) -> bool {
+    use std::time::Duration;
+    let (cmd, lead) = a2fa_core::platform::unmount_command();
+    let mut attempts: Vec<(&str, Vec<&str>)> = vec![(cmd, lead.to_vec())];
+    for (c, a) in a2fa_core::platform::unmount_fallbacks() {
+        attempts.push((c, a.to_vec()));
+    }
+    for (cmd, lead) in attempts {
+        let mut args = lead;
+        args.push(mount_point);
+        if let Some(o) = run_cmd_bounded(cmd, &args, Duration::from_secs(10)) {
+            if o.status.success() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Reap the leaked artifacts of a FAILED sshfs mount.
 ///
-/// sshfs's macFUSE backend (`go-nfsv4`) is a separately-daemonized process: when
-/// the mount fails (or `run_cmd_bounded` kills the sshfs child on its deadline),
-/// the backend survives, holding a half-made mount. Targeted by the exact mount
-/// point so an unrelated mount is never touched. Bounded helpers only; runs off
-/// the State lock.
+/// On macOS sshfs's backend (`go-nfsv4`) is a separately-daemonized process:
+/// when the mount fails (or `run_cmd_bounded` kills the sshfs child on its
+/// deadline), the backend survives, holding a half-made mount. On Linux sshfs
+/// itself is that process. Either way it is targeted by the exact mount point
+/// so an unrelated mount is never touched. Bounded helpers only; runs off the
+/// State lock.
 fn reap_failed_sshfs(mount_point: &std::path::Path) {
     use std::time::Duration;
     let mp = mount_point.to_string_lossy().into_owned();
@@ -327,15 +389,18 @@ fn reap_failed_sshfs(mount_point: &std::path::Path) {
                 let cmd = run_cmd_bounded("ps", &["-o", "command=", "-p", pid], Duration::from_secs(2))
                     .map(|x| String::from_utf8_lossy(&x.stdout).into_owned())
                     .unwrap_or_default();
-                // Only kill sshfs / its macFUSE backend for THIS mount path.
-                if cmd.contains("go-nfsv4") || cmd.contains("sshfs") {
+                // Only kill sshfs / its FUSE backend for THIS mount path.
+                if a2fa_core::platform::fuse_process_markers()
+                    .iter()
+                    .any(|m| cmd.contains(m))
+                {
                     let _ = run_cmd_bounded("kill", &["-9", pid], Duration::from_secs(1));
                 }
             }
         }
     }
     // 2. Force-unmount a half-made mount, then remove the now-empty dir.
-    let _ = run_cmd_bounded("umount", &["-f", &mp], Duration::from_secs(10));
+    let _ = force_unmount(&mp);
     let _ = std::fs::remove_dir(mount_point); // only succeeds if empty
 }
 
@@ -409,33 +474,6 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         return Err(Error::BadParams("invalid host name for mount".into()));
     }
 
-    // Locate sshfs (bounded — `which` is instant, but never block). Under
-    // launchd the daemon's PATH is the plist's minimal system set, which does
-    // NOT include /usr/local/bin or /opt/homebrew/bin — `which sshfs` fails
-    // there even with sshfs installed (mount was dead in production). Fall
-    // back to the two well-known install prefixes by absolute path.
-    let sshfs_bin: String = {
-        let which_ok = run_cmd_bounded("which", &["sshfs"], std::time::Duration::from_secs(5))
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if which_ok {
-            "sshfs".into()
-        } else {
-            match ["/usr/local/bin/sshfs", "/opt/homebrew/bin/sshfs"]
-                .iter()
-                .find(|p| std::path::Path::new(p).is_file())
-            {
-                Some(p) => (*p).to_string(),
-                None => {
-                    return Err(Error::Internal(
-                        "sshfs not installed — install macFUSE + sshfs to use this feature"
-                            .into(),
-                    ));
-                }
-            }
-        }
-    };
-
     // ~/Mounts/<host>/<slug> — several folders per host can be mounted at once.
     //
     // An explicit `mount_point` addresses an EXISTING mount directly. Callers
@@ -478,7 +516,7 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
                 legacy.mount_point.display()
             );
             let lp = legacy_point.to_string_lossy().into_owned();
-            let _ = run_cmd_bounded("umount", &["-f", &lp], std::time::Duration::from_secs(10));
+            let _ = force_unmount(&lp);
         }
     }
 
@@ -491,9 +529,10 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             }
         }
         let mp_str = mount_point.to_string_lossy().into_owned();
-        // Bounded: a kernel-stuck `umount -f` on a wedged macFUSE mount must not
-        // pin the handler thread forever.
-        let _ = run_cmd_bounded("umount", &["-f", &mp_str], std::time::Duration::from_secs(10));
+        // Bounded, and platform-correct: a kernel-stuck unmount on a wedged
+        // FUSE mount must not pin the handler thread forever, and on Linux only
+        // fusermount can do this without root.
+        let _ = force_unmount(&mp_str);
         // Judge ONLY by the actual mount state. Requiring umount's exit status
         // wedged the latch: if macFUSE had ALREADY auto-unmounted (network
         // drop), `umount -f` fails ("not currently mounted") → unmounted=false
@@ -514,7 +553,9 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             h.last_msg = if unmounted { "Unmounted" } else { "Unmount failed" }.into();
         }
     } else {
-        // Mount.
+        // Mount. Resolve sshfs HERE, not at the top of the handler: unmounting
+        // must keep working on a machine that has no sshfs (see locate_sshfs).
+        let sshfs_bin = locate_sshfs()?;
         let _ = std::fs::create_dir_all(&mount_point);
         {
             let mut guard = crate::lock_state(state);
@@ -530,9 +571,12 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         // Finder/Spotlight machine-wide). run_cmd_bounded is a generous 45s
         // backstop: sshfs daemonizes after a successful mount so .wait already
         // returns on success; the deadline only fires on a never-returning child.
+        // `volname` is macFUSE-only — Linux sshfs REJECTS unknown options, so it
+        // comes from the platform module rather than being hardcoded here.
         let opts = format!(
             "reconnect,ConnectTimeout=10,ServerAliveInterval=15,ServerAliveCountMax=3,\
-             volname={host_name},StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null"
+             {}StrictHostKeyChecking=no,UserKnownHostsFile=/dev/null",
+            a2fa_core::platform::sshfs_platform_opts(&host_name)
         );
         let result = run_cmd_bounded(
             &sshfs_bin,
@@ -851,7 +895,7 @@ pub fn host_add(
         let spawn_res = std::thread::Builder::new()
             .name(format!("host_add-keychain:{host_name}"))
             .spawn(move || {
-                let ks = KeychainStore;
+                let ks = platform_store();
                 let result = store_credentials(&ks, &host_owned, &password_owned, &otpauth_owned);
                 let _ = tx.send(result);
             });
@@ -1006,7 +1050,7 @@ pub fn host_test_credentials(
                 &host,
                 CREDENTIAL_OP_TIMEOUT,
                 move || {
-                    let ks = KeychainStore;
+                    let ks = platform_store();
                     Ok((
                         get_password(&ks, &host_owned)?.unwrap_or_default(),
                         get_otpauth(&ks, &host_owned)?.unwrap_or_default(),
@@ -1363,7 +1407,7 @@ pub fn host_totp(state: &Arc<Mutex<State>>, params: &Value) -> Result<Value> {
         &host_name,
         std::time::Duration::from_secs(5),
         move || {
-            let otpauth = get_otpauth(&KeychainStore, &host_owned)?
+            let otpauth = get_otpauth(&platform_store(), &host_owned)?
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| Error::NotFound(format!("no 2FA secret for {host_owned}")))?;
             totp_now_detailed(&otpauth)
@@ -1408,7 +1452,7 @@ pub fn credentials_consolidate(state: &Arc<Mutex<State>>, _params: &Value) -> Re
         "credential consolidation",
         "all-hosts",
         std::time::Duration::from_secs(180),
-        move || a2fa_core::creds::vault::migrate_to_vault(&KeychainStore, &hosts_for_worker),
+        move || a2fa_core::creds::vault::migrate_to_vault(&platform_store(), &hosts_for_worker),
     )?;
     crate::managers::mark_credential_storage_ready();
 
@@ -1563,7 +1607,7 @@ pub fn host_remove(
     for m in mounts.iter().filter(|m| m.host == host_name) {
         log::info!("[{host_name}] unmounting {} before removal", m.mount_point.display());
         let mp = m.mount_point.to_string_lossy().into_owned();
-        let _ = run_cmd_bounded("umount", &["-f", &mp], std::time::Duration::from_secs(10));
+        let _ = force_unmount(&mp);
     }
     // Anything that refused to unmount gets the full reap (kills the orphaned
     // macFUSE backend) — a removed host must never leave a wedged mount behind.
@@ -1589,7 +1633,7 @@ pub fn host_remove(
         "credential delete",
         &host_name,
         CREDENTIAL_OP_TIMEOUT,
-        move || delete_credentials(&KeychainStore, &host_owned),
+        move || delete_credentials(&platform_store(), &host_owned),
     );
     let credentials_deleted = match cred_result {
         Ok(()) => true,
@@ -1744,7 +1788,7 @@ pub fn host_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result<Val
         &host_name,
         CREDENTIAL_OP_TIMEOUT,
         move || {
-            let ks = KeychainStore;
+            let ks = platform_store();
             let password = get_password(&ks, &host_owned)?.unwrap_or_default();
             let otpauth = get_otpauth(&ks, &host_owned)?.unwrap_or_default();
             Ok((password, otpauth))
@@ -1814,7 +1858,7 @@ pub fn host_reveal_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Res
         &host_name,
         CREDENTIAL_OP_TIMEOUT,
         move || {
-            let ks = KeychainStore;
+            let ks = platform_store();
             let password = get_password(&ks, &host_owned)?;
             let otpauth = get_otpauth(&ks, &host_owned)?;
             Ok((password, otpauth))
@@ -1923,7 +1967,7 @@ pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result
         &host_name,
         CREDENTIAL_OP_TIMEOUT,
         move || {
-            let ks = KeychainStore;
+            let ks = platform_store();
             let password = match pw_arg {
                 Some(p) => p,
                 None => get_password(&ks, &host_owned)?.unwrap_or_default(),
@@ -2829,6 +2873,28 @@ mod tests {
             &json!({"host": "a2fa-test-noop", "mount_point": mp.to_string_lossy()}),
         )
         .unwrap();
+        assert_eq!(v["mounted"], false);
+        assert_eq!(v["note"], "already unmounted");
+        assert!(!mp.exists(), "must not have created or mounted anything");
+    }
+
+    /// REGRESSION (found by running the suite on Linux, where sshfs is often
+    /// absent): resolving the sshfs binary used to be the FIRST thing
+    /// `host_mount_toggle` did, so on a machine without sshfs even an UNMOUNT
+    /// failed with "install sshfs" — leaving a mount the user could not remove.
+    /// Unmounting needs only fusermount/umount, so the lookup must be lazy.
+    #[test]
+    fn unmount_paths_do_not_require_sshfs_to_be_installed() {
+        let host = "a2fa-test-nosshfs";
+        let state = make_state_with_host(host, true);
+        let mp = mounts_root().join(host).join("nothing-here");
+        // Nothing is mounted there, so this takes the "already unmounted"
+        // early return — which must be reached whether or not sshfs exists.
+        let v = host_mount_toggle(
+            &state,
+            &json!({"host": host, "mount_point": mp.to_string_lossy()}),
+        )
+        .expect("an unmount request must not depend on sshfs being installed");
         assert_eq!(v["mounted"], false);
         assert_eq!(v["note"], "already unmounted");
         assert!(!mp.exists(), "must not have created or mounted anything");

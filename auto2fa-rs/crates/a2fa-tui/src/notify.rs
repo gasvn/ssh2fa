@@ -2,72 +2,68 @@
 //! Python TUI's `_system_notify` / `_fallback_clipboard`.
 //!
 //! Both fire on a background thread with a short timeout and swallow every
-//! error — they must never block the UI thread or panic.
+//! error — they must never block the UI thread or panic. Which tool to run is
+//! `a2fa_core::platform`'s business (`osascript`/`pbcopy` on macOS,
+//! `notify-send` + `wl-copy`/`xclip`/`xsel` on Linux); a headless box where
+//! none of them exist is a supported outcome, not an error.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// Show a native macOS notification via `osascript`.
-///
-/// Runs on a detached thread, 2 s timeout, swallows all errors. No-op on
-/// non-macOS platforms.
-pub fn system_notify(title: &str, msg: &str) {
-    if !cfg!(target_os = "macos") {
-        return;
+/// Run `child` to completion, killing it after `timeout`. Returns whether it
+/// exited successfully.
+fn wait_bounded(child: &mut std::process::Child, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return false,
+        }
     }
-    let title = title.to_string();
-    let msg = msg.to_string();
+}
+
+/// Show a native desktop notification.
+///
+/// Runs on a detached thread with a 2 s timeout and swallows all errors — on a
+/// headless server the notifier simply isn't installed, which is fine.
+pub fn system_notify(title: &str, msg: &str) {
+    let Some((cmd, args)) = a2fa_core::platform::notify_command(title, msg) else {
+        return;
+    };
     std::thread::spawn(move || {
-        // Escape double-quotes so the AppleScript string literal stays valid.
-        let safe_title = title.replace('"', "\\\"");
-        let safe_msg = msg.replace('"', "\\\"");
-        let script =
-            format!("display notification \"{safe_msg}\" with title \"{safe_title}\"");
-        let mut child = match Command::new("osascript")
-            .arg("-e")
-            .arg(script)
+        let mut child = match Command::new(cmd)
+            .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
         {
             Ok(c) => c,
-            Err(_) => return,
+            Err(_) => return, // notifier not installed
         };
-        // Crude timeout: poll for completion, kill after ~2 s.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => break,
-            }
-        }
+        wait_bounded(&mut child, Duration::from_secs(2));
     });
 }
 
 /// Copy `text` to the system clipboard, best-effort, on a background thread.
 ///
-/// Tries `pbcopy` (macOS) first, then `xclip` / `wl-copy` (Linux). Swallows
-/// all errors and never blocks the UI thread.
+/// Tries this platform's tools in order and stops at the first that succeeds.
+/// Every one of them may be missing (a headless box, or Wayland tools on an X11
+/// session); the copy is then silently skipped rather than failing the UI.
 pub fn copy_to_clipboard(text: &str) {
     let text = text.to_string();
     std::thread::spawn(move || {
-        let candidates: &[&[&str]] = &[
-            &["pbcopy"],
-            &["xclip", "-selection", "clipboard"],
-            &["wl-copy"],
-        ];
-        for cmd in candidates {
-            let mut child = match Command::new(cmd[0])
-                .args(&cmd[1..])
+        for (cmd, args) in a2fa_core::platform::clipboard_commands() {
+            let mut child = match Command::new(cmd)
+                .args(*args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -80,9 +76,10 @@ pub fn copy_to_clipboard(text: &str) {
                 let _ = stdin.write_all(text.as_bytes());
                 // Drop stdin so the child sees EOF.
             }
-            match child.wait() {
-                Ok(status) if status.success() => return,
-                _ => continue,
+            // Bounded: wl-copy on a session with no compositor can hang, and a
+            // stuck clipboard helper must not leak a thread per copy.
+            if wait_bounded(&mut child, Duration::from_secs(3)) {
+                return;
             }
         }
     });

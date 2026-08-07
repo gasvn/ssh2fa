@@ -1,0 +1,57 @@
+[Unit]
+Description=SSH2FA daemon — keeps warm SSH ControlMasters so ssh needs no 2FA
+Documentation=https://github.com/gasvn/ssh2fa
+# The daemon needs the session D-Bus for the Secret Service credential store.
+# Harmless when SSH2FA_VAULT=file: the dependency is a wants, not a requires.
+Wants=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ssh2fa-daemon
+
+# Credential store. The default (unset) is the freedesktop Secret Service.
+# A headless server has no keyring collection — PAM only creates one at a
+# graphical login — so an SSH-only box must opt into the owner-only file vault:
+#   systemctl --user edit ssh2fa-daemon    →    [Service]
+#                                               Environment=SSH2FA_VAULT=file
+# See docs/LINUX.md for what that does and does not protect.
+#Environment=SSH2FA_VAULT=file
+
+# WHY SIGKILL: a graceful stop makes the daemon run teardown_all, which closes
+# every ControlMaster it owns — so `systemctl --user restart` would drop the
+# user's warm SSH sessions and force a fresh 2FA login on the next connect.
+# SIGKILL leaves the masters running (they are detached mux processes, not
+# children); the next start ADOPTS them and nobody re-authenticates.
+#
+# Nothing is leaked by skipping the graceful path: the flock is released by the
+# kernel, the next start removes the stale socket, and cleanup_orphans reaps
+# stray tunnel processes at boot.
+KillSignal=SIGKILL
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+
+# Match launchd's KeepAlive{SuccessfulExit:false} + ThrottleInterval 10.
+Restart=on-failure
+RestartSec=10
+
+# The daemon is a long-lived supervisor of short-lived ssh children; letting
+# systemd kill the cgroup on stop would take the ControlMasters with it and
+# defeat the SIGKILL choice above.
+KillMode=process
+
+# Light hardening — only what a USER unit can actually apply.
+#
+# Deliberately NOT ProtectHome/PrivateTmp: the daemon's whole job is reading
+# ~/.ssh, writing ~/.ssh2fa, and driving ControlPath sockets under $HOME, and
+# the per-slot ssh logs live in /tmp.
+#
+# Also deliberately NOT PrivateDevices / ProtectKernelTunables /
+# ProtectControlGroups: those need mount-namespace privileges the per-user
+# systemd instance does not have, and the service dies at exec with
+# `status=218/CAPABILITIES` — before a single line of our code runs.
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=default.target

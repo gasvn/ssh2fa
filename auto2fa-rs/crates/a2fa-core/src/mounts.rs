@@ -50,7 +50,19 @@ pub fn parse_mount_output(output: &str, root: &Path) -> Vec<MountInfo> {
         // path may legitimately contain " on ".
         let Some(idx) = body.rfind(" on ") else { continue };
         let source = body[..idx].trim();
-        let point = body[idx + 4..].trim();
+        let mut point = body[idx + 4..].trim();
+        // Linux `mount` prints `<src> on <point> type <fstype> (<opts>)`, so the
+        // filesystem type would otherwise be glued onto the mount point and no
+        // path would ever match `root` — mounts silently reported as absent.
+        // macOS has no such column, so this is a no-op there.
+        if let Some(t) = point.rfind(" type ") {
+            // Only strip a REAL trailing type token (one word, no spaces); a
+            // directory genuinely named "… type x" keeps its name.
+            let candidate = &point[t + 6..];
+            if !candidate.is_empty() && !candidate.contains(' ') {
+                point = point[..t].trim_end();
+            }
+        }
         if source.is_empty() || point.is_empty() {
             continue;
         }
@@ -84,9 +96,9 @@ pub fn parse_mount_output(output: &str, root: &Path) -> Vec<MountInfo> {
 /// known to be mounted", which is the safe direction (it offers a mount rather
 /// than claiming one exists).
 pub fn list_active_mounts(root: &Path) -> Vec<MountInfo> {
-    let Some(output) = crate::sys::run_cmd_bounded("/sbin/mount", &[], Duration::from_secs(5))
-    else {
-        log::warn!("[mounts] could not run /sbin/mount; assuming nothing is mounted");
+    let bin = crate::platform::mount_table_bin();
+    let Some(output) = crate::sys::run_cmd_bounded(bin, &[], Duration::from_secs(5)) else {
+        log::warn!("[mounts] could not run {bin}; assuming nothing is mounted");
         return Vec::new();
     };
     parse_mount_output(&String::from_utf8_lossy(&output.stdout), root)
@@ -169,6 +181,38 @@ mod tests {
         assert_eq!(m[0].slug, "scratch");
         assert_eq!(m[0].source, "k6:/scratch");
         assert_eq!(m[0].mount_point, PathBuf::from("/Users/me/Mounts/k6/scratch"));
+    }
+
+    /// Linux `mount` adds a ` type <fstype>` column before the options. Without
+    /// stripping it the mount point becomes
+    /// `/home/me/Mounts/k6/scratch type fuse.sshfs`, which matches no path — so
+    /// every real mount reads as absent and the daemon offers to mount it again.
+    #[test]
+    fn parses_the_linux_mount_format() {
+        let root = PathBuf::from("/home/me/Mounts");
+        let out = "k6:/scratch on /home/me/Mounts/k6/scratch type fuse.sshfs \
+                   (rw,nosuid,nodev,relatime,user_id=1000,group_id=1000)";
+        let m = parse_mount_output(out, &root);
+        assert_eq!(m.len(), 1, "linux line must parse");
+        assert_eq!(m[0].host, "k6");
+        assert_eq!(m[0].slug, "scratch");
+        assert_eq!(m[0].source, "k6:/scratch");
+        assert_eq!(m[0].mount_point, PathBuf::from("/home/me/Mounts/k6/scratch"));
+    }
+
+    /// The type-stripping must not eat a directory that genuinely contains
+    /// " type " — only a single trailing token is a filesystem type.
+    #[test]
+    fn a_directory_named_like_a_type_column_survives() {
+        let root = PathBuf::from("/home/me/Mounts");
+        let out = "k6:/x on /home/me/Mounts/k6/some type of dir (rw)";
+        let m = parse_mount_output(out, &root);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].mount_point,
+            PathBuf::from("/home/me/Mounts/k6/some type of dir"),
+            "only a one-word trailing type token may be stripped"
+        );
     }
 
     #[test]

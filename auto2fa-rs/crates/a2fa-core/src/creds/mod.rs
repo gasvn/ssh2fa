@@ -1,14 +1,68 @@
 //! Credential storage abstraction — mirrors `credentials.py`.
 //!
-//! The `SecretStore` trait decouples business logic from the real macOS
-//! Keychain, so unit tests can inject a `FakeStore` without touching the
-//! system credential store.
+//! The `SecretStore` trait decouples business logic from the real system
+//! credential store, so unit tests can inject a `FakeStore` without touching
+//! it — and so each platform can bring its own store without the daemon
+//! knowing which one it got:
+//!
+//! | platform | backend |
+//! |----------|---------|
+//! | macOS    | login Keychain via the Security framework ([`keychain`]) |
+//! | Linux    | freedesktop Secret Service, or an owner-only file ([`linux`]) |
+//!
+//! Everything above this layer — the vault, the migrations, every handler —
+//! is platform-independent and calls [`platform_store`].
 
+pub mod file_store;
+pub(crate) mod guard;
+#[cfg(target_os = "macos")]
 pub mod keychain;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod migrate;
 pub mod vault;
 
 use crate::error::Result;
+
+// ---------------------------------------------------------------------------
+// Platform store
+// ---------------------------------------------------------------------------
+
+/// This platform's credential store type.
+#[cfg(target_os = "macos")]
+pub type PlatformStore = keychain::KeychainStore;
+/// This platform's credential store type.
+#[cfg(target_os = "linux")]
+pub type PlatformStore = linux::LinuxStore;
+
+/// The credential store to use on this machine.
+///
+/// Cheap — the returned value carries no state; any backend probing happens
+/// once per process behind the platform module's own cache. Call it at the
+/// point of use rather than threading a store through, exactly as the code
+/// previously named `KeychainStore` inline.
+#[cfg(target_os = "macos")]
+pub fn platform_store() -> PlatformStore {
+    keychain::KeychainStore
+}
+
+/// The credential store to use on this machine.
+#[cfg(target_os = "linux")]
+pub fn platform_store() -> PlatformStore {
+    linux::LinuxStore
+}
+
+/// One-line description of the resolved backend, for logs and diagnostics.
+pub fn platform_store_description() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "macOS login Keychain".into()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::LinuxStore::describe()
+    }
+}
 
 /// A generic secret store: get / set / delete by account name.
 pub trait SecretStore {

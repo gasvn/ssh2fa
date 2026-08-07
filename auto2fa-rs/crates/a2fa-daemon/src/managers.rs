@@ -310,11 +310,11 @@ fn load_creds(host: &str) -> std::result::Result<(String, String), String> {
         let spawn_res = std::thread::Builder::new()
             .name(format!("keychain-read:{host}"))
             .spawn(move || {
-                use a2fa_core::creds::keychain::KeychainStore;
+                use a2fa_core::creds::platform_store;
                 use a2fa_core::creds::{get_otpauth, get_password};
                 use a2fa_core::totp::extract_secret_optional;
 
-                let ks = KeychainStore;
+                let ks = platform_store();
                 let result: std::result::Result<(String, String), String> = (|| {
                     let password = get_password(&ks, &host_owned)
                         .map_err(|e| format!("Keychain could not read the saved password: {e}"))?

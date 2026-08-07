@@ -10,9 +10,34 @@ thiserror.workspace = true
 log.workspace = true
 regex.workspace = true
 totp-rs = "5"
-keyring = { version = "3", features = ["apple-native"] }
 portable-pty = "0.8"
 libc = "0.2"
+
+# Credential storage is the one genuinely platform-specific dependency.
+#
+# macOS: the Security framework, so the item's ACL is bound to the signed
+# daemon (see creds::keychain).
+#
+# Linux: the freedesktop Secret Service over D-Bus (gnome-keyring, KWallet,
+# KeePassXC …) — the equivalent "the desktop session owns the secret" story.
+# `crypto-rust` keeps the D-Bus session encryption in pure Rust so building
+# needs no OpenSSL headers. Headless boxes with no Secret Service fall back to
+# creds::file_store, which needs no dependency at all.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `async-secret-service` (zbus) rather than `sync-secret-service`: the sync
+# backend binds to libdbus-sys, so building would need libdbus-1-dev headers —
+# a root-only apt install that an unprivileged user on a compute node cannot do.
+# The async stack is pure Rust and needs nothing outside cargo. `async-io`
+# keeps it off tokio, which this daemon deliberately does not use, and the
+# executor only ever runs the short D-Bus round trip in `block_on`.
+keyring = { version = "3", default-features = false, features = [
+  "async-secret-service",
+  "async-io",
+  "crypto-rust",
+] }
 
 [dev-dependencies]
 tempfile = "3"
