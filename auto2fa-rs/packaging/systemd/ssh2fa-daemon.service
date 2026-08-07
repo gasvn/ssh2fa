@@ -40,18 +40,31 @@ RestartSec=10
 # defeat the SIGKILL choice above.
 KillMode=process
 
-# Light hardening — only what a USER unit can actually apply.
+# Hardening is deliberately MINIMAL here, because the obvious settings each
+# break a feature outright. Every line below is the result of one:
 #
-# Deliberately NOT ProtectHome/PrivateTmp: the daemon's whole job is reading
-# ~/.ssh, writing ~/.ssh2fa, and driving ControlPath sockets under $HOME, and
-# the per-slot ssh logs live in /tmp.
+# * NOT NoNewPrivileges — it breaks sshfs mounts completely. `fusermount3` is
+#   setuid root (that is how an unprivileged user is allowed to mount FUSE at
+#   all), and NoNewPrivileges makes the kernel refuse the setuid transition, so
+#   every mount fails with "fusermount3: mount failed: Operation not permitted".
+#   Verified on Ubuntu 24.04: identical command, only this flag differing.
+# * NOT PrivateDevices / ProtectKernelTunables / ProtectControlGroups — they
+#   need mount-namespace privileges the per-user systemd instance does not
+#   have, and the service dies at exec with `status=218/CAPABILITIES`, before a
+#   single line of our code runs.
+# * NOT ProtectHome / PrivateTmp — the daemon's whole job is reading ~/.ssh,
+#   writing ~/.ssh2fa, mounting under ~/Mounts and driving ControlPath sockets
+#   under $HOME; the per-slot ssh logs live in /tmp.
 #
-# Also deliberately NOT PrivateDevices / ProtectKernelTunables /
-# ProtectControlGroups: those need mount-namespace privileges the per-user
-# systemd instance does not have, and the service dies at exec with
-# `status=218/CAPABILITIES` — before a single line of our code runs.
-NoNewPrivileges=yes
-RestrictSUIDSGID=yes
+# * NOT RestrictSUIDSGID — it looks unrelated (it restricts CREATING suid
+#   files, not executing them) but systemd documents it as IMPLYING
+#   NoNewPrivileges=yes, so setting it silently re-enables the flag above and
+#   breaks mounts again. Confirmed the hard way: with the unit saying
+#   `NoNewPrivileges=no`, /proc/<pid>/status still showed `NoNewPrivs: 1`
+#   until this line was removed too.
+#
+# So: no sandboxing directives at all. The daemon runs with exactly the
+# privileges of the user who started it, which is what mounting FUSE requires.
 
 [Install]
 WantedBy=default.target

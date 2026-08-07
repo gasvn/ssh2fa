@@ -310,6 +310,20 @@ impl Drop for MountInFlightGuard {
     }
 }
 
+/// First non-empty line of `s`, capped, for a one-line status row.
+///
+/// sshfs can print several lines (a warning plus the real error); a status row
+/// shows one, and the full text is in the log.
+fn first_line(s: &str) -> String {
+    let line = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 120 {
+        let cut: String = line.chars().take(117).collect();
+        format!("{cut}…")
+    } else {
+        line.to_owned()
+    }
+}
+
 /// Locate the `sshfs` binary, or explain how to install it for this platform.
 ///
 /// Bounded — `which` is instant, but never block. Under launchd the daemon's
@@ -520,6 +534,10 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
         }
     }
 
+    // Why a mount attempt failed, surfaced in the RPC reply. Empty on success
+    // and on the unmount path.
+    let mut mount_failure = String::new();
+
     if this_is_mounted {
         // Unmount.
         {
@@ -583,20 +601,51 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             &[&src, &mp_str2, "-o", &opts],
             std::time::Duration::from_secs(45),
         );
-        let mounted = result
-            .map(|o| {
-                o.status.success()
-                    && a2fa_core::mounts::list_active_mounts(&mounts_root())
-                        .iter()
-                        .any(|m| m.mount_point == mount_point)
-            })
-            .unwrap_or(false);
+        // Why sshfs failed, in sshfs's own words. Previously the whole Output
+        // was collapsed to a bool, so a failed mount reached the user as a bare
+        // `mounted: false` with NO reason — "no such remote directory", "host
+        // key changed" and "permission denied" were indistinguishable, from the
+        // UI and from the log alike.
+        let mut failure = String::new();
+        let mounted = match result {
+            None => {
+                failure = format!("sshfs did not finish within 45s (mounting {src})");
+                false
+            }
+            Some(o) => {
+                let exited_ok = o.status.success();
+                // sshfs backgrounds itself once the mount is established, so
+                // the kernel mount table — not the exit status — is the
+                // authority on whether it actually worked.
+                let in_table = a2fa_core::mounts::list_active_mounts(&mounts_root())
+                    .iter()
+                    .any(|m| m.mount_point == mount_point);
+                if !exited_ok || !in_table {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_owned();
+                    let stdout = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                    let said = if !stderr.is_empty() {
+                        stderr
+                    } else if !stdout.is_empty() {
+                        stdout
+                    } else if exited_ok {
+                        // Exit 0 but nothing mounted: sshfs reported success
+                        // and the mount is not there.
+                        "sshfs exited 0 but no mount appeared".to_owned()
+                    } else {
+                        format!("sshfs exited with {}", o.status)
+                    };
+                    failure = said;
+                }
+                exited_ok && in_table
+            }
+        };
         if !mounted {
-            // A failed/killed sshfs leaves its DAEMONIZED macFUSE backend
-            // (go-nfsv4) running — run_cmd_bounded only killed the direct sshfs
-            // child, not the double-forked backend — plus a possibly half-made
-            // mount + the created dir. Reap them so failed mounts don't leak
-            // (observed: 5+ orphaned go-nfsv4 processes).
+            log::warn!("[{host_name}] mount of {remote_path} failed: {failure}");
+            // A failed/killed sshfs can leave a DAEMONIZED backend running
+            // (on macOS the separate go-nfsv4 process; run_cmd_bounded only
+            // killed the direct child) plus a half-made mount and the created
+            // dir. Reap them so failed mounts don't leak (observed: 5+
+            // orphaned go-nfsv4 processes).
             reap_failed_sshfs(&mount_point);
         }
         let mut guard = crate::lock_state(state);
@@ -605,23 +654,43 @@ pub fn host_mount_toggle(state: &Arc<Mutex<State>>, params: &Value) -> Result<Va
             h.last_msg = if mounted {
                 format!("Mounted {remote_path}")
             } else {
-                "Mount failed".into()
+                // Carry the reason into the row the user is looking at, rather
+                // than a bare "Mount failed" they have to go log-diving for.
+                format!("Mount failed — {}", first_line(&failure))
             };
         }
+        mount_failure = failure;
     }
 
     // Report the mount point + what is mounted there. The app opens this in
     // Finder on a successful mount, so it must come back from the RPC rather
     // than being re-derived (and re-guessed) client-side.
-    let is_mounted_now = a2fa_core::mounts::list_active_mounts(&mounts_root())
+    //
+    // `mounted` answers "is THE POINT THIS CALL ADDRESSED mounted", not "does
+    // this host have some mount". Asking the looser question made a failed
+    // mount report `mounted: true` whenever any OTHER folder on the same host
+    // happened to be mounted — the caller then opened a directory that its own
+    // request had just failed to create.
+    let active = a2fa_core::mounts::list_active_mounts(&mounts_root());
+    let is_mounted_now = active.iter().any(|m| m.mount_point == mount_point);
+    let host_has_other_mounts = active
         .iter()
-        .any(|m| m.host == host_name);
-    Ok(json!({
+        .any(|m| m.host == host_name && m.mount_point != mount_point);
+    let mut reply = json!({
         "host": host_name,
         "mounted": is_mounted_now,
         "mount_point": mount_point.to_string_lossy(),
         "remote_path": remote_path,
-    }))
+        // The host row shows a single mounted/not indicator, which must stay
+        // lit while any other folder on the host is still mounted.
+        "host_has_other_mounts": host_has_other_mounts,
+    });
+    // Only present when something went wrong — a client can then say WHY
+    // instead of just "mounted: false".
+    if !mount_failure.is_empty() {
+        reply["error"] = json!(mount_failure);
+    }
+    Ok(reply)
 }
 
 /// Validate a user-supplied remote directory for `sshfs host:<path>`.
@@ -2259,6 +2328,22 @@ mod tests {
             "mount claim must succeed after the guard released the latch"
         );
         mount_in_flight().lock().unwrap().remove(host);
+    }
+
+    #[test]
+    fn first_line_takes_one_line_and_caps_it() {
+        assert_eq!(first_line("boom"), "boom");
+        // sshfs often prints a warning first and the real error after; a
+        // status row shows one line, the log keeps the rest.
+        assert_eq!(first_line("\n\n  real error \nnoise"), "real error");
+        assert_eq!(first_line(""), "");
+        let long = "x".repeat(400);
+        let cut = first_line(&long);
+        assert!(cut.chars().count() <= 120, "got {}", cut.chars().count());
+        assert!(cut.ends_with('…'), "a truncated line must say so");
+        // Multi-byte input must not panic or split a character.
+        let wide = "文".repeat(400);
+        assert!(first_line(&wide).chars().count() <= 120);
     }
 
     #[test]
