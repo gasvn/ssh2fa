@@ -242,6 +242,24 @@ pub fn extract_secret(s: &str) -> Result<String> {
     Ok(parse_otp_input(s)?.to_token())
 }
 
+/// [`extract_secret`] for a field the user is allowed to leave blank.
+///
+/// Not every SSH account has 2FA: a host can be registered with a password
+/// only, and it logs in fine because the server never prints an OTP prompt.
+/// Blank input therefore means "this host has no 2FA" (`Ok(None)`) rather than
+/// "malformed secret".
+///
+/// Anything NON-blank must still parse. A typo'd secret has to be rejected at
+/// the point of entry — accepting it as "no 2FA" would silently downgrade a
+/// 2FA host and only surface ~30 s later, inside a login worker, as a failed
+/// login the user can't explain.
+pub fn extract_secret_optional(s: &str) -> Result<Option<String>> {
+    if s.trim().is_empty() {
+        return Ok(None);
+    }
+    extract_secret(s).map(Some)
+}
+
 /// Build a `TOTP` instance honoring the input's algorithm/digits/period
 /// (defaults: SHA1, 6 digits, 30-second step — matching pyotp).
 fn make_totp(input: &str) -> Result<(TOTP, u64)> {
@@ -433,6 +451,29 @@ mod tests {
             "JBSWY3DPEHPK3PXP"
         );
         assert!(extract_secret("otpauth://totp/x?issuer=y").is_err()); // no secret param
+    }
+
+    /// A host may have no 2FA at all. Blank input is that host, not a bad
+    /// secret — but anything typed still has to parse, so a typo can never be
+    /// silently downgraded to "no 2FA".
+    #[test]
+    fn optional_secret_treats_blank_as_no_2fa() {
+        assert_eq!(extract_secret_optional("").unwrap(), None);
+        assert_eq!(extract_secret_optional("   \n\t ").unwrap(), None);
+        assert_eq!(
+            extract_secret_optional("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP").unwrap(),
+            Some("JBSWY3DPEHPK3PXP".to_string())
+        );
+        assert_eq!(
+            extract_secret_optional(" JBSWY3DPEHPK3PXP ").unwrap(),
+            Some("JBSWY3DPEHPK3PXP".to_string())
+        );
+        // Unusable values are still rejected rather than read as "none" — the
+        // blank-is-fine rule must not widen into accept-anything.
+        assert!(extract_secret_optional("otpauth://totp/x?issuer=y").is_err());
+        assert!(extract_secret_optional("otpauth://totp/x?secret=").is_err());
+        assert!(extract_secret_optional("JBSWY3DPEHPK3PXP#SHA1:6:0").is_err());
+        assert!(extract_secret_optional("JBSWY3DPEHPK3PXP#MD5:6:30").is_err());
     }
 
     /// Padded (`=`) and percent-encoded (`%3D`) secrets worked under pyotp;

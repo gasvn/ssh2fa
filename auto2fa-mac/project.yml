@@ -82,6 +82,7 @@ targets:
       - path: Auto2FA/FriendlyText.swift
       - path: Auto2FA/ManagedHostStore.swift
       - path: Auto2FA/HostSettingsCore.swift
+      - path: Auto2FA/AddHostCore.swift
       - path: Auto2FA/SecretClipboard.swift
       - path: Auto2FA/TunnelPortEdit.swift
       - path: Auto2FA/CredentialWarmup.swift

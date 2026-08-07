@@ -47,7 +47,7 @@ $ ssh gpu-04
 
 **Set up & stay safe**
 - 🚀 **Zero-config setup** — add a host by **name, address, and username**; SSH2FA writes the SSH config for you, so you never need to know or edit `~/.ssh/config`. Already have aliases? **One-click import** reads them from your config.
-- 📷 **QR / paste the secret** — screenshot a Duo / TOTP **QR code** to the clipboard and SSH2FA reads it, or paste the `otpauth://` URL, to capture the 2FA secret (no Base32 to type).
+- 📷 **QR / paste the secret** — screenshot a Duo / TOTP **QR code** to the clipboard and SSH2FA reads it, or paste the `otpauth://` URL, to capture the 2FA secret (no Base32 to type). **2FA is optional**: a host whose server only asks for a password is added by leaving that field empty, and a secret can be added (or removed) later in **Password & setup**.
 - 🛠 **See and change what's stored** — every host has a **Password & setup** view (double-click a host, its `⋯` menu, or `⌘K`): where the alias actually points, whether a password and 2FA secret are saved, and which account the secret belongs to. Reveal them behind Touch ID, replace either one after a server password change or a 2FA re-enrolment, and verify the stored pair with **Test login**.
 - 🔒 **Locked down** — passwords and TOTP secrets live in the macOS **Keychain**; an optional **Touch ID** lock gates revealing a credential. No telemetry.
 - 🩺 **Safe by default** — a Troubleshoot panel runs health checks, hosts are **test-logged-in before saving** (never a lockout), and you're warned if a host drifts out of your ssh config.
@@ -56,7 +56,7 @@ $ ssh gpu-04
 ## 60-second quickstart
 
 1. **Install** — see [Install](#install) below: Homebrew, a one-line script, or click-through. Pick one; each takes under a minute.
-2. **Add Host** → enter the host's **name, address, and your username** (or pick an existing ssh alias), then your **password** and **2FA secret** — type it, paste an `otpauth://` URL, or **scan the QR**. SSH2FA writes the SSH config for you and **test-logs-in before saving**.
+2. **Add Host** → enter the host's **name, address, and your username** (or pick an existing ssh alias), then your **password** and — if the server asks for verification codes — your **2FA secret**: type it, paste an `otpauth://` URL, or **scan the QR**. No 2FA on the account? Leave that field empty. SSH2FA writes the SSH config for you and **test-logs-in before saving**.
 3. Done — open a terminal and `ssh <alias>`. No code to type, and it stays connected.
 
 Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's wrong.

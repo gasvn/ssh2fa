@@ -129,16 +129,6 @@
         }
       }
     },
-    "2FA secret (otpauth:// URL or secret key)": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "两步验证密钥（otpauth:// 链接或密钥串）"
-          }
-        }
-      }
-    },
     "8888": {},
     ":%lld": {},
     ":%lld (local) → :%lld (remote)": {
@@ -249,16 +239,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "添加你常用的文件夹——挂载后可直接进入。"
-          }
-        }
-      }
-    },
-    "Add a host (register SSH + 2FA)": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加主机（注册 SSH + 2FA）"
           }
         }
       }
@@ -1887,16 +1867,6 @@
         }
       }
     },
-    "Needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "需要 TOTP 密钥 —— **不是 Duo Push**（手机点确认那种）。粘贴 otpauth:// 链接或纯 base32 密钥，或者截图二维码后点“扫描二维码”。"
-          }
-        }
-      }
-    },
     "Needs a TOTP secret key — not Duo Push. Re-enrol the account in your 2FA provider's device page to get a fresh key.": {
       "localizations": {
         "zh-Hans": {
@@ -1953,16 +1923,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "下一个空闲端口"
-          }
-        }
-      }
-    },
-    "No 2FA secret stored — this host can't complete a login prompt": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未保存 2FA 密钥 —— 此主机无法完成登录验证"
           }
         }
       }
@@ -2143,16 +2103,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 ~/.ssh/config 中找不到该 Host —— 请确认它是真实的 ssh 别名或可达的主机名。"
-          }
-        }
-      }
-    },
-    "OTP secret: ": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "OTP 密钥："
           }
         }
       }
@@ -4964,6 +4914,116 @@
           "stringUnit": {
             "state": "translated",
             "value": "为什么 macOS 可能要求输入密码"
+          }
+        }
+      }
+    },
+    "2FA secret (optional — otpauth:// URL or secret key)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两步验证密钥（可选 —— otpauth:// 链接或密钥串）"
+          }
+        }
+      }
+    },
+    "leave empty if this account has no 2FA": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该账号没有两步验证就留空"
+          }
+        }
+      }
+    },
+    "Only fill this in if the server asks for a verification code. It needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有当服务器会要求输入验证码时才需要填。需要 TOTP 密钥 —— **不是 Duo Push**（手机点确认那种）。粘贴 otpauth:// 链接或纯 base32 密钥，或者截图二维码后点“扫描二维码”。"
+          }
+        }
+      }
+    },
+    "No 2FA on this account? Leave it empty — you can add a secret later in Password & setup.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "账号没有两步验证？留空即可 —— 以后可以在“密码与设置”里补上密钥。"
+          }
+        }
+      }
+    },
+    "2FA secret: ": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两步验证密钥："
+          }
+        }
+      }
+    },
+    "none — this host signs in with a password only": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无 —— 此主机只用密码登录"
+          }
+        }
+      }
+    },
+    "No 2FA secret stored — this host signs in with a password only": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未保存两步验证密钥 —— 此主机只用密码登录"
+          }
+        }
+      }
+    },
+    "If the server starts asking for a verification code, add the secret below.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果服务器开始要求输入验证码，在下面添加密钥即可。"
+          }
+        }
+      }
+    },
+    "Remove 2FA secret": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除两步验证密钥"
+          }
+        }
+      }
+    },
+    "For an account that no longer uses 2FA — logins will use the password alone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "适用于不再使用两步验证的账号 —— 登录将只用密码。"
+          }
+        }
+      }
+    },
+    "Add a host (SSH password, plus a 2FA secret if the server asks for codes)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加主机（SSH 密码；若服务器要验证码，再加两步验证密钥）"
           }
         }
       }

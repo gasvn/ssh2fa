@@ -21,7 +21,7 @@ use a2fa_core::engine::State;
 use a2fa_core::error::{Error, Result};
 use a2fa_core::model::Host;
 use a2fa_core::sys::run_cmd_bounded;
-use a2fa_core::totp::{describe_otp, extract_secret, totp_now_detailed};
+use a2fa_core::totp::{describe_otp, extract_secret, extract_secret_optional, totp_now_detailed};
 use serde_json::{json, Value};
 
 use crate::managers::{spawn_managed_start, spawn_managed_stop, HostManagers};
@@ -806,6 +806,7 @@ pub fn host_add(
         .get("otpauth_url")
         .and_then(|v| v.as_str())
         .unwrap_or("")
+        .trim()
         .to_owned();
 
     let auto_connect = params
@@ -813,9 +814,16 @@ pub fn host_add(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Extract TOTP secret from URL (validates the URL format).
-    let secret = extract_secret(&otpauth_url)
-        .map_err(|e| Error::BadParams(format!("invalid otpauth URL: {e}")))?;
+    // Extract the TOTP secret from the URL (validates the URL format).
+    //
+    // An EMPTY otpauth_url is legitimate: plenty of servers authenticate with a
+    // password alone. Such a host is stored with an empty secret, and the login
+    // path never calls the OTP provider because the server never prints an OTP
+    // prompt. (If one ever does, the provider fails with an actionable
+    // "no 2FA secret is saved" message instead of hanging.)
+    let secret = extract_secret_optional(&otpauth_url)
+        .map_err(|e| Error::BadParams(format!("invalid otpauth URL: {e}")))?
+        .unwrap_or_default();
 
     // Check for duplicates before doing any I/O. A genuinely first host writes
     // directly into the stable store, so it needs no legacy-upgrade gate.
@@ -983,13 +991,15 @@ pub fn host_test_credentials(
         }));
     }
 
-    let supplied_password = params.get("password").and_then(|v| v.as_str());
-    let supplied_otpauth = params.get("otpauth_url").and_then(|v| v.as_str());
-
-    // Neither secret supplied → test what's stored for this host (bounded
-    // Keychain read on a worker, never on this handler thread).
-    let (password, otpauth_url) = match (supplied_password, supplied_otpauth) {
-        (None, None) => {
+    let (password, otpauth_url) = match creds_under_test(params) {
+        Err(reason) => return Ok(json!({ "ok": false, "reason": reason })),
+        Ok(CredsUnderTest::Supplied {
+            password,
+            otpauth_url,
+        }) => (password, otpauth_url),
+        // Nothing supplied → test what's stored for this host (bounded Keychain
+        // read on a worker, never on this handler thread).
+        Ok(CredsUnderTest::Stored) => {
             let host_owned = host.clone();
             let stored = run_keychain_bounded(
                 "credential read",
@@ -1016,18 +1026,15 @@ pub fn host_test_credentials(
                 }
             }
         }
-        // One or both supplied → use exactly what was sent (an omitted field
-        // stays empty, preserving the pre-existing contract for the Add-host
-        // wizard, which always sends both).
-        _ => (
-            supplied_password.unwrap_or("").to_owned(),
-            supplied_otpauth.unwrap_or("").to_owned(),
-        ),
     };
 
-    // Validate otpauth URL before attempting any ssh I/O.
-    let secret = match extract_secret(&otpauth_url) {
-        Ok(s) => s,
+    // Validate the otpauth URL before attempting any ssh I/O. An EMPTY value
+    // means "this host has no 2FA" (password-only login) — a supported setup,
+    // so it must not be rejected as a malformed URL. The closure below still
+    // fails loudly if such a server does prompt for a code.
+    let otpauth_url = otpauth_url.trim().to_owned();
+    let secret = match extract_secret_optional(&otpauth_url) {
+        Ok(s) => s.unwrap_or_default(),
         Err(e) => {
             return Ok(json!({
                 "ok": false,
@@ -1053,11 +1060,53 @@ pub fn host_test_credentials(
             // Legacy fallback (tests only).
             let secret_owned = secret.clone();
             test_login(&host, &password, move || {
+                if secret_owned.is_empty() {
+                    return Err(a2fa_core::error::Error::BadParams(
+                        crate::workers::NO_OTP_SECRET.into(),
+                    ));
+                }
                 a2fa_core::totp::totp_now(&secret_owned)
             })
         }
     };
     Ok(json!({ "ok": ok, "reason": reason }))
+}
+
+/// Which credentials a dry-run should exercise.
+enum CredsUnderTest {
+    /// Read the host's saved credentials and test those.
+    Stored,
+    /// Test exactly these. An empty `otpauth_url` is a password-only login.
+    Supplied {
+        password: String,
+        otpauth_url: String,
+    },
+}
+
+/// Decide what [`host_test_credentials`] should test, from its params alone.
+///
+/// Pure (no Keychain, no ssh) so the three modes are unit-testable; `Err` is
+/// the `reason` string to hand back with `ok: false`.
+///
+/// Supplying exactly ONE of the pair is refused rather than defaulted. Before
+/// password-only hosts existed, an omitted `otpauth_url` was caught for free by
+/// the URL parse; now an empty secret is a MEANINGFUL value ("no 2FA"), so
+/// defaulting the missing half would quietly test something other than what the
+/// caller asked about — and neither may be silently back-filled from the store,
+/// which would let a half-supplied test appear to pass on saved credentials.
+fn creds_under_test(params: &Value) -> std::result::Result<CredsUnderTest, String> {
+    let password = params.get("password").and_then(|v| v.as_str());
+    let otpauth = params.get("otpauth_url").and_then(|v| v.as_str());
+    match (password, otpauth) {
+        (None, None) => Ok(CredsUnderTest::Stored),
+        (Some(password), Some(otpauth_url)) => Ok(CredsUnderTest::Supplied {
+            password: password.to_owned(),
+            otpauth_url: otpauth_url.to_owned(),
+        }),
+        _ => Err("send both 'password' and 'otpauth_url' (use \"\" for a host with no 2FA), \
+                  or neither to test the stored credentials"
+            .into()),
+    }
 }
 
 /// Attempt a one-shot, isolated SSH login.
@@ -1644,6 +1693,21 @@ fn opt_str<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>> {
     }
 }
 
+/// An OPTIONAL boolean parameter — absent is `false`, present-but-wrong-type is
+/// an error.
+///
+/// Same reasoning as [`opt_str`]: a flag that decides whether a stored secret is
+/// DELETED must not read `{"clear_otp_secret": "yes"}` as "no" (or, worse, some
+/// future truthiness rule as "yes"). Malformed input gets rejected, not
+/// reinterpreted.
+fn opt_bool(params: &Value, key: &str) -> Result<bool> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(Error::BadParams(format!("{key} must be a boolean"))),
+    }
+}
+
 /// Read the `host` param, validating it as a safe host name.
 ///
 /// The name is used as a Keychain account key and (for the test login) as ssh
@@ -1773,8 +1837,12 @@ pub fn host_reveal_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Res
 
 /// Update the stored password and/or 2FA secret for an already-registered host.
 ///
-/// Params: `host` plus at least one of `password`, `otpauth_url`.
-/// Whichever field is omitted keeps its current stored value.
+/// Params: `host` plus at least one of `password`, `otpauth_url`,
+/// `clear_otp_secret`. Whichever field is omitted keeps its current stored
+/// value; `clear_otp_secret: true` DELETES the stored 2FA secret, turning the
+/// host into a password-only one (the mirror image of adding a host with the
+/// 2FA field left blank). An empty `otpauth_url` stays an error — dropping a
+/// secret has to be asked for explicitly, never by sending a blank field.
 ///
 /// The Keychain stores password and otpauth as two entries that
 /// [`store_credentials`] writes together (with rollback), so a partial update
@@ -1792,11 +1860,21 @@ pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result
     require_host(state, &host_name)?;
 
     let new_password = opt_str(params, "password")?.map(|s| s.to_owned());
-    let new_otpauth = opt_str(params, "otpauth_url")?.map(|s| s.trim().to_owned());
+    let clear_otp = opt_bool(params, "clear_otp_secret")?;
+    let new_otpauth = match opt_str(params, "otpauth_url")?.map(|s| s.trim().to_owned()) {
+        // Both at once is contradictory — refuse rather than guess which one
+        // the caller meant.
+        Some(_) if clear_otp => {
+            return Err(Error::BadParams(
+                "pass either 'otpauth_url' or 'clear_otp_secret', not both".into(),
+            ))
+        }
+        other => other,
+    };
 
-    if new_password.is_none() && new_otpauth.is_none() {
+    if new_password.is_none() && new_otpauth.is_none() && !clear_otp {
         return Err(Error::BadParams(
-            "nothing to change — pass 'password' and/or 'otpauth_url'".into(),
+            "nothing to change — pass 'password', 'otpauth_url' and/or 'clear_otp_secret'".into(),
         ));
     }
 
@@ -1806,7 +1884,7 @@ pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result
     if let Some(ref url) = new_otpauth {
         if url.is_empty() {
             return Err(Error::BadParams(
-                "otpauth_url is empty — omit the field to keep the current 2FA secret".into(),
+                "otpauth_url is empty — omit the field to keep the current 2FA secret, or pass clear_otp_secret to remove it".into(),
             ));
         }
         extract_secret(url).map_err(|e| Error::BadParams(format!("invalid otpauth URL: {e}")))?;
@@ -1826,11 +1904,20 @@ pub fn host_set_credentials(state: &Arc<Mutex<State>>, params: &Value) -> Result
     if new_otpauth.is_some() {
         changed.push("otp_secret");
     }
+    if clear_otp {
+        changed.push("otp_secret removed");
+    }
 
     // Read-counterpart + write in ONE bounded worker.
     let host_owned = host_name.clone();
     let pw_arg = new_password.clone();
-    let otp_arg = new_otpauth.clone();
+    // Clearing is just "write an empty secret" — the same shape as a rewrite,
+    // so it takes the identical single-worker read-counterpart + write path.
+    let otp_arg = if clear_otp {
+        Some(String::new())
+    } else {
+        new_otpauth.clone()
+    };
     run_keychain_bounded(
         "credential write",
         &host_name,
@@ -2219,6 +2306,80 @@ mod tests {
         assert!(matches!(err, Error::BadParams(_)));
     }
 
+    /// An account WITHOUT 2FA is registered by leaving the secret blank. The
+    /// blank must survive validation — it used to be rejected as "invalid
+    /// otpauth URL", which made such an account impossible to add at all.
+    ///
+    /// Asserted without touching the real Keychain: the host is already in
+    /// State, so `host_add` stops at the duplicate check, which sits AFTER the
+    /// secret extraction. Reaching it proves the blank secret was accepted.
+    #[test]
+    fn host_add_accepts_a_blank_otpauth_for_a_password_only_host() {
+        for blank in ["", "   "] {
+            let state = make_state_with_host("k6", false);
+            let err = host_add(
+                &state,
+                &json!({"host": "k6", "password": "x", "otpauth_url": blank}),
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, Error::Duplicate(_)),
+                "a blank 2FA secret must not be rejected as a bad URL, got {err:?}"
+            );
+        }
+    }
+
+    /// The blank-is-fine rule must not become "anything is fine": an unusable
+    /// secret is still refused at entry rather than 30 s later in a login worker.
+    #[test]
+    fn host_add_still_rejects_a_typod_otpauth() {
+        let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
+        let err = host_add(
+            &state,
+            &json!({"host": "k6", "password": "x",
+                    "otpauth_url": "otpauth://totp/Example:user?issuer=Example"}),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("invalid otpauth")),
+            "got {err:?}"
+        );
+    }
+
+    /// The dry-run's three modes, decided without any Keychain or ssh I/O.
+    /// `otpauth_url: ""` must resolve to "test these credentials" (a
+    /// password-only login) — the handler then runs a real ssh login, which is
+    /// why only the decision is asserted here.
+    #[test]
+    fn creds_under_test_supports_password_only_and_stored_modes() {
+        assert!(matches!(
+            creds_under_test(&json!({"host": "k6"})).unwrap(),
+            CredsUnderTest::Stored
+        ));
+        let supplied = creds_under_test(&json!({"host": "k6", "password": "pw",
+                                                "otpauth_url": ""}))
+            .unwrap();
+        match supplied {
+            CredsUnderTest::Supplied {
+                password,
+                otpauth_url,
+            } => {
+                assert_eq!(password, "pw");
+                assert!(otpauth_url.is_empty(), "blank stays blank — no 2FA");
+            }
+            _ => panic!("an explicit pair must be tested as supplied"),
+        }
+        // ...and a blank secret is not a parse error downstream.
+        assert_eq!(
+            a2fa_core::totp::extract_secret_optional("").unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn host_test_credentials_bad_otpauth_returns_ok_false() {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
@@ -2484,12 +2645,65 @@ mod tests {
             matches!(err, Error::BadParams(ref m) if m.contains("password is empty")),
             "got {err:?}"
         );
+        // The rejection must also point at the deliberate way to drop a secret,
+        // so it isn't a dead end for a host that no longer uses 2FA.
         let err =
             host_set_credentials(&state, &json!({"host": "k6", "otpauth_url": "  "})).unwrap_err();
         assert!(
-            matches!(err, Error::BadParams(ref m) if m.contains("otpauth_url is empty")),
+            matches!(err, Error::BadParams(ref m)
+                     if m.contains("otpauth_url is empty") && m.contains("clear_otp_secret")),
             "got {err:?}"
         );
+    }
+
+    /// Removing 2FA from an existing host is the mirror image of adding a host
+    /// with the secret left blank. It must be asked for EXPLICITLY: a blank
+    /// `otpauth_url` still errors (above), and the two ways of saying it can't
+    /// be combined, since that request has no single meaning.
+    #[test]
+    fn host_set_credentials_clear_flag_is_explicit_and_exclusive() {
+        let state = make_state_with_host("k6", false);
+        // Both at once → refused before any Keychain I/O.
+        let err = host_set_credentials(
+            &state,
+            &json!({"host": "k6", "clear_otp_secret": true,
+                    "otpauth_url": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("not both")),
+            "got {err:?}"
+        );
+        // A non-boolean flag is rejected, never coerced — this one deletes a
+        // stored secret, so "yes" must not silently read as false (or true).
+        let err = host_set_credentials(
+            &state,
+            &json!({"host": "k6", "clear_otp_secret": "yes"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("must be a boolean")),
+            "got {err:?}"
+        );
+        // clear_otp_secret: false is not a change on its own.
+        let err =
+            host_set_credentials(&state, &json!({"host": "k6", "clear_otp_secret": false}))
+                .unwrap_err();
+        assert!(
+            matches!(err, Error::BadParams(ref m) if m.contains("nothing to change")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn opt_bool_defaults_to_false_and_rejects_other_types() {
+        assert!(!opt_bool(&json!({}), "flag").unwrap());
+        assert!(!opt_bool(&json!({"flag": null}), "flag").unwrap());
+        assert!(opt_bool(&json!({"flag": true}), "flag").unwrap());
+        assert!(!opt_bool(&json!({"flag": false}), "flag").unwrap());
+        for bad in [json!({"flag": 1}), json!({"flag": "true"}), json!({"flag": []})] {
+            assert!(opt_bool(&bad, "flag").is_err(), "{bad}");
+        }
     }
 
     /// host_test_credentials with NO secrets supplied falls back to the stored
@@ -2508,17 +2722,27 @@ mod tests {
         assert_eq!(v["reason"], "host required");
     }
 
-    /// Supplying EITHER secret keeps the old contract (the other field defaults
-    /// to empty) rather than silently mixing in stored values — a half-supplied
-    /// test must fail on the missing piece, not appear to pass with stored creds.
+    /// Supplying EITHER secret must never silently mix in stored values — a
+    /// half-supplied test must fail on the missing piece, not appear to pass
+    /// with stored creds. Since an empty otpauth now legitimately means "no
+    /// 2FA", the missing half can no longer be inferred, so the call is
+    /// refused BEFORE any ssh I/O rather than testing something else.
     #[test]
     fn host_test_credentials_partial_params_do_not_use_stored_creds() {
         let state = Arc::new(Mutex::new(State::with_tunnels(vec![])));
-        // password supplied, otpauth omitted → empty secret → invalid otpauth.
-        let v =
-            host_test_credentials(&state, &json!({"host": "k6", "password": "x"}), None).unwrap();
-        assert_eq!(v["ok"], false);
-        assert!(v["reason"].as_str().unwrap().contains("invalid otpauth"));
+        for params in [
+            json!({"host": "k6", "password": "x"}),
+            json!({"host": "k6", "otpauth_url": "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"}),
+        ] {
+            assert!(creds_under_test(&params).is_err(), "{params}");
+            let v = host_test_credentials(&state, &params, None).unwrap();
+            assert_eq!(v["ok"], false, "{params}");
+            let reason = v["reason"].as_str().unwrap();
+            assert!(
+                reason.contains("send both") && reason.contains("no 2FA"),
+                "must name the fix, got {reason:?}"
+            );
+        }
     }
 
     // host_mount_toggle — can't run sshfs in tests; verify error on

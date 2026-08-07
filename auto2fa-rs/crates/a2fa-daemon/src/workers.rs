@@ -156,9 +156,22 @@ fn now_f64() -> f64 {
         .as_secs_f64()
 }
 
+/// What a password-only host reports if its server *does* ask for a code.
+///
+/// A host added without a 2FA secret logs in fine as long as the server never
+/// prompts — the OTP closure is only invoked when an OTP prompt appears. If one
+/// does appear, failing with this specific sentence (rather than a base32 parse
+/// error) is what lets `actionable_failure` tell the user to add the secret.
+pub const NO_OTP_SECRET: &str =
+    "The server asked for a verification code, but no 2FA secret is saved for this host";
+
 /// Build an OTP closure suitable for passing to `start_master`.
 ///
-/// The returned closure:
+/// An EMPTY `secret` marks a password-only host: the closure exists (the login
+/// path always needs one) but returns [`NO_OTP_SECRET`] if the server ever
+/// prompts, and never touches the replay registry.
+///
+/// Otherwise the returned closure:
 ///  1. Acquires the per-group lock (serializing OTP submissions for hosts
 ///     that share this TOTP secret).
 ///  2. Generates a fresh TOTP code.
@@ -180,6 +193,12 @@ pub fn make_otp_closure(
     // 30 here and fail loudly inside totp_now below.
     let period = a2fa_core::totp::token_period(&secret).unwrap_or(30).max(1);
     move || {
+        // Password-only host: nothing to submit. Report it as a credential
+        // problem the user can fix, not as a corrupt secret.
+        if secret.is_empty() {
+            warn!("[{host}] server prompted for a code but no 2FA secret is saved");
+            return Err(a2fa_core::error::Error::BadParams(NO_OTP_SECRET.into()));
+        }
         let group_arc = registry.get_group(&secret);
         loop {
             // Acquire the group lock — serializes OTP submission.
@@ -600,6 +619,45 @@ mod tests {
         let g1 = reg.get_group("SECRET_A");
         let g2 = reg.get_group("SECRET_B");
         assert!(!Arc::ptr_eq(&g1, &g2));
+    }
+
+    /// A password-only host still gets an OTP closure (the login path always
+    /// needs one). It must never be reached in normal operation — the server
+    /// simply doesn't prompt — but if one ever does, it has to fail with a
+    /// sentence the user can act on rather than a base32 parse error, and it
+    /// must return IMMEDIATELY instead of blocking on the replay-wait loop.
+    #[test]
+    fn empty_secret_reports_a_missing_2fa_secret_without_waiting() {
+        let reg = OtpRegistry::new();
+        let otp = make_otp_closure(String::new(), "pw-only-host".into(), Arc::clone(&reg));
+        let started = std::time::Instant::now();
+        let err = otp().unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "must fail fast, not sit in the TOTP-window wait"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains(NO_OTP_SECRET), "got {msg:?}");
+        // And the message must survive translation into user-facing advice.
+        let advice = a2fa_core::ssh::failure::actionable_failure(&msg);
+        assert!(
+            advice.contains("added without a 2FA secret") && advice.contains("Password & setup"),
+            "got {advice:?}"
+        );
+    }
+
+    /// The empty-secret short-circuit must not touch the registry: a
+    /// password-only host has no secret to serialize against, and grouping
+    /// every such host under the empty key would make them block each other.
+    #[test]
+    fn empty_secret_does_not_register_an_otp_group() {
+        let reg = OtpRegistry::new();
+        let otp = make_otp_closure(String::new(), "pw-only-host".into(), Arc::clone(&reg));
+        let _ = otp();
+        assert!(
+            reg.groups.lock().unwrap().is_empty(),
+            "a password-only host must not claim an OTP group"
+        );
     }
 
     #[test]

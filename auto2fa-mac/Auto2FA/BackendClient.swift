@@ -709,6 +709,11 @@ actor BackendClient {
     /// credentials — the daemon reads them from the Keychain itself, so the
     /// "Test login" button in the per-host settings sheet never has to pull
     /// secrets into the app just to check them.
+    ///
+    /// Otherwise pass BOTH: an empty `otpauthURL` means "this account has no
+    /// 2FA" and tests a password-only login. Supplying only one is rejected
+    /// daemon-side, because an empty secret is now a meaningful value and the
+    /// missing half can no longer be inferred.
     func testHostCredentials(host: String, password: String?,
                              otpauthURL: String?) async throws -> (Bool, String) {
         var params: [String: Any] = ["host": host]
@@ -794,12 +799,20 @@ actor BackendClient {
     }
 
     /// Change a host's stored password and/or 2FA secret. A `nil` field keeps
-    /// its current stored value; passing `nil` for both is an error daemon-side.
+    /// its current stored value; passing `nil` for everything is an error
+    /// daemon-side.
+    ///
+    /// `clearOTPSecret` DELETES the stored 2FA secret, turning the host into a
+    /// password-only one. It is a separate flag rather than an empty
+    /// `otpauthURL` (still rejected) so a blank text field can never wipe a
+    /// working secret by accident — removal has to be asked for.
     func setHostCredentials(host: String, password: String?,
-                            otpauthURL: String?) async throws -> CredentialUpdate {
+                            otpauthURL: String?,
+                            clearOTPSecret: Bool = false) async throws -> CredentialUpdate {
         var params: [String: Any] = ["host": host]
         if let password { params["password"] = password }
         if let otpauthURL { params["otpauth_url"] = otpauthURL }
+        if clearOTPSecret { params["clear_otp_secret"] = true }
         let data = try await sendRaw(method: "host_set_credentials", params: params)
         return try JSONDecoder().decode(CredentialUpdate.self, from: data)
     }

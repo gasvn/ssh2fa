@@ -8,8 +8,13 @@ import SwiftUI
 ///
 /// The auth flow we ask the user to feed in:
 ///   - Password — their SSH password
-///   - otpauth URL — pasted from a "Show secret" / "Add account" QR
+///   - otpauth URL — OPTIONAL, pasted from a "Show secret" / "Add account" QR
 ///     readout. We extract the secret via the same regex backend.py uses.
+///
+/// Leaving the 2FA field blank registers a password-only host: not every SSH
+/// account has 2FA, and such a host logs in normally because the server never
+/// prints a verification-code prompt. A secret can be added later from
+/// "Password & setup" if the server starts asking for one.
 struct AddHostSheet: View {
     @EnvironmentObject var appState: AppState
 
@@ -167,9 +172,9 @@ struct AddHostSheet: View {
                                             ? "Hide the password you typed"
                                             : "Show the password you typed")
                       })
-                field("2FA secret (otpauth:// URL or secret key)",
+                field("2FA secret (optional — otpauth:// URL or secret key)",
                       VStack(alignment: .leading, spacing: Spacing.xs) {
-                        TextField("otpauth://totp/…?secret=…   — or just the secret key",
+                        TextField("leave empty if this account has no 2FA",
                                   text: $otpauthURL)
                             .focused($focused, equals: .otpauth)
                         HStack(spacing: Spacing.s) {
@@ -189,9 +194,13 @@ struct AddHostSheet: View {
                             Text(qrError).font(.caption2).foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text("Needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.")
+                        Text("Only fill this in if the server asks for a verification code. It needs a TOTP secret key — **not Duo Push** (approve-on-phone). Paste the otpauth:// URL or the bare base32 secret, or screenshot the QR and click “Scan QR”.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        Text("No 2FA on this account? Leave it empty — you can add a secret later in Password & setup.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         DisclosureGroup(isExpanded: $showOTPHelp) {
                             otpHelp
                         } label: {
@@ -289,16 +298,20 @@ struct AddHostSheet: View {
                     }
                 } icon: { Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
 
-                let otpOk = OTPSecret.normalize(input: otpauthURL, account: summaryHost) != nil
+                // A blank 2FA field is a password-only host, NOT a broken form:
+                // it gets a plain checkmark and a plain-language note, so the
+                // step never looks like it's failing validation.
+                let otpEntry = AddHostCore.classifyOTP(input: otpauthURL, account: summaryHost)
+                let otpBad = otpEntry == .invalid
                 Label {
                     HStack(spacing: 0) {
-                        Text("OTP secret: ").foregroundStyle(.secondary)
-                        Text(otpOk ? "ready" : "(not a valid secret)")
-                            .foregroundColor(otpOk ? .primary : .red)
+                        Text("2FA secret: ").foregroundStyle(.secondary)
+                        Text(AddHostCore.otpSummary(otpEntry))
+                            .foregroundColor(otpBad ? .red : .primary)
                     }
                 } icon: {
-                    Image(systemName: otpOk ? "checkmark.circle.fill" : "xmark.octagon")
-                        .foregroundColor(otpOk ? .green : .red)
+                    Image(systemName: otpBad ? "xmark.octagon" : "checkmark.circle.fill")
+                        .foregroundColor(otpBad ? .red : .green)
                 }
             }
             .padding(Spacing.m)
@@ -415,10 +428,11 @@ struct AddHostSheet: View {
                 error = "You already have an SSH host named “\(name)”. Pick a different name."
                 focused = .hostname; return
             }
-            guard !password.isEmpty else { error = "Password is required."; return }
-            guard OTPSecret.normalize(input: otpauthURL, account: name) != nil else {
-                error = "SSH2FA needs your TOTP secret key (otpauth:// URL or base32) — not Duo Push. See “How do I get this?” below."
-                focused = .otpauth; return
+            if let msg = AddHostCore.credentialsError(password: password,
+                                                      otpInput: otpauthURL, alias: name) {
+                error = msg
+                focused = password.isEmpty ? .password : .otpauth
+                return
             }
             error = nil
             step = 1
@@ -426,13 +440,20 @@ struct AddHostSheet: View {
         }
         let h = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else { error = "Hostname is required."; focused = .hostname; return }
-        guard !password.isEmpty else { error = "Password is required."; focused = .password; return }
-        guard OTPSecret.normalize(input: otpauthURL, account: hostname) != nil else {
-            error = "SSH2FA needs your TOTP secret key (otpauth:// URL or base32) — not Duo Push. See “How do I get this?” below."
-            focused = .otpauth; return
+        if let msg = AddHostCore.credentialsError(password: password,
+                                                  otpInput: otpauthURL, alias: h) {
+            error = msg
+            focused = password.isEmpty ? .password : .otpauth
+            return
         }
         error = nil
         step = 1
+    }
+
+    /// The `otpauth_url` to send for what's currently typed — empty for a host
+    /// with no 2FA, which the daemon stores as password-only.
+    private func otpauthPayload(account: String) -> String {
+        AddHostCore.otpauthPayload(AddHostCore.classifyOTP(input: otpauthURL, account: account))
     }
 
     private func testLogin() async {
@@ -460,14 +481,13 @@ struct AddHostSheet: View {
                 if !preExisting { orphanAlias = alias }
                 (ok, reason) = try await appState.client.testHostCredentials(
                     host: alias, password: password,
-                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: alias)
-                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines))
+                    otpauthURL: otpauthPayload(account: alias))
             } else {
+                let h = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
                 (ok, reason) = try await appState.client.testHostCredentials(
-                    host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
+                    host: h,
                     password: password,
-                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
-                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    otpauthURL: otpauthPayload(account: h)
                 )
             }
             testResult = (ok, ok ? "Login succeeded — you can save now." : reason)
@@ -491,8 +511,7 @@ struct AddHostSheet: View {
                     user: username.trimmingCharacters(in: .whitespacesAndNewlines),
                     port: port,
                     password: password,
-                    otpauthURL: OTPSecret.normalize(input: otpauthURL, account: alias)
-                        ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                    otpauthURL: otpauthPayload(account: alias),
                     autoConnect: autoConnect
                 ) {
                     error = msg; submitting = false
@@ -509,12 +528,12 @@ struct AddHostSheet: View {
             }
             return
         }
+        let h = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             if let msg = await appState.addHost(
-                host: hostname.trimmingCharacters(in: .whitespacesAndNewlines),
+                host: h,
                 password: password,
-                otpauthURL: OTPSecret.normalize(input: otpauthURL, account: hostname)
-                    ?? otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                otpauthURL: otpauthPayload(account: h),
                 autoConnect: autoConnect
             ) {
                 error = msg

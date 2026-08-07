@@ -113,7 +113,7 @@ struct HostsView: View {
                 Label("Add Host", systemImage: "plus")
             }
             .buttonStyle(.glass)
-            .help("Add a host (register SSH + 2FA)")
+            .help("Add a host (SSH password, plus a 2FA secret if the server asks for codes)")
             Button { appState.presentImport() } label: {
                 Label("Add from ~/.ssh/config", systemImage: "square.and.arrow.down")
             }

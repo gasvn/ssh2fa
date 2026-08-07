@@ -66,9 +66,10 @@ fn render_input_field(
 
 /// State for the add-host modal.
 ///
-/// Collects everything `host_add` requires: the daemon mandates a password and
-/// a parseable otpauth:// URL — the old one-field form could never succeed
-/// (every submit came back "bad params: invalid otpauth URL").
+/// Collects everything `host_add` requires: the daemon mandates a password —
+/// the old one-field form could never succeed (every submit came back "bad
+/// params: invalid otpauth URL"). The otpauth field is OPTIONAL: left blank it
+/// registers a password-only host, and if filled it must parse.
 #[derive(Debug, Clone, Default)]
 pub struct AddHostSheet {
     /// The host alias being entered.
@@ -136,7 +137,7 @@ pub fn render_add_host(f: &mut Frame, sheet: &AddHostSheet) {
     render_input_field(
         f,
         chunks[2],
-        "otpauth URL / TOTP secret",
+        "otpauth URL / TOTP secret (blank = no 2FA)",
         &sheet.otpauth_buf,
         sheet.field == 2,
     );

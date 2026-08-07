@@ -148,6 +148,19 @@ enum FriendlyText {
         return raw
     }
 
+    /// True iff a daemon error means "this host has no 2FA secret" — as opposed
+    /// to a read that failed (locked Keychain, pending prompt, busy worker).
+    ///
+    /// The distinction decides whether a UI element should disappear or stay and
+    /// offer a retry: a password-only host has nothing to show and never will,
+    /// while a failed read is worth trying again. Matching is deliberately
+    /// narrow — the daemon's own phrasing is `no 2FA secret for <host>` — so a
+    /// transient failure is never mistaken for a permanent absence.
+    static func indicatesNoOTPSecret(_ raw: String) -> Bool {
+        let lc = raw.lowercased()
+        return lc.contains("no 2fa secret for") || lc.contains("no otp secret for")
+    }
+
     /// Translate a failure from a stored-credential read/write (the per-host
     /// "Password & setup" view) into something the user can act on.
     ///

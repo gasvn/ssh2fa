@@ -1143,6 +1143,25 @@ final class AppState: ObservableObject {
         try await client.hostTOTP(host)
     }
 
+    /// Hosts the daemon has told us have NO 2FA secret (password-only).
+    ///
+    /// Learned lazily — the app never reads every host's secret up front, which
+    /// is exactly the Keychain prompt storm the on-demand TOTP chip exists to
+    /// avoid — and kept only for this app session. It drives UI that would
+    /// otherwise offer a 2FA code that cannot exist.
+    @Published private(set) var hostsWithoutOTPSecret: Set<String> = []
+
+    func noteHostHasNoOTPSecret(_ host: String) {
+        hostsWithoutOTPSecret.insert(host)
+    }
+
+    /// Forget that verdict — call whenever a host's stored secret may have
+    /// changed (a secret added, replaced, or removed), so the 2FA chip comes
+    /// back the moment there is something to show.
+    func forgetOTPSecretVerdict(for host: String) {
+        hostsWithoutOTPSecret.remove(host)
+    }
+
     // MARK: - Sheet helpers
 
     func presentNewTunnel() { activeSheet = .newTunnel }
@@ -1227,7 +1246,16 @@ final class AppState: ObservableObject {
     /// Describe a host's stored credentials (no secrets). Rethrows so the sheet
     /// can show the failure inline instead of as a global banner.
     func hostCredentials(_ host: String) async throws -> BackendClient.HostCredentials {
-        try await client.hostCredentials(host)
+        let creds = try await client.hostCredentials(host)
+        // Authoritative answer, and free — this call already reports whether a
+        // secret is stored, so use it to keep the 2FA-chip verdict honest in
+        // both directions instead of waiting for a chip tap to discover it.
+        if creds.has_otp_secret {
+            forgetOTPSecretVerdict(for: host)
+        } else {
+            noteHostHasNoOTPSecret(host)
+        }
+        return creds
     }
 
     /// Read a host's stored password + 2FA URL in plaintext. Callers MUST have
@@ -1246,11 +1274,18 @@ final class AppState: ObservableObject {
 
     /// Change a host's stored password and/or 2FA secret. A nil field keeps its
     /// current stored value.
+    /// `clearOTPSecret` removes the stored 2FA secret, leaving a password-only
+    /// host (the same shape as adding one with the 2FA field left blank).
     func updateHostCredentials(host: String, password: String?,
-                               otpauthURL: String?) async -> CredentialSaveOutcome {
+                               otpauthURL: String?,
+                               clearOTPSecret: Bool = false) async -> CredentialSaveOutcome {
         do {
             let r = try await client.setHostCredentials(host: host, password: password,
-                                                        otpauthURL: otpauthURL)
+                                                        otpauthURL: otpauthURL,
+                                                        clearOTPSecret: clearOTPSecret)
+            // The stored secret may have just appeared or vanished — re-learn it
+            // rather than keeping a now-wrong "this host has no 2FA" verdict.
+            forgetOTPSecretVerdict(for: host)
             return .saved(reconnectRequired: r.reconnect_required)
         } catch {
             return .failed((error as? BackendClient.ClientError)?.errorDescription
@@ -1592,6 +1627,12 @@ final class AppState: ObservableObject {
             _ = try await client.addHost(host: host, password: password,
                                          otpauthURL: otpauthURL,
                                          autoConnect: autoConnect)
+            // A re-added alias must not inherit the removed host's verdict.
+            if otpauthURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                noteHostHasNoOTPSecret(host)
+            } else {
+                forgetOTPSecretVerdict(for: host)
+            }
             // A fresh install writes its first credential directly into the
             // stable daemon-owned store. It has no legacy data to upgrade and
             // must never see the post-update migration banner.

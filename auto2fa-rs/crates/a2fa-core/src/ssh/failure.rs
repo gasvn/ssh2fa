@@ -108,6 +108,15 @@ pub fn actionable_failure(reason: &str) -> String {
     if lc.contains("missing saved password") || lc.contains("password is empty") {
         return "No saved password was found. Open Password & setup for this host and save the current SSH password.".into();
     }
+    // A host registered WITHOUT 2FA whose server turned out to ask for a code.
+    // Distinct from "the secret is missing/corrupt": nothing is broken, the
+    // host simply needs a secret added. Must be tested before the generic
+    // missing-secret branch so the more specific wording wins.
+    if lc.contains("asked for a verification code")
+        && lc.contains("no 2fa secret is saved")
+    {
+        return "This host was added without a 2FA secret, but the server asked for a verification code. Open Password & setup and add the authenticator QR/secret.".into();
+    }
     if lc.contains("missing saved 2fa") || lc.contains("missing saved otp")
         || lc.contains("2fa secret is empty")
     {
@@ -288,6 +297,10 @@ mod tests {
             ("Keychain read timed out", &["Keychain", "one-time migration"]),
             ("Missing saved password", &["Password & setup"]),
             ("Missing saved 2FA secret", &["QR/secret"]),
+            (
+                "The server asked for a verification code, but no 2FA secret is saved for this host",
+                &["added without a 2FA secret", "Password & setup"],
+            ),
             ("Invalid otpauth/2FA secret", &["QR code again"]),
             ("Verification code rejected", &["date and time", "2FA secret"]),
             ("Password rejected", &["saved password", "Test login"]),

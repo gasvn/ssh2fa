@@ -203,10 +203,16 @@ fn creds_cache() -> &'static Mutex<CredsCache> {
     CACHE.get_or_init(|| Mutex::new(CredsCache::default()))
 }
 
-/// `true` when both fields are present — only complete creds are worth caching
-/// (a partial/failed read must be retried, not cached as the permanent answer).
+/// `true` when the creds are worth caching — a partial/failed read must be
+/// retried, not cached as the permanent answer.
+///
+/// The password is the only mandatory half. An empty SECRET is a legitimate
+/// answer for a password-only host (added without 2FA), and `load_creds`
+/// returns it only after a successful Keychain read, so caching it serves the
+/// truth rather than papering over a failure. Every failed read returns `Err`
+/// and is never cached at all.
 fn creds_complete(creds: &(String, String)) -> bool {
-    !creds.0.is_empty() && !creds.1.is_empty()
+    !creds.0.is_empty()
 }
 
 /// The host's current cache epoch (0 if never invalidated).
@@ -306,7 +312,7 @@ fn load_creds(host: &str) -> std::result::Result<(String, String), String> {
             .spawn(move || {
                 use a2fa_core::creds::keychain::KeychainStore;
                 use a2fa_core::creds::{get_otpauth, get_password};
-                use a2fa_core::totp::extract_secret;
+                use a2fa_core::totp::extract_secret_optional;
 
                 let ks = KeychainStore;
                 let result: std::result::Result<(String, String), String> = (|| {
@@ -319,14 +325,16 @@ fn load_creds(host: &str) -> std::result::Result<(String, String), String> {
                     let otpauth = get_otpauth(&ks, &host_owned)
                         .map_err(|e| format!("Keychain could not read the saved 2FA secret: {e}"))?
                         .unwrap_or_default();
-                    if otpauth.trim().is_empty() {
-                        return Err("Missing saved 2FA secret".into());
-                    }
-                    let secret = extract_secret(&otpauth)
-                        .map_err(|e| format!("Invalid otpauth/2FA secret: {e}"))?;
-                    if secret.is_empty() {
-                        return Err("Missing saved 2FA secret".into());
-                    }
+                    // No stored secret = a password-only host (added without
+                    // 2FA). That is a supported setup, NOT a broken credential:
+                    // the login path simply never submits a code, and if the
+                    // server does prompt, the OTP closure fails with an
+                    // actionable "no 2FA secret is saved" message. A stored but
+                    // UNPARSEABLE secret is still an error — it means the saved
+                    // value is corrupt, which the user must repair.
+                    let secret = extract_secret_optional(&otpauth)
+                        .map_err(|e| format!("Invalid otpauth/2FA secret: {e}"))?
+                        .unwrap_or_default();
                     Ok((password, secret))
                 })();
                 // Cache from HERE so even a timed-out-but-late-completing read
@@ -2214,11 +2222,14 @@ mod tests {
         assert!(!readiness_from_existing_state(false, None));
     }
 
+    /// Only the password is mandatory. A host added WITHOUT 2FA legitimately
+    /// resolves to an empty secret, and that answer is worth caching — but a
+    /// missing password is never a valid state, so it must be re-read.
     #[test]
-    fn creds_complete_requires_both_fields() {
+    fn creds_complete_requires_a_password_and_tolerates_no_2fa() {
         assert!(creds_complete(&("pw".into(), "secret".into())));
+        assert!(creds_complete(&("pw".into(), "".into())), "password-only host");
         assert!(!creds_complete(&("".into(), "secret".into())));
-        assert!(!creds_complete(&("pw".into(), "".into())));
         assert!(!creds_complete(&("".into(), "".into())));
     }
 

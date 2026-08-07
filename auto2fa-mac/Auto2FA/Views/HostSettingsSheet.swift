@@ -353,10 +353,22 @@ struct HostSettingsSheet: View {
                                 .help("Asks for Touch ID (or your Mac password) first. Use it to set up the same account in another authenticator.")
                         }
                     } else {
-                        Label("No 2FA secret stored — this host can't complete a login prompt",
-                              systemImage: "exclamationmark.circle")
-                            .font(.rowMeta)
-                            .foregroundStyle(.orange)
+                        // NOT an error state: a host can be registered with a
+                        // password alone, and it logs in normally as long as the
+                        // server never asks for a code. Say what it means and
+                        // what to do if that changes — the old orange warning
+                        // told everyone with a password-only account that their
+                        // setup was broken.
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label("No 2FA secret stored — this host signs in with a password only",
+                                  systemImage: "person.badge.key")
+                                .font(.rowMeta)
+                                .foregroundStyle(.secondary)
+                            Text("If the server starts asking for a verification code, add the secret below.")
+                                .font(.rowMeta)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
@@ -389,6 +401,23 @@ struct HostSettingsSheet: View {
                             .font(.rowMeta)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        // The way out for an account that no longer uses 2FA.
+                        // Separate from the text field on purpose: clearing the
+                        // field must never be what deletes a working secret.
+                        if creds?.has_otp_secret == true {
+                            Divider()
+                            HStack(spacing: Spacing.s) {
+                                Button("Remove 2FA secret", role: .destructive) {
+                                    Task { await removeOTPSecret() }
+                                }
+                                .buttonStyle(.glass)
+                                .disabled(saving)
+                                Text("For an account that no longer uses 2FA — logins will use the password alone.")
+                                    .font(.rowMeta)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                     .padding(.top, Spacing.s)
                 }
@@ -549,6 +578,35 @@ struct HostSettingsSheet: View {
                 ? "Saved. “\(hostName)” is still on its existing connection — reconnect to use the new credentials."
                 : "Saved. They'll be used the next time SSH2FA connects."
             // Refresh the metadata (length / issuer / account all just changed).
+            if let c = try? await appState.hostCredentials(hostName) { creds = c }
+        case .failed(let message):
+            statusMessage = FriendlyText.credentialError(message)
+            statusIsError = true
+            reconnectOffered = false
+        }
+    }
+
+    /// Drop the stored 2FA secret, leaving a password-only host.
+    ///
+    /// Goes through the daemon's explicit `clear_otp_secret` flag rather than
+    /// saving an empty field, so this can only ever happen because the button
+    /// was pressed. Any half-typed replacement is discarded — keeping it would
+    /// leave the sheet offering to save a secret that was just removed.
+    private func removeOTPSecret() async {
+        saving = true
+        defer { saving = false }
+        let outcome = await appState.updateHostCredentials(host: hostName, password: nil,
+                                                           otpauthURL: nil, clearOTPSecret: true)
+        switch outcome {
+        case .saved(let reconnectRequired):
+            newOTPInput = ""
+            editingOTP = false
+            revealedOTPURL = nil
+            statusIsError = false
+            reconnectOffered = reconnectRequired
+            statusMessage = reconnectRequired
+                ? "2FA secret removed. “\(hostName)” is still on its existing connection — reconnect to log in with the password alone."
+                : "2FA secret removed. Logins will use the password alone."
             if let c = try? await appState.hostCredentials(hostName) { creds = c }
         case .failed(let message):
             statusMessage = FriendlyText.credentialError(message)

@@ -177,4 +177,22 @@ final class FriendlyTextTests: XCTestCase {
         XCTAssertTrue(msg.lowercased().contains("fingerprint"))
         XCTAssertTrue(msg.contains("known_hosts"))
     }
+
+    /// "This host has no 2FA secret" is permanent (a password-only host, which
+    /// is a supported setup); every other read failure is transient and must
+    /// keep its retry affordance. Confusing the two either hides a working
+    /// chip forever or leaves a dead one on every password-only host.
+    func testNoOTPSecretIsDistinguishedFromAFailedRead() {
+        XCTAssertTrue(FriendlyText.indicatesNoOTPSecret("no 2FA secret for k6"))
+        XCTAssertTrue(FriendlyText.indicatesNoOTPSecret("NotFound: no 2FA secret for login01"))
+
+        for transient in [
+            "Keychain read timed out (a locked Keychain or an unanswered permission prompt may be waiting)",
+            "totp read already in flight for k6",
+            "Not connected to ssh2fa-daemon",
+            "The saved 2FA secret is invalid. Open Password & setup and scan the authenticator QR code again.",
+        ] {
+            XCTAssertFalse(FriendlyText.indicatesNoOTPSecret(transient), transient)
+        }
+    }
 }

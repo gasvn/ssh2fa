@@ -41,7 +41,12 @@ struct TOTPCodeChip: View {
 
     var body: some View {
         Group {
-            if revealed {
+            if appState.hostsWithoutOTPSecret.contains(host) {
+                // Password-only host: there is no code to show, ever. Offering
+                // "show 2FA code" here is a dead end — it can only fail — so the
+                // chip removes itself instead.
+                EmptyView()
+            } else if revealed {
                 // 0.5s local tick drives the ring; re-fetch only at rollover.
                 TimelineView(.periodic(from: .now, by: 0.5)) { context in
                     let fraction = fraction(at: context.date)
@@ -198,8 +203,18 @@ struct TOTPCodeChip: View {
                 self.failed = false
             }
         } catch {
-            // No secret, daemon error, or a pending/denied Keychain prompt
-            // (which times out at 6s). Show the muted state; the user taps
+            // "This host has no 2FA secret" is permanent, not a hiccup: record
+            // it so the chip disappears for that host instead of sitting there
+            // as a retry affordance that can never succeed. Every OTHER failure
+            // keeps the retry behaviour below.
+            let message = (error as? BackendClient.ClientError)?.errorDescription
+                ?? error.localizedDescription
+            if FriendlyText.indicatesNoOTPSecret(message) {
+                appState.noteHostHasNoOTPSecret(host)
+                return
+            }
+            // Daemon error or a pending/denied Keychain prompt (which times out
+            // at 6s). Show the muted state; the user taps
             // to retry. ALSO clear the (now-expired, unusable) code: the
             // rollover trigger fires while `code != nil && expiry <= now`,
             // so keeping the stale code meant a failing refetch re-fired

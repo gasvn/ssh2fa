@@ -295,18 +295,16 @@ fn handle_key(
                         let host = sh.host_buf.trim().to_string();
                         let password = sh.password_buf.clone();
                         let otpauth = sh.otpauth_buf.trim().to_string();
-                        // Validate locally — the daemon mandates all three
-                        // (the old host-only submit ALWAYS failed bad_params).
+                        // Validate locally — the daemon mandates a host and a
+                        // password (the old host-only submit ALWAYS failed
+                        // bad_params). The 2FA secret is OPTIONAL: an account
+                        // without 2FA is added by leaving that field blank.
                         if host.is_empty() {
                             sh.error = "Host alias cannot be empty.".to_string();
                             sh.field = 0;
                         } else if password.is_empty() {
                             sh.error = "SSH password cannot be empty.".to_string();
                             sh.field = 1;
-                        } else if otpauth.is_empty() {
-                            sh.error =
-                                "otpauth URL / TOTP secret cannot be empty.".to_string();
-                            sh.field = 2;
                         } else {
                             let res = client::rpc(
                                 "host_add",
