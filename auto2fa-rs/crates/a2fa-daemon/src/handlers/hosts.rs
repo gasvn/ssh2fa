@@ -2621,8 +2621,8 @@ mod tests {
     /// become None ("any ready host").
     #[test]
     fn removing_the_only_pinned_host_falls_back_to_any_host() {
-        let c = Some(vec!["kempner".to_string()]);
-        assert_eq!(jump_candidates_without(&c, "kempner"), None);
+        let c = Some(vec!["login1".to_string()]);
+        assert_eq!(jump_candidates_without(&c, "login1"), None);
     }
 
     #[test]
