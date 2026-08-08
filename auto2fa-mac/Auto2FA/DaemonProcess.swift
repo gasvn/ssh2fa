@@ -273,31 +273,10 @@ final class DaemonProcess {
         let agentsDir = home + "/Library/LaunchAgents"
         let plistPath = agentsDir + "/\(label).plist"
 
-        let env: [String: String] = [
-            // launchd gives agents a minimal PATH; include the Homebrew
-            // prefixes so the daemon can find sshfs/macFUSE tooling.
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
-            "SSH_CONFIG_PATH": home + "/.ssh/",
-        ]
-        let plist: [String: Any] = [
-            "Label": label,
-            "ProgramArguments": [daemonPath],
-            "EnvironmentVariables": env,
-            "RunAtLoad": true,
-            // Restart on crash but NOT after a clean exit (a graceful SIGTERM
-            // tears down masters on purpose).
-            "KeepAlive": ["SuccessfulExit": false],
-            "StandardOutPath": "/tmp/ssh2fa_daemon.log",
-            "StandardErrorPath": "/tmp/ssh2fa_daemon.log",
-            "ProcessType": "Background",
-            "ThrottleInterval": 10,
-            "ExitTimeOut": 30,
-            "WorkingDirectory": home,
-            "SoftResourceLimits": ["NumberOfFiles": 8192],
-        ]
-        guard let data = try? PropertyListSerialization.data(
-            fromPropertyList: plist, format: .xml, options: 0
-        ) else {
+        // The job definition lives in LaunchAgentPlist so its invariants are
+        // unit-testable — notably the DELIBERATE absence of ProcessType, which
+        // is invisible in a diff and cost hours when it was present.
+        guard let data = LaunchAgentPlist.data(daemonPath: daemonPath, home: home) else {
             NSLog("[SSH2FA] could not serialize LaunchAgent plist")
             return false
         }
