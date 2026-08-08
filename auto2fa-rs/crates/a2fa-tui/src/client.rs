@@ -1,6 +1,6 @@
 //! Unix-socket RPC client for the TUI.
 //!
-//! Mirrors the CLI client (`a2fa-cli/src/client.rs`) with an additional
+//! Mirrors the CLI client (`a2fa-cli/src/client.rs`, the `ssh2fa` binary) with an additional
 //! `subscribe` function that opens a *second* persistent connection, sends
 //! `subscribe_events`, and forwards each newline-delimited event JSON to the
 //! UI via an `mpsc` channel.

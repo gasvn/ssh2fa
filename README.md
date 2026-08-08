@@ -82,7 +82,7 @@ Stuck? **menu bar → Troubleshoot…** runs health checks and tells you what's 
 |-------|------|
 | `SSH2FA.app` | SwiftUI menu-bar app — the UI. |
 | `ssh2fa-daemon` | Rust background daemon — the engine. Runs under a per-user LaunchAgent. |
-| `a2fa` / `a2fa-tui` | Rust CLI and terminal UI (optional; talk to the same daemon). |
+| `ssh2fa` / `ssh2fa-tui` | Rust CLI and terminal UI (optional; talk to the same daemon). |
 
 The app and daemon communicate over a unix-socket JSON-RPC at `~/.ssh2fa/ssh2fa.sock`.
 

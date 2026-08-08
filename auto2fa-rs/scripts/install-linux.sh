@@ -6,7 +6,7 @@
 #   ./scripts/install-linux.sh --vault file
 #
 # Installs:
-#   ~/.local/bin/ssh2fa-daemon, a2fa-cli, a2fa-tui
+#   ~/.local/bin/ssh2fa, ssh2fa-tui, ssh2fa-daemon
 #   ~/.config/systemd/user/ssh2fa-daemon.service   (enabled + started)
 set -euo pipefail
 
@@ -43,11 +43,21 @@ mkdir -p "$BIN_DIR"
 # binary is ETXTBSY, and truncating one that launchd/systemd may re-exec is how
 # you get a half-written daemon. Unlinking leaves the running process on its
 # old inode until it is restarted deliberately, below.
-for b in ssh2fa-daemon a2fa-cli a2fa-tui; do
+for b in ssh2fa-daemon ssh2fa ssh2fa-tui; do
   if [ -x "$SRC/$b" ]; then
     rm -f "$BIN_DIR/$b"
     cp "$SRC/$b" "$BIN_DIR/$b"
     echo "   $b"
+  fi
+done
+
+# Remove the pre-rename names. Leaving them behind is worse than untidy: an
+# older `a2fa-cli` earlier on PATH keeps working and silently talks to the
+# daemon with stale code, so a bug you just fixed appears not to be fixed.
+for old in a2fa-cli a2fa-tui; do
+  if [ -e "$BIN_DIR/$old" ]; then
+    rm -f "$BIN_DIR/$old"
+    echo "   removed old $old"
   fi
 done
 
@@ -92,11 +102,12 @@ fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) echo "note: $BIN_DIR is not on your PATH — add it to use 'a2fa-cli' and 'a2fa-tui'" ;;
+  *) echo "note: $BIN_DIR is not on your PATH — add it to use 'ssh2fa'" ;;
 esac
 
 echo
 echo "Next:"
-echo "  a2fa-cli list                   # talk to the daemon"
-echo "  a2fa-tui                        # dashboard"
+echo "  ssh2fa                          # dashboard (no subcommand = TUI)"
+echo "  ssh2fa list                     # hosts + tunnels"
+echo "  ssh2fa --help                   # everything else"
 echo "  journalctl --user -u $UNIT -f   # logs"

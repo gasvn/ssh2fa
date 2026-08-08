@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 
 [[bin]]
-name = "a2fa-tui"
+name = "ssh2fa-tui"
 path = "src/main.rs"
 
 [dependencies]

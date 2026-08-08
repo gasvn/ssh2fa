@@ -10,18 +10,18 @@ use serde_json::{json, Value};
 // Top-level CLI struct
 // ---------------------------------------------------------------------------
 
-/// auto2fa — SSH tunnel manager with 2-FA support.
+/// SSH2FA — keep warm SSH connections to 2FA-gated hosts.
 ///
 /// With no subcommand, the interactive TUI is launched.
 ///
 /// Examples:
-///   a2fa-cli list
-///   a2fa-cli start jupyter
-///   a2fa-cli node jupyter compute-node-01 --user alice
-///   a2fa-cli logs --lines 100
-///   a2fa-cli raw ping
+///   ssh2fa list
+///   ssh2fa start jupyter
+///   ssh2fa node jupyter compute-node-01 --user alice
+///   ssh2fa logs --lines 100
+///   ssh2fa raw ping
 #[derive(Parser, Debug)]
-#[command(name = "a2fa-cli", author, version, about, long_about = None)]
+#[command(name = "ssh2fa", author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -62,7 +62,7 @@ pub enum Commands {
 
     /// Set the target node for a tunnel and start it.
     ///
-    /// Example: a2fa-cli node jupyter compute-node-01 --user alice
+    /// Example: ssh2fa node jupyter compute-node-01 --user alice
     Node {
         /// Tunnel name.
         name: String,
@@ -85,8 +85,8 @@ pub enum Commands {
 
     /// Send a raw JSON-RPC request to the daemon.
     ///
-    /// Example: a2fa-cli raw ping
-    ///          a2fa-cli raw tunnel_start '{"name":"jupyter"}'
+    /// Example: ssh2fa raw ping
+    ///          ssh2fa raw tunnel_start '{"name":"jupyter"}'
     Raw {
         /// RPC method name.
         method: String,

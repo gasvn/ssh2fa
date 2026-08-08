@@ -3,6 +3,14 @@ name = "a2fa-cli"
 version = "0.1.0"
 edition.workspace = true
 
+# The CRATE keeps its historical name; the BINARY is what users type, and it
+# matches the app (SSH2FA) and the daemon (ssh2fa-daemon). Set here rather than
+# renamed at packaging time, so a `cargo build` on any platform produces the
+# same command name a release does.
+[[bin]]
+name = "ssh2fa"
+path = "src/main.rs"
+
 [dependencies]
 a2fa-core = { path = "../a2fa-core" }
 anyhow.workspace = true

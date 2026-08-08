@@ -1,6 +1,6 @@
-//! `a2fa-cli` — command-line client for the auto2fa daemon.
+//! `ssh2fa` — command-line client for the SSH2FA daemon.
 //!
-//! With no subcommand, the `a2fa-tui` binary is launched.
+//! With no subcommand, the `ssh2fa-tui` binary is launched.
 //! With a subcommand, the request is sent over the Unix socket and the
 //! result is printed to stdout.
 
@@ -54,9 +54,10 @@ fn run() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn launch_tui() -> Result<()> {
-    // Look for a2fa-tui next to the current executable first, then fall back
-    // to PATH.
-    let tui_name = "a2fa-tui";
+    // Look for the TUI next to the current executable first, then fall back
+    // to PATH — so a dev build in target/release finds its sibling rather than
+    // an older copy installed in ~/.local/bin.
+    let tui_name = "ssh2fa-tui";
 
     let next_to_exe: Option<std::path::PathBuf> = std::env::current_exe()
         .ok()
@@ -80,11 +81,11 @@ fn launch_tui() -> Result<()> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "a2fa-tui not found — install it or run a subcommand (try `a2fa-cli --help`)"
+                "ssh2fa-tui not found — install it or run a subcommand (try `ssh2fa --help`)"
             );
             process::exit(1);
         }
-        Err(e) => bail!("failed to launch a2fa-tui: {e}"),
+        Err(e) => bail!("failed to launch ssh2fa-tui: {e}"),
     }
 }
 

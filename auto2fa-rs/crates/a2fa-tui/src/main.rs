@@ -1,4 +1,4 @@
-//! `a2fa-tui` — ratatui terminal UI for the auto2fa daemon.
+//! `ssh2fa-tui` — ratatui terminal UI for the SSH2FA daemon.
 //!
 //! Architecture:
 //!   - `AppModel` (app.rs): pure, I/O-free view-model.
@@ -85,7 +85,7 @@ enum SheetResult {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("a2fa-tui error: {e:#}");
+        eprintln!("ssh2fa-tui error: {e:#}");
         std::process::exit(1);
     }
 }

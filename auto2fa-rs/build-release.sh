@@ -39,8 +39,10 @@ DIST="$(pwd)/dist"
 DAEMON_IDENTIFIER="com.auto2fa.daemon"
 ARM_TARGET="aarch64-apple-darwin"
 X86_TARGET="x86_64-apple-darwin"
-# Pairs: <cargo binary name>:<dist output name>
-BINS="a2fa-daemon:ssh2fa-daemon a2fa-cli:ssh2fa a2fa-tui:ssh2fa-tui"
+# Cargo now emits the shipping names directly (see each crate's [[bin]]),
+# so there is nothing to rename here — the pairs are identity mappings kept
+# only so the loop below stays one shape.
+BINS="ssh2fa-daemon:ssh2fa-daemon ssh2fa:ssh2fa ssh2fa-tui:ssh2fa-tui"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 rm -rf "$DIST"; mkdir -p "$DIST"

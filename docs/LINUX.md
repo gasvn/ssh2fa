@@ -1,7 +1,8 @@
 # SSH2FA on Linux
 
 The daemon, CLI and TUI run on Linux. The menu-bar app does not — it is
-SwiftUI/AppKit — so on Linux the dashboard is `a2fa-tui`.
+SwiftUI/AppKit — so on Linux the dashboard is `ssh2fa`, which opens the TUI
+when given no subcommand.
 
 Everything else is the same program: one warm `ControlMaster` per host, the
 password + TOTP answered for you, SLURM-aware tunnels, and `ssh <alias>` from
@@ -15,8 +16,8 @@ git clone https://github.com/gasvn/ssh2fa && cd ssh2fa/auto2fa-rs
 ./scripts/install-linux.sh --vault file   # headless server (see below)
 ```
 
-No root, nothing system-wide. It installs `ssh2fa-daemon`, `a2fa-cli` and
-`a2fa-tui` into `~/.local/bin`, plus a **systemd user service** that starts the
+No root, nothing system-wide. It installs `ssh2fa`, `ssh2fa-tui` and `ssh2fa-daemon`
+into `~/.local/bin`, plus a **systemd user service** that starts the
 daemon at login and restarts it if it dies.
 
 Requirements: a Rust toolchain to build (`rustup`, no root), `ssh`, and
@@ -25,8 +26,9 @@ systemd. `sshfs` only if you want the remote-filesystem mounts.
 ```sh
 systemctl --user status ssh2fa-daemon      # is it up
 journalctl --user -u ssh2fa-daemon -f      # logs
-a2fa-cli list                              # hosts + tunnels
-a2fa-tui                                   # dashboard
+ssh2fa                                     # dashboard (no subcommand = TUI)
+ssh2fa list                                # hosts + tunnels
+ssh2fa --help                              # everything else
 ```
 
 To keep the daemon running after you log out — which is what you want on a
@@ -91,7 +93,7 @@ acceptable on a particular machine, run a keyring there instead.
 
 | | macOS | Linux |
 |---|---|---|
-| UI | menu-bar app (SwiftUI) | `a2fa-tui` |
+| UI | menu-bar app (SwiftUI) | `ssh2fa` (TUI) |
 | service manager | launchd | systemd user unit |
 | credentials | login Keychain | Secret Service / file vault |
 | unmount | `umount -f` | `fusermount3 -u` (unprivileged) |
@@ -139,7 +141,7 @@ SSH2FA_ALLOW_DEVELOPMENT_KEYCHAIN=1 \
 systemctl --user disable --now ssh2fa-daemon
 rm ~/.config/systemd/user/ssh2fa-daemon.service
 rm -rf ~/.config/systemd/user/ssh2fa-daemon.service.d
-rm ~/.local/bin/{ssh2fa-daemon,a2fa-cli,a2fa-tui}
+rm ~/.local/bin/{ssh2fa,ssh2fa-tui,ssh2fa-daemon}
 rm -rf ~/.ssh2fa                     # state
 rm -f  ~/.ssh/credentials.json       # file vault, if you used one
 ```
